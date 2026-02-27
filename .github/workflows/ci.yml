@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Lint
+        run: poetry run ruff check momentum/ tests/
+
+      - name: Test with coverage
+        run: poetry run pytest tests/ --cov=momentum --cov-report=term-missing --cov-fail-under=70 -q
+
+  build:
+    needs: test
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Build standalone binary
+        run: |
+          poetry run pyinstaller \
+            --onefile \
+            --name momentum \
+            --add-data "ENCOURAGEMENTS.md:." \
+            --add-data "IMAGES.md:." \
+            --hidden-import momentum \
+            --clean \
+            momentum/cli.py
+
+      - name: Verify binary runs
+        run: ./dist/momentum --help
+
+      - name: Get version
+        id: version
+        run: echo "version=$(poetry version -s)" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
+          name: Momentum v${{ steps.version.outputs.version }} (build ${{ github.run_number }})
+          body: |
+            Automated build from commit ${{ github.sha }}.
+
+            Download the `momentum` binary below and run it directly -- no Python required.
+          files: dist/momentum
+          draft: false
+          prerelease: false

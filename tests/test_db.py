@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 
 from momentum import db
-from momentum.models import FocusSessionCreate, TaskCreate, TaskStatus
+from momentum.models import (
+    AssessmentResultCreate,
+    AssessmentType,
+    FocusSessionCreate,
+    TaskCreate,
+    TaskStatus,
+)
 
 
 @pytest.fixture()
@@ -102,3 +108,73 @@ class TestStatus:
         log = db.get_daily_log(conn, date(2020, 1, 1))
         assert log.tasks_completed == 0
         assert log.focus_minutes == 0
+
+
+class TestAssessments:
+    def test_save_and_retrieve_bdefs(self, conn) -> None:
+        create = AssessmentResultCreate(
+            assessment_type=AssessmentType.BDEFS,
+            score=30,
+            max_score=60,
+            domain_scores={"Time Management": 6, "Self-Restraint": 8},
+        )
+        saved = db.save_assessment(conn, create)
+        assert saved.id == 1
+        assert saved.score == 30
+        assert saved.max_score == 60
+        assert saved.domain_scores["Time Management"] == 6
+
+    def test_save_and_retrieve_stroop(self, conn) -> None:
+        create = AssessmentResultCreate(
+            assessment_type=AssessmentType.STROOP,
+            score=8,
+            max_score=10,
+            domain_scores={"correct": 8, "trials": 10, "avg_time_ms": 1200},
+        )
+        saved = db.save_assessment(conn, create)
+        assert saved.assessment_type == AssessmentType.STROOP
+
+    def test_list_assessments_all(self, conn) -> None:
+        for i in range(3):
+            db.save_assessment(
+                conn,
+                AssessmentResultCreate(
+                    assessment_type=AssessmentType.BDEFS,
+                    score=20 + i,
+                    max_score=60,
+                ),
+            )
+        results = db.list_assessments(conn)
+        assert len(results) == 3
+        # Most recent first
+        assert results[0].score >= results[-1].score
+
+    def test_list_assessments_filter_type(self, conn) -> None:
+        db.save_assessment(
+            conn,
+            AssessmentResultCreate(
+                assessment_type=AssessmentType.BDEFS, score=30, max_score=60
+            ),
+        )
+        db.save_assessment(
+            conn,
+            AssessmentResultCreate(
+                assessment_type=AssessmentType.STROOP, score=8, max_score=10
+            ),
+        )
+        bdefs = db.list_assessments(conn, assessment_type=AssessmentType.BDEFS)
+        assert len(bdefs) == 1
+        assert bdefs[0].assessment_type == AssessmentType.BDEFS
+
+    def test_list_assessments_limit(self, conn) -> None:
+        for i in range(5):
+            db.save_assessment(
+                conn,
+                AssessmentResultCreate(
+                    assessment_type=AssessmentType.BDEFS,
+                    score=20 + i,
+                    max_score=60,
+                ),
+            )
+        results = db.list_assessments(conn, limit=2)
+        assert len(results) == 2

@@ -20,6 +20,7 @@ pytest = "^7.0.0"
 pytest-cov = "^4.0.0"
 ruff = "^0.9.0"
 mypy = "^1.0.0"
+pyinstaller = "^6.0.0"
 
 [tool.ruff]
 line-length = 88
@@ -34,6 +35,13 @@ python_version = "3.11"
 warn_return_any = true
 warn_unused_ignores = true
 strict = true
+
+[tool.coverage.run]
+omit = ["momentum/gui.py"]
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if __name__"]
+fail_under = 70
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

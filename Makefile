@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint typecheck gui mobile-deps mobile-apk clean help
+.PHONY: install install-dev test lint typecheck gui dist mobile-deps mobile-apk clean help
 
 PYTHON := python3
 POETRY := poetry
@@ -8,10 +8,10 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
 
-install: ## Install momentum (editable) so the 'momentum' command is on PATH
+install: ## Install momentum into the Poetry virtualenv
 	$(POETRY) install
 	@echo ""
-	@echo "Done. Run 'momentum --help' to get started."
+	@echo "Done. Run 'poetry run momentum --help' to get started."
 
 install-dev: ## Install with dev dependencies
 	$(POETRY) install --with dev
@@ -30,6 +30,23 @@ typecheck: ## Run mypy type checking
 
 gui: ## Launch the GUI
 	$(POETRY) run momentum gui
+
+# ---------------------------------------------------------------------------
+# Distribution
+# ---------------------------------------------------------------------------
+
+dist: ## Build a standalone binary with PyInstaller
+	$(POETRY) run pyinstaller \
+		--onefile \
+		--name momentum \
+		--add-data "ENCOURAGEMENTS.md:." \
+		--add-data "IMAGES.md:." \
+		--hidden-import momentum \
+		--clean \
+		momentum/cli.py
+	@echo ""
+	@echo "Built: dist/momentum"
+	@echo "Run ./dist/momentum --help to test it."
 
 # ---------------------------------------------------------------------------
 # Mobile (Kivy + Buildozer)
@@ -53,5 +70,6 @@ clean: ## Remove caches and build artefacts
 	find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .mypy_cache -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .ruff_cache -exec rm -rf {} + 2>/dev/null || true
+	rm -rf dist/ build/ *.spec 2>/dev/null || true
 	rm -rf mobile/.buildozer mobile/bin 2>/dev/null || true
 	@echo "Cleaned."

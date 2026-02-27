@@ -1,0 +1,2 @@
+# Track built binaries with Git LFS
+dist/momentum filter=lfs diff=lfs merge=lfs -text
