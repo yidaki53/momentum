@@ -1,0 +1,40 @@
+[tool.poetry]
+name = "momentum"
+version = "0.1.0"
+description = "A gentle CLI and GUI tool to help people with executive dysfunction get back on track"
+authors = ["Robin Oberg"]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
+typer = {version = "^0.15.0", extras = ["all"]}
+rich = "^13.0.0"
+pydantic = "^2.0.0"
+Pillow = "^10.0.0"
+matplotlib = "^3.8.0"
+
+[tool.poetry.scripts]
+momentum = "momentum.cli:app"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0.0"
+pytest-cov = "^4.0.0"
+ruff = "^0.9.0"
+mypy = "^1.0.0"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_ignores = true
+strict = true
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
