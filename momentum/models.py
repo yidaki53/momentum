@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime, date
+from datetime import date, datetime
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -95,8 +95,8 @@ class AutostartStatus(BaseModel):
 class AssessmentType(str, enum.Enum):
     """Available self-assessment types."""
 
-    BDEFS = "bdefs"          # Barkley Deficits in Executive Functioning Scale (self-report)
-    STROOP = "stroop"        # Stroop Color and Word Test
+    BDEFS = "bdefs"  # Barkley Deficits in Executive Functioning Scale (self-report)
+    STROOP = "stroop"  # Stroop Color and Word Test
 
 
 class AssessmentResult(BaseModel):

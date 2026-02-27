@@ -6,8 +6,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from momentum.config import (
-    _CONFIG_DIR,
-    _CONFIG_FILE,
     detect_cloud_folder,
     get_db_path,
     load_config,
@@ -40,7 +38,9 @@ class TestLoadSaveConfig:
     def test_save_and_load_roundtrip(self, tmp_path: Path) -> None:
         p1, p2 = _patch_config_paths(tmp_path)
         with p1, p2:
-            cfg = AppConfig(db_path="/tmp/test.db", window_position=WindowPosition.TOP_LEFT)
+            cfg = AppConfig(
+                db_path="/tmp/test.db", window_position=WindowPosition.TOP_LEFT
+            )
             path = save_config(cfg)
             assert path.exists()
 
@@ -99,7 +99,9 @@ class TestCloudSync:
             assert detect_cloud_folder("onedrive") == od
 
     def test_detect_cloud_folder_not_found(self) -> None:
-        with patch("momentum.config._CLOUD_PRESETS", {"onedrive": [Path("/nonexistent/path")]}):
+        with patch(
+            "momentum.config._CLOUD_PRESETS", {"onedrive": [Path("/nonexistent/path")]}
+        ):
             assert detect_cloud_folder("onedrive") is None
 
     def test_detect_unknown_provider(self) -> None:
@@ -117,5 +119,9 @@ class TestCloudSync:
 
     def test_set_cloud_sync_not_found(self, tmp_path: Path) -> None:
         p1, p2 = _patch_config_paths(tmp_path)
-        with p1, p2, patch("momentum.config._CLOUD_PRESETS", {"onedrive": [Path("/no")]}):
+        with (
+            p1,
+            p2,
+            patch("momentum.config._CLOUD_PRESETS", {"onedrive": [Path("/no")]}),
+        ):
             assert set_cloud_sync("onedrive") is None

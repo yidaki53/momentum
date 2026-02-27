@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 
 import pytest
 from pydantic import ValidationError
@@ -10,7 +10,6 @@ from pydantic import ValidationError
 from momentum.models import (
     AutostartStatus,
     DailyLog,
-    FocusSession,
     FocusSessionCreate,
     StatusSummary,
     Task,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -46,11 +45,20 @@ class TestEnableAutostart:
         svc_dir = tmp_path / "systemd" / "user"
         xdg_dir = tmp_path / "autostart"
         with (
-            patch("momentum.autostart._find_momentum_bin", return_value="/usr/bin/momentum"),
+            patch(
+                "momentum.autostart._find_momentum_bin",
+                return_value="/usr/bin/momentum",
+            ),
             patch("momentum.autostart._systemd_dir", return_value=svc_dir),
             patch("momentum.autostart._xdg_autostart_dir", return_value=xdg_dir),
-            patch("momentum.autostart._service_path", return_value=svc_dir / "momentum-gui.service"),
-            patch("momentum.autostart._desktop_entry_path", return_value=xdg_dir / "momentum-gui.desktop"),
+            patch(
+                "momentum.autostart._service_path",
+                return_value=svc_dir / "momentum-gui.service",
+            ),
+            patch(
+                "momentum.autostart._desktop_entry_path",
+                return_value=xdg_dir / "momentum-gui.desktop",
+            ),
             patch("subprocess.run") as mock_run,
         ):
             status = enable_autostart()
@@ -65,11 +73,20 @@ class TestEnableAutostart:
         svc_dir = tmp_path / "systemd" / "user"
         xdg_dir = tmp_path / "autostart"
         with (
-            patch("momentum.autostart._find_momentum_bin", return_value="/usr/bin/momentum"),
+            patch(
+                "momentum.autostart._find_momentum_bin",
+                return_value="/usr/bin/momentum",
+            ),
             patch("momentum.autostart._systemd_dir", return_value=svc_dir),
             patch("momentum.autostart._xdg_autostart_dir", return_value=xdg_dir),
-            patch("momentum.autostart._service_path", return_value=svc_dir / "momentum-gui.service"),
-            patch("momentum.autostart._desktop_entry_path", return_value=xdg_dir / "momentum-gui.desktop"),
+            patch(
+                "momentum.autostart._service_path",
+                return_value=svc_dir / "momentum-gui.service",
+            ),
+            patch(
+                "momentum.autostart._desktop_entry_path",
+                return_value=xdg_dir / "momentum-gui.desktop",
+            ),
             patch("subprocess.run", side_effect=FileNotFoundError),
         ):
             status = enable_autostart()

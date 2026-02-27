@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import io
 import math
-from datetime import datetime
 from typing import Optional
 
 import matplotlib
+
 matplotlib.use("Agg")  # non-interactive backend -- render to image buffers
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,7 +24,7 @@ from momentum.models import AssessmentResult, AssessmentType
 _BG = "#2b2b2b"
 _FG = "#e0e0e0"
 _ACCENT = "#6a9fb5"
-_BLUE_FILL = (0.42, 0.62, 0.71, 0.30)   # translucent accent blue
+_BLUE_FILL = (0.42, 0.62, 0.71, 0.30)  # translucent accent blue
 _BLUE_LINE = "#6a9fb5"
 _GREY_FILL = (0.70, 0.70, 0.70, 0.08)
 _GREY_LINE = "#555555"
@@ -39,11 +39,18 @@ _DOMAIN_MAX = max(len(qs) for qs in BDEFS_QUESTIONS.values()) * 4  # 12
 # Helpers
 # -----------------------------------------------------------------------
 
+
 def _fig_to_pil(fig: Figure, dpi: int = 100) -> Image.Image:
     """Render a matplotlib Figure to a PIL Image and close it."""
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight",
-                facecolor=fig.get_facecolor(), edgecolor="none")
+    fig.savefig(
+        buf,
+        format="png",
+        dpi=dpi,
+        bbox_inches="tight",
+        facecolor=fig.get_facecolor(),
+        edgecolor="none",
+    )
     plt.close(fig)
     buf.seek(0)
     return Image.open(buf)
@@ -57,6 +64,7 @@ def _domain_values(result: AssessmentResult) -> list[float]:
 # -----------------------------------------------------------------------
 # Radar / spider chart
 # -----------------------------------------------------------------------
+
 
 def bdefs_radar(
     highlight: Optional[AssessmentResult] = None,
@@ -107,10 +115,13 @@ def bdefs_radar(
     # Grid & ticks
     ax.set_ylim(0, _DOMAIN_MAX)
     ax.set_yticks(range(0, _DOMAIN_MAX + 1, 3))
-    ax.set_yticklabels([str(v) for v in range(0, _DOMAIN_MAX + 1, 3)],
-                       color=_FG, fontsize=7)
+    ax.set_yticklabels(
+        [str(v) for v in range(0, _DOMAIN_MAX + 1, 3)], color=_FG, fontsize=7
+    )
     ax.set_xticks(angles[:-1])
-    short_labels = [d.replace(" & ", "\n& ").replace("Organisation", "Org.") for d in _DOMAIN_ORDER]
+    short_labels = [
+        d.replace(" & ", "\n& ").replace("Organisation", "Org.") for d in _DOMAIN_ORDER
+    ]
     ax.set_xticklabels(short_labels, color=_FG, fontsize=8)
     ax.tick_params(axis="x", pad=12)
     ax.spines["polar"].set_color(_GRID)
@@ -134,6 +145,7 @@ def bdefs_radar(
 # -----------------------------------------------------------------------
 # Timeseries
 # -----------------------------------------------------------------------
+
 
 def bdefs_timeseries(
     results: list[AssessmentResult],
@@ -160,9 +172,17 @@ def bdefs_timeseries(
     ax = fig.add_subplot(111)
     ax.set_facecolor(_BG)
 
-    ax.plot(dates, scores, color=_BLUE_LINE, linewidth=2, marker="o",
-            markersize=5, markerfacecolor=_ACCENT, markeredgecolor="white",
-            markeredgewidth=0.5)
+    ax.plot(
+        dates,
+        scores,
+        color=_BLUE_LINE,
+        linewidth=2,
+        marker="o",
+        markersize=5,
+        markerfacecolor=_ACCENT,
+        markeredgecolor="white",
+        markeredgewidth=0.5,
+    )
     ax.fill_between(dates, scores, alpha=0.15, color=_ACCENT)
 
     ax.set_ylim(0, max_score)

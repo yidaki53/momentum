@@ -8,7 +8,6 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from momentum import db
 from momentum.cli import app
 
 runner = CliRunner()
@@ -117,7 +116,10 @@ class TestAutostart:
     @patch("momentum.autostart.enable_autostart")
     def test_enable(self, mock_enable) -> None:
         from momentum.models import AutostartStatus
-        mock_enable.return_value = AutostartStatus(systemd_enabled=True, xdg_enabled=True)
+
+        mock_enable.return_value = AutostartStatus(
+            systemd_enabled=True, xdg_enabled=True
+        )
         result = runner.invoke(app, ["autostart", "--enable"])
         assert result.exit_code == 0
         assert "enabled" in result.output.lower()
@@ -131,6 +133,7 @@ class TestAutostart:
     @patch("momentum.autostart.get_autostart_status")
     def test_status(self, mock_status) -> None:
         from momentum.models import AutostartStatus
+
         mock_status.return_value = AutostartStatus()
         result = runner.invoke(app, ["autostart", "--status"])
         assert result.exit_code == 0
