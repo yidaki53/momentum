@@ -86,7 +86,9 @@ def done(
 
 @app.command(name="list")
 def list_tasks(
-    all_tasks: bool = typer.Option(False, "--all", "-a", help="Include completed tasks"),
+    all_tasks: bool = typer.Option(
+        False, "--all", "-a", help="Include completed tasks"
+    ),
 ) -> None:
     """List your tasks."""
     conn = _conn()
@@ -109,7 +111,9 @@ def list_tasks(
             if parent:
                 subs = [t for t in tasks if t.parent_id == parent.id]
                 if subs:
-                    display.print_task_list(subs, title=f"  Sub-steps of #{parent.id}: {parent.title}")
+                    display.print_task_list(
+                        subs, title=f"  Sub-steps of #{parent.id}: {parent.title}"
+                    )
                     parents_shown.add(parent.id)
     conn.close()
 
@@ -121,8 +125,12 @@ def list_tasks(
 
 @app.command()
 def focus(
-    minutes: int = typer.Option(15, "--minutes", "-m", help="Focus duration in minutes"),
-    task_id: Optional[int] = typer.Option(None, "--task", "-t", help="Task ID to focus on"),
+    minutes: int = typer.Option(
+        15, "--minutes", "-m", help="Focus duration in minutes"
+    ),
+    task_id: Optional[int] = typer.Option(
+        None, "--task", "-t", help="Task ID to focus on"
+    ),
 ) -> None:
     """Start a focus timer."""
     conn = _conn()
@@ -241,11 +249,13 @@ def start() -> None:
 @app.command()
 def config(
     sync: Optional[str] = typer.Option(
-        None, "--sync",
+        None,
+        "--sync",
         help="Sync DB via cloud folder: onedrive, dropbox, google-drive",
     ),
     db_path: Optional[str] = typer.Option(
-        None, "--db-path",
+        None,
+        "--db-path",
         help="Set a custom database file path",
     ),
     reset: bool = typer.Option(False, "--reset", help="Reset to default local DB"),
@@ -287,7 +297,9 @@ def config(
 
 @app.command(name="test")
 def run_test(
-    stroop: bool = typer.Option(False, "--stroop", help="Take the Stroop colour-word test instead"),
+    stroop: bool = typer.Option(
+        False, "--stroop", help="Take the Stroop colour-word test instead"
+    ),
 ) -> None:
     """Take a self-assessment test (BDEFS or Stroop)."""
     import time as _time
@@ -336,7 +348,10 @@ def run_test(
                 display.print_warning(f"  The colour was {trial.ink_colour}.")
 
         result = StroopResult(
-            trials=len(trials), correct=correct, total_time_s=total_time, per_trial=per_trial
+            trials=len(trials),
+            correct=correct,
+            total_time_s=total_time,
+            per_trial=per_trial,
         )
         create_model = score_stroop(result)
         saved = db.save_assessment(conn, create_model)
@@ -399,7 +414,9 @@ def test_results(
         try:
             atype = AssessmentType(test_type.lower())
         except ValueError:
-            display.print_warning(f"Unknown type '{test_type}'. Use 'bdefs' or 'stroop'.")
+            display.print_warning(
+                f"Unknown type '{test_type}'. Use 'bdefs' or 'stroop'."
+            )
             conn.close()
             raise typer.Exit(1)
 
@@ -411,7 +428,9 @@ def test_results(
 
     for r in results:
         taken = r.taken_at.strftime("%Y-%m-%d %H:%M")
-        display.console.print(f"\n[bold]#{r.id}[/bold] {r.assessment_type.value.upper()}  ({taken})")
+        display.console.print(
+            f"\n[bold]#{r.id}[/bold] {r.assessment_type.value.upper()}  ({taken})"
+        )
         display.print_info(f"  Score: {r.score}/{r.max_score}")
         if r.assessment_type == AssessmentType.BDEFS:
             for d, s in r.domain_scores.items():
@@ -420,9 +439,7 @@ def test_results(
         elif r.assessment_type == AssessmentType.STROOP:
             avg_ms = r.domain_scores.get("avg_time_ms", 0)
             display.print_info(f"  Avg response: {avg_ms}ms")
-            display.print_info(
-                f"  {interpret_stroop(r.score, r.max_score, avg_ms)}"
-            )
+            display.print_info(f"  {interpret_stroop(r.score, r.max_score, avg_ms)}")
 
     conn.close()
 
@@ -447,7 +464,11 @@ def autostart(
     show_status: bool = typer.Option(False, "--status", help="Show autostart status"),
 ) -> None:
     """Manage autostart on login."""
-    from momentum.autostart import disable_autostart, enable_autostart, get_autostart_status
+    from momentum.autostart import (
+        disable_autostart,
+        enable_autostart,
+        get_autostart_status,
+    )
 
     if enable:
         result = enable_autostart()
@@ -460,11 +481,19 @@ def autostart(
         display.print_success("Autostart disabled.")
     elif show_status:
         result = get_autostart_status()
-        display.print_info(f"Systemd service: {'enabled' if result.systemd_enabled else 'not found'}")
-        display.print_info(f"XDG autostart: {'enabled' if result.xdg_enabled else 'not found'}")
+        display.print_info(
+            f"Systemd service: {'enabled' if result.systemd_enabled else 'not found'}"
+        )
+        display.print_info(
+            f"XDG autostart: {'enabled' if result.xdg_enabled else 'not found'}"
+        )
         if result.service_path:
             display.print_info(f"  Service: {result.service_path}")
         if result.desktop_entry_path:
             display.print_info(f"  Desktop entry: {result.desktop_entry_path}")
     else:
         display.print_info("Use --enable, --disable, or --status.")
+
+
+if __name__ == "__main__":
+    app()

@@ -60,6 +60,7 @@ jobs:
             --add-data "ENCOURAGEMENTS.md:." \
             --add-data "IMAGES.md:." \
             --hidden-import momentum \
+            --hidden-import PIL._tkinter_finder \
             --clean \
             momentum/cli.py
 

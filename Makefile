@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint typecheck gui dist mobile-deps mobile-apk clean help
+.PHONY: install install-dev test lint typecheck gui dist build mobile-deps mobile-apk clean help
 
 PYTHON := python3
 POETRY := poetry
@@ -42,11 +42,14 @@ dist: ## Build a standalone binary with PyInstaller
 		--add-data "ENCOURAGEMENTS.md:." \
 		--add-data "IMAGES.md:." \
 		--hidden-import momentum \
+		--hidden-import PIL._tkinter_finder \
 		--clean \
 		momentum/cli.py
 	@echo ""
 	@echo "Built: dist/momentum"
 	@echo "Run ./dist/momentum --help to test it."
+
+build: dist ## Alias for dist
 
 # ---------------------------------------------------------------------------
 # Mobile (Kivy + Buildozer)

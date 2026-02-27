@@ -32,3 +32,6 @@ mobile/bin/
 # IDE
 .vscode/
 .idea/
+
+# Warp AI context
+WARP.md

@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from momentum.config import get_db_path as _config_get_db_path
 from momentum.models import (
     AssessmentResult,
     AssessmentResultCreate,
@@ -19,8 +20,6 @@ from momentum.models import (
     TaskCreate,
     TaskStatus,
 )
-
-from momentum.config import get_db_path as _config_get_db_path
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -75,6 +74,7 @@ def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
 # Tasks
 # ---------------------------------------------------------------------------
 
+
 def _row_to_task(row: sqlite3.Row) -> Task:
     """Convert a database row to a Task model."""
     return Task(
@@ -84,9 +84,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         status=TaskStatus(row["status"]),
         created_at=datetime.fromisoformat(row["created_at"]),
         completed_at=(
-            datetime.fromisoformat(row["completed_at"])
-            if row["completed_at"]
-            else None
+            datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None
         ),
     )
 
@@ -157,6 +155,16 @@ def set_task_active(conn: sqlite3.Connection, task_id: int) -> Optional[Task]:
     return get_task(conn, task_id)
 
 
+def uncomplete_task(conn: sqlite3.Connection, task_id: int) -> Optional[Task]:
+    """Revert a completed task back to pending."""
+    conn.execute(
+        "UPDATE tasks SET status = ?, completed_at = NULL WHERE id = ?",
+        (TaskStatus.PENDING.value, task_id),
+    )
+    conn.commit()
+    return get_task(conn, task_id)
+
+
 def get_subtasks(conn: sqlite3.Connection, parent_id: int) -> list[Task]:
     """Get all sub-tasks of a parent task."""
     return list_tasks(conn, parent_id=parent_id)
@@ -165,6 +173,7 @@ def get_subtasks(conn: sqlite3.Connection, parent_id: int) -> list[Task]:
 # ---------------------------------------------------------------------------
 # Focus sessions
 # ---------------------------------------------------------------------------
+
 
 def _row_to_session(row: sqlite3.Row) -> FocusSession:
     """Convert a database row to a FocusSession model."""
@@ -203,6 +212,7 @@ def log_focus_session(
 # ---------------------------------------------------------------------------
 # Daily log & status
 # ---------------------------------------------------------------------------
+
 
 def get_daily_log(conn: sqlite3.Connection, for_date: date) -> DailyLog:
     """Get the daily log for a specific date, returning zeros if none exists."""
@@ -259,10 +269,18 @@ def save_assessment(
     cur = conn.execute(
         "INSERT INTO assessments (type, score, max_score, domain_scores, taken_at) "
         "VALUES (?, ?, ?, ?, ?)",
-        (result_in.assessment_type.value, result_in.score, result_in.max_score, domain_json, now),
+        (
+            result_in.assessment_type.value,
+            result_in.score,
+            result_in.max_score,
+            domain_json,
+            now,
+        ),
     )
     conn.commit()
-    row = conn.execute("SELECT * FROM assessments WHERE id = ?", (cur.lastrowid,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM assessments WHERE id = ?", (cur.lastrowid,)
+    ).fetchone()
     return _row_to_assessment(row)
 
 
