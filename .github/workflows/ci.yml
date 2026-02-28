@@ -191,10 +191,14 @@ jobs:
           # Override build_dir for CI (no USB stick)
           sed -i 's|^build_dir.*|build_dir = /tmp/buildozer-build|' buildozer.spec
 
-          # Pre-install Cython into the directory p4a will use as PYTHONPATH
-          # for hostpython3.  p4a sets PYTHONNOUSERSITE=1 and overrides
-          # PYTHONPATH to *only* this directory, so system-installed Cython
-          # is invisible during the numpy build.
+          # Two-phase build: the first attempt extracts and builds
+          # hostpython3 properly, but numpy will fail because p4a sets
+          # PYTHONNOUSERSITE=1 and overrides PYTHONPATH -- making the
+          # system-installed Cython invisible.  After that first run
+          # creates the real directory tree, we inject Cython into
+          # hostpython3's site-packages and retry.
+          buildozer android debug 2>&1 || true
+
           HP_SITE="/tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/build/other_builds/hostpython3/desktop/hostpython3/native-build/Lib/site-packages"
           mkdir -p "$HP_SITE"
           pip install --target="$HP_SITE" Cython==0.29.36
