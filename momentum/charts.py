@@ -185,6 +185,30 @@ def bdefs_timeseries(
     )
     ax.fill_between(dates, scores, alpha=0.15, color=_ACCENT)
 
+    # Line of best fit (linear regression)
+    if len(dates) >= 2:
+        import matplotlib.dates as mdates
+
+        x_num = mdates.date2num(dates)
+        coeffs = np.polyfit(x_num, scores, 1)
+        trend_y = np.polyval(coeffs, x_num)
+        ax.plot(
+            dates,
+            trend_y,
+            color="#b5b5b5",
+            linewidth=1.2,
+            linestyle="--",
+            alpha=0.7,
+            label="Trend",
+        )
+        ax.legend(
+            loc="upper right",
+            fontsize=8,
+            facecolor=_BG,
+            edgecolor=_GRID,
+            labelcolor=_FG,
+        )
+
     ax.set_ylim(0, max_score)
     ax.set_ylabel("Total score", color=_FG, fontsize=9)
     ax.set_title(title, color=_FG, fontsize=11, fontweight="bold")

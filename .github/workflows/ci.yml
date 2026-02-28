@@ -36,7 +36,19 @@ jobs:
   build:
     needs: test
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: momentum-linux
+            separator: ":"
+          - os: macos-latest
+            artifact: momentum-macos
+            separator: ":"
+          - os: windows-latest
+            artifact: momentum-windows
+            separator: ";"
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,23 +65,120 @@ jobs:
         run: poetry install --with dev
 
       - name: Build standalone binary
+        shell: bash
         run: |
           poetry run pyinstaller \
             --onefile \
             --name momentum \
-            --add-data "ENCOURAGEMENTS.md:." \
-            --add-data "IMAGES.md:." \
+            --add-data "ENCOURAGEMENTS.md${{ matrix.separator }}." \
+            --add-data "IMAGES.md${{ matrix.separator }}." \
             --hidden-import momentum \
             --hidden-import PIL._tkinter_finder \
             --clean \
             momentum/cli.py
 
       - name: Verify binary runs
-        run: ./dist/momentum --help
+        shell: bash
+        run: |
+          if [ -f dist/momentum.exe ]; then
+            dist/momentum.exe --help
+          else
+            dist/momentum --help
+          fi
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          if [ -f dist/momentum.exe ]; then
+            cp dist/momentum.exe "artifacts/${{ matrix.artifact }}.exe"
+          else
+            cp dist/momentum "artifacts/${{ matrix.artifact }}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: artifacts/
+
+  build-apk:
+    needs: test
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libffi-dev libssl-dev \
+            autoconf automake libtool pkg-config zlib1g-dev \
+            unzip zip
+
+      - name: Install buildozer and Cython
+        run: |
+          pip install buildozer cython==0.29.36
+
+      - name: Create mobile symlinks
+        run: |
+          cd mobile
+          ln -sf ../momentum momentum
+          ln -sf ../ENCOURAGEMENTS.md ENCOURAGEMENTS.md
+          ln -sf ../SCIENCE.md SCIENCE.md
+          ln -sf ../README.md README.md
+          ln -sf ../IMAGES.md IMAGES.md
+
+      - name: Build APK
+        run: |
+          cd mobile
+          # Override build_dir for CI (no USB stick)
+          sed -i 's|^build_dir.*|build_dir = /tmp/buildozer-build|' buildozer.spec
+          buildozer android debug
+
+      - name: Prepare APK artifact
+        run: |
+          mkdir -p artifacts
+          cp mobile/bin/*.apk artifacts/momentum-android.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: momentum-android
+          path: artifacts/momentum-android.apk
+
+  release:
+    needs: [build, build-apk]
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: pip install poetry
 
       - name: Get version
         id: version
         run: echo "version=$(poetry version -s)" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -79,7 +188,12 @@ jobs:
           body: |
             Automated build from commit ${{ github.sha }}.
 
-            Download the `momentum` binary below and run it directly -- no Python required.
-          files: dist/momentum
+            Download the binary for your platform and run it directly -- no Python required.
+
+            - **Linux**: `momentum-linux`
+            - **macOS**: `momentum-macos`
+            - **Windows**: `momentum-windows.exe`
+            - **Android**: `momentum-android.apk`
+          files: release-assets/*
           draft: false
           prerelease: false

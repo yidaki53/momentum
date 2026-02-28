@@ -319,11 +319,13 @@ def run_test(
 
     if stroop:
         # --- Stroop test ---
+        from momentum.assessments import STROOP_INSTRUCTIONS
+
         display.print_info("Stroop Colour-Word Test")
-        display.print_info(
-            "You will see a colour WORD displayed in a different colour. "
-            "Type the COLOUR of the text (not the word itself)."
-        )
+        display.console.print()
+        for paragraph in STROOP_INSTRUCTIONS.split("\n\n"):
+            display.print_info(paragraph)
+        display.console.print()
         typer.confirm("Ready?", default=True, abort=True)
 
         trials = generate_stroop_trials()
@@ -364,7 +366,13 @@ def run_test(
         )
     else:
         # --- BDEFS self-report ---
+        from momentum.assessments import BDEFS_INSTRUCTIONS
+
         display.print_info("BDEFS-style Executive Function Self-Assessment")
+        display.console.print()
+        for paragraph in BDEFS_INSTRUCTIONS.split("\n\n"):
+            display.print_info(paragraph)
+        display.console.print()
         display.print_info("Rate each statement:")
         for label in BDEFS_SCALE_LABELS:
             display.print_info(f"  {label}")

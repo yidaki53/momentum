@@ -3,12 +3,37 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 from typing import Optional
 
 from momentum.models import AppConfig
 
-_CONFIG_DIR = Path.home() / ".config" / "momentum"
+
+def _is_android() -> bool:
+    """Return True when running inside an Android (p4a) environment."""
+    return "ANDROID_ARGUMENT" in os.environ or hasattr(sys, "getandroidapilevel")
+
+
+def _android_data_dir() -> Path:
+    """Return the writable app-private directory on Android."""
+    # p4a sets ANDROID_PRIVATE / ANDROID_APP_PATH; fall back to cwd
+    for var in ("ANDROID_PRIVATE", "ANDROID_APP_PATH"):
+        val = os.environ.get(var)
+        if val:
+            return Path(val)
+    return Path(".")  # last resort
+
+
+if _is_android():
+    _DATA_DIR = _android_data_dir() / "data"
+    _CONFIG_DIR = _DATA_DIR / "config"
+    _DB_DIR = _DATA_DIR / "db"
+else:
+    _CONFIG_DIR = Path.home() / ".config" / "momentum"
+    _DB_DIR = Path.home() / ".local" / "share" / "momentum"
+
 _CONFIG_FILE = _CONFIG_DIR / "config.json"
 
 # Well-known cloud sync directories (checked in order)
@@ -54,9 +79,8 @@ def get_db_path() -> Path:
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
     # Default
-    default_dir = Path.home() / ".local" / "share" / "momentum"
-    default_dir.mkdir(parents=True, exist_ok=True)
-    return default_dir / "momentum.db"
+    _DB_DIR.mkdir(parents=True, exist_ok=True)
+    return _DB_DIR / "momentum.db"
 
 
 def set_db_path(path: str) -> AppConfig:

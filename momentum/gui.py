@@ -19,8 +19,11 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 from momentum import config as cfg
 from momentum import db
 from momentum.assessments import (
+    BDEFS_INSTRUCTIONS,
     BDEFS_QUESTIONS,
     BDEFS_SCALE,
+    RESULTS_GUIDE,
+    STROOP_INSTRUCTIONS,
     StroopResult,
     generate_stroop_trials,
     interpret_bdefs,
@@ -915,6 +918,14 @@ class MomentumApp:
 
     def _on_bdefs(self) -> None:
         """Run the BDEFS self-assessment in a dialog."""
+        # Show instruction page first
+        if not messagebox.askokcancel(
+            "BDEFS Self-Assessment",
+            BDEFS_INSTRUCTIONS + "\n\nPress OK to begin.",
+            parent=self.root,
+        ):
+            return
+
         win = tk.Toplevel(self.root)
         win.title("Executive Function Self-Assessment")
         win.geometry("560x520")
@@ -995,6 +1006,14 @@ class MomentumApp:
 
     def _on_stroop(self) -> None:
         """Run the Stroop colour-word test in a dialog."""
+        # Show instruction page first
+        if not messagebox.askokcancel(
+            "Stroop Colour-Word Test",
+            STROOP_INSTRUCTIONS + "\n\nPress OK to begin.",
+            parent=self.root,
+        ):
+            return
+
         import time as _time
 
         trials = generate_stroop_trials()
@@ -1181,6 +1200,15 @@ class MomentumApp:
         bdefs_results = [
             r for r in results if r.assessment_type == AssessmentType.BDEFS
         ]
+
+        # Guide text
+        guide_label = ttk.Label(
+            content,
+            text=RESULTS_GUIDE,
+            style="Nudge.TLabel",
+            wraplength=620,
+        )
+        guide_label.pack(padx=16, pady=(8, 4), anchor=tk.W)
 
         if not results:
             ttk.Label(content, text="No assessment results yet.", style="TLabel").pack(

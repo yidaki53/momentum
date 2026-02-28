@@ -82,7 +82,24 @@ momentum config --show
 | `nudge` | Get a gentle encouragement message. |
 | `gui` | Open the GUI dashboard. |
 | `config` | Configure database location / cloud sync. |
+| `test` | Take a self-assessment (BDEFS or `--stroop`). |
+| `test-results` | View past assessment results. |
 | `autostart` | Manage autostart on login (`--enable`, `--disable`, `--status`). |
+
+## Self-Assessment Tests
+
+Momentum includes two evidence-based self-assessment tools:
+
+- **BDEFS** -- A brief executive-function questionnaire covering time management, organisation, self-restraint, self-motivation, and emotion regulation. Results are visualised as a radar chart and tracked over time with a trend line.
+- **Stroop** -- A timed colour-word test measuring inhibitory control. Accuracy and response times are recorded.
+
+Both tests include instruction pages before starting. Past results can be viewed with charts and interpretations.
+
+```bash
+momentum test              # BDEFS self-assessment
+momentum test --stroop     # Stroop colour-word test
+momentum test-results      # View past results
+```
 
 ## GUI
 
@@ -92,7 +109,7 @@ momentum config --show
 - Focus timer with start/stop
 - Status summary (today's progress, streak)
 - Encouragement button
-- **Menu bar**: Menu (Settings, Quit) and Help (How to Use, About)
+- **Menu bar**: Menu (Settings, Quit), Help (How to Use, The Science, About), and Tests (BDEFS, Stroop, View Results)
 
 The GUI shares the same database as the CLI -- you can use both interchangeably.
 
@@ -124,12 +141,18 @@ By default, data is stored in `~/.local/share/momentum/momentum.db` (SQLite). Th
 
 ## Mobile (Android)
 
-A Kivy-based mobile app is in `mobile/`. To build an APK:
+A full-featured Kivy-based Android app is in `mobile/`. It mirrors all desktop GUI features: task management, focus timer, BDEFS and Stroop assessments with charts, settings, and help pages.
+
+Pre-built APKs are attached to [GitHub releases](../../releases). To install, download `momentum-android.apk` and sideload it.
+
+To build locally:
 
 ```bash
 make mobile-deps    # install buildozer + kivy
-make mobile-apk     # compile APK (requires Android SDK/NDK)
+make mobile-apk     # compile APK (requires Android SDK/NDK + Java 17)
 ```
+
+The APK is also built automatically by GitHub Actions CI on every push to master.
 
 See the [Buildozer docs](https://buildozer.readthedocs.io/en/latest/installation.html) for SDK/NDK setup.
 
@@ -164,4 +187,5 @@ make test
 - `encouragement.py` -- Curated CBT/self-compassion message bank
 - `display.py` -- Rich terminal formatting
 - `autostart.py` -- Systemd/XDG autostart management
+- `charts.py` -- Matplotlib radar and timeseries charts with trend lines
 - `mobile/main.py` -- Kivy mobile app (Android)

@@ -167,6 +167,41 @@ def score_stroop(result: StroopResult) -> AssessmentResultCreate:
     )
 
 
+# ---------------------------------------------------------------------------
+# Instruction / guide text (shared across CLI, GUI, and mobile)
+# ---------------------------------------------------------------------------
+
+BDEFS_INSTRUCTIONS = (
+    "This is a brief executive-function self-assessment based on the "
+    "Barkley Deficits in Executive Functioning Scale (BDEFS).\n\n"
+    "It covers five domains: Time Management, Organisation & Problem-Solving, "
+    "Self-Restraint, Self-Motivation, and Emotion Regulation.\n\n"
+    "For each statement, rate how often it applies to you:\n"
+    "  1 = Never   2 = Sometimes   3 = Often   4 = Very Often\n\n"
+    "There are 15 questions and it takes about 2-3 minutes. "
+    "Your results are stored locally and never shared."
+)
+
+STROOP_INSTRUCTIONS = (
+    "The Stroop test measures inhibitory control -- your ability to override "
+    "an automatic response.\n\n"
+    "You will see a colour word (e.g. RED) displayed in a different ink colour "
+    "(e.g. blue). Your task is to type the INK COLOUR, not the word itself.\n\n"
+    "There are 10 trials. Try to answer as quickly and accurately as you can.\n\n"
+    "Your accuracy and response time are recorded. Results are stored locally "
+    "and never shared."
+)
+
+RESULTS_GUIDE = (
+    "The radar chart shows your average scores across the five BDEFS domains. "
+    "Higher values indicate greater difficulty in that area. "
+    "Grey polygons show individual past assessments; the blue polygon is the mean.\n\n"
+    "The line chart tracks your total BDEFS score over time. "
+    "The dashed trend line shows the overall direction. "
+    "A downward trend suggests improvement."
+)
+
+
 def interpret_stroop(correct: int, trials: int, avg_ms: int) -> str:
     """Return a plain-English interpretation of Stroop performance."""
     pct = correct / trials * 100 if trials else 0
@@ -176,7 +211,9 @@ def interpret_stroop(correct: int, trials: int, avg_ms: int) -> str:
     elif pct >= 70:
         parts.append("Good accuracy -- inhibitory control is adequate.")
     elif pct >= 50:
-        parts.append("Moderate accuracy -- you may benefit from impulse-management strategies.")
+        parts.append(
+            "Moderate accuracy -- you may benefit from impulse-management strategies."
+        )
     else:
         parts.append("Low accuracy -- inhibitory control may be an area to work on.")
 
@@ -185,6 +222,8 @@ def interpret_stroop(correct: int, trials: int, avg_ms: int) -> str:
     elif avg_ms <= 2000:
         parts.append("Your response time is average.")
     else:
-        parts.append("Your response time is on the slower side; take your time and focus on accuracy.")
+        parts.append(
+            "Your response time is on the slower side; take your time and focus on accuracy."
+        )
 
     return " ".join(parts)
