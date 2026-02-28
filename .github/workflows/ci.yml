@@ -86,6 +86,49 @@ jobs:
             dist/momentum --help
           fi
 
+      - name: Build .deb package (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev
+          sudo gem install fpm
+
+          VERSION=$(pip install poetry > /dev/null 2>&1; poetry version -s)
+
+          # Create staging directory
+          mkdir -p deb-staging/usr/local/bin
+          mkdir -p deb-staging/usr/local/share/momentum
+          mkdir -p deb-staging/usr/share/applications
+
+          cp dist/momentum deb-staging/usr/local/bin/momentum
+          chmod 755 deb-staging/usr/local/bin/momentum
+          cp ENCOURAGEMENTS.md deb-staging/usr/local/share/momentum/
+          cp IMAGES.md deb-staging/usr/local/share/momentum/
+
+          cat > deb-staging/usr/share/applications/momentum.desktop <<EOF
+          [Desktop Entry]
+          Name=Momentum
+          Comment=A gentle tool for executive dysfunction support
+          Exec=/usr/local/bin/momentum gui
+          Type=Application
+          Categories=Utility;
+          Terminal=false
+          EOF
+          # Strip leading whitespace from heredoc
+          sed -i 's/^          //' deb-staging/usr/share/applications/momentum.desktop
+
+          fpm -s dir -t deb \
+            -n momentum \
+            -v "$VERSION" \
+            --description "A gentle CLI and GUI tool to help people with executive dysfunction get back on track" \
+            --maintainer "Robin Oberg <robinoberg@live.com>" \
+            --url "https://github.com/yidaki53/momentum" \
+            --license MIT \
+            --depends python3-tk \
+            -C deb-staging \
+            -p "momentum_${VERSION}_amd64.deb" \
+            .
+
       - name: Prepare artifact
         shell: bash
         run: |
@@ -94,6 +137,10 @@ jobs:
             cp dist/momentum.exe "artifacts/${{ matrix.artifact }}.exe"
           else
             cp dist/momentum "artifacts/${{ matrix.artifact }}"
+          fi
+          # Include .deb if it was built
+          if ls momentum_*.deb 1>/dev/null 2>&1; then
+            cp momentum_*.deb artifacts/
           fi
 
       - name: Upload artifact
@@ -190,7 +237,7 @@ jobs:
 
             Download the binary for your platform and run it directly -- no Python required.
 
-            - **Linux**: `momentum-linux`
+            - **Linux**: `momentum-linux` (standalone binary) or `momentum_<version>_amd64.deb` (Debian/Ubuntu package)
             - **macOS**: `momentum-macos`
             - **Windows**: `momentum-windows.exe`
             - **Android**: `momentum-android.apk`

@@ -11,14 +11,21 @@ A gentle CLI and GUI tool to help people with executive dysfunction get back on 
 
 ## Installation
 
+### Debian/Ubuntu (.deb)
+
+Download the `.deb` from the latest [GitHub release](../../releases) and install:
+
 ```bash
-make install
+sudo dpkg -i momentum_*_amd64.deb
 ```
 
-Or manually:
+This installs the `momentum` binary to `/usr/local/bin` and adds a desktop menu entry.
+
+### From source
 
 ```bash
-poetry install
+make install
+# or: poetry install
 ```
 
 ## Quick Start
