@@ -179,11 +179,11 @@ jobs:
       - name: Create mobile symlinks
         run: |
           cd mobile
-          ln -sf ../momentum momentum
-          ln -sf ../ENCOURAGEMENTS.md ENCOURAGEMENTS.md
-          ln -sf ../SCIENCE.md SCIENCE.md
-          ln -sf ../README.md README.md
-          ln -sf ../IMAGES.md IMAGES.md
+          ln -sfn ../momentum momentum
+          ln -sfn ../ENCOURAGEMENTS.md ENCOURAGEMENTS.md
+          ln -sfn ../SCIENCE.md SCIENCE.md
+          ln -sfn ../README.md README.md
+          ln -sfn ../IMAGES.md IMAGES.md
 
       - name: Build APK
         run: |
