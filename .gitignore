@@ -33,5 +33,7 @@ mobile/bin/
 .vscode/
 .idea/
 
-# Warp AI context
+# AI context
 WARP.md
+AGENTS.md
+CLAUDE.md
