@@ -320,6 +320,76 @@ def _row_to_assessment(row: sqlite3.Row) -> AssessmentResult:
 # ---------------------------------------------------------------------------
 
 
+def delete_all_assessments(conn: sqlite3.Connection) -> int:
+    """Delete all assessment results. Returns the number of rows deleted."""
+    cur = conn.execute("DELETE FROM assessments")
+    conn.commit()
+    return cur.rowcount
+
+
+def delete_assessment(conn: sqlite3.Connection, assessment_id: int) -> bool:
+    """Delete a single assessment by ID. Returns True if a row was deleted."""
+    cur = conn.execute("DELETE FROM assessments WHERE id = ?", (assessment_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def delete_all_tasks(conn: sqlite3.Connection) -> int:
+    """Delete all tasks (and sub-tasks) and reset the daily log task counts.
+
+    Returns the number of task rows deleted.
+    """
+    cur = conn.execute("DELETE FROM tasks")
+    conn.execute("DELETE FROM focus_sessions")
+    conn.execute("UPDATE daily_log SET tasks_completed = 0")
+    conn.commit()
+    return cur.rowcount
+
+
+def delete_task(conn: sqlite3.Connection, task_id: int) -> bool:
+    """Delete a single task by ID (cascades to sub-tasks). Returns True if deleted."""
+    cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def delete_focus_session(conn: sqlite3.Connection, session_id: int) -> bool:
+    """Delete a single focus session by ID. Returns True if deleted."""
+    cur = conn.execute("DELETE FROM focus_sessions WHERE id = ?", (session_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def list_focus_sessions(
+    conn: sqlite3.Connection, limit: int = 50
+) -> list[FocusSession]:
+    """List focus sessions, most recent first."""
+    rows = conn.execute(
+        "SELECT * FROM focus_sessions ORDER BY completed_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [_row_to_session(r) for r in rows]
+
+
+def list_all_daily_logs(conn: sqlite3.Connection) -> list[DailyLog]:
+    """List all daily log entries, most recent first."""
+    rows = conn.execute("SELECT * FROM daily_log ORDER BY date DESC").fetchall()
+    return [
+        DailyLog(
+            date=date.fromisoformat(r["date"]),
+            tasks_completed=r["tasks_completed"],
+            focus_minutes=r["focus_minutes"],
+        )
+        for r in rows
+    ]
+
+
+def delete_daily_log(conn: sqlite3.Connection, log_date: str) -> bool:
+    """Delete a daily log entry by date string (YYYY-MM-DD)."""
+    cur = conn.execute("DELETE FROM daily_log WHERE date = ?", (log_date,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def get_status(conn: sqlite3.Connection) -> StatusSummary:
     """Build the full status summary."""
     today_log = get_daily_log(conn, date.today())

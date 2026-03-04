@@ -12,6 +12,7 @@ import logging
 import os
 import random
 import re
+import ssl
 import sys
 import threading
 import time as _time
@@ -25,9 +26,11 @@ if str(_project_root) not in sys.path:
 
 from kivy.app import App
 from kivy.clock import Clock
+from kivy.core.image import Image as CoreImage
 from kivy.lang import Builder
 from kivy.metrics import dp, sp
 from kivy.properties import (
+    BooleanProperty,
     ListProperty,
     NumericProperty,
     ObjectProperty,
@@ -35,27 +38,26 @@ from kivy.properties import (
 )
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
+from kivy.uix.image import Image as KivyImage
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
-from kivy.uix.screenmanager import Screen, ScreenManager, SlideTransition
+from kivy.uix.screenmanager import NoTransition, Screen, ScreenManager
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 from kivy.uix.togglebutton import ToggleButton
-from kivy.core.image import Image as CoreImage
-from kivy.uix.image import Image as KivyImage
 from kivy.uix.widget import Widget
-
-from PIL import Image as PILImage, ImageDraw, ImageFont
+from PIL import Image as PILImage
+from PIL import ImageDraw, ImageFont
 
 from momentum import config as cfg
 from momentum import db
 from momentum.assessments import (
     BDEFS_INSTRUCTIONS,
     BDEFS_QUESTIONS,
-    BDEFS_SCALE,
     RESULTS_GUIDE,
     STROOP_INSTRUCTIONS,
     StroopResult,
+    domain_advice,
     generate_stroop_trials,
     interpret_bdefs,
     interpret_stroop,
@@ -65,7 +67,6 @@ from momentum.assessments import (
 from momentum.charts import bdefs_radar, bdefs_timeseries
 from momentum.encouragement import get_break_message, get_nudge
 from momentum.models import (
-    AssessmentResult,
     AssessmentType,
     FocusSessionCreate,
     TaskCreate,
@@ -156,6 +157,36 @@ def _clean_inline(text: str) -> str:
 
 def _render_markdown(container, md_text):
     """Render markdown into a Kivy BoxLayout, matching the desktop GUI."""
+    import webbrowser as _webbrowser
+
+    def _add_line_with_links(text, **kw):
+        """Add a label, but if the text contains markdown links, make them tappable."""
+        link_pattern = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+        matches = list(link_pattern.finditer(text))
+        if not matches:
+            container.add_widget(_make_label(_clean_inline(text), **kw))
+            return
+        pos = 0
+        for m in matches:
+            if m.start() > pos:
+                container.add_widget(_make_label(
+                    _clean_inline(text[pos:m.start()]), **kw
+                ))
+            link_text = m.group(1)
+            link_url = m.group(2)
+            btn = Button(
+                text=link_text, font_size=kw.get("font_size", sp(12)),
+                size_hint_y=None, height=dp(36),
+                background_color=(0.32, 0.51, 0.70, 1),
+                halign="left", valign="middle",
+            )
+            btn.bind(width=lambda i, w: setattr(i, "text_size", (w - dp(8), None)))
+            btn.bind(on_release=lambda _, url=link_url: _webbrowser.open(url))
+            container.add_widget(btn)
+            pos = m.end()
+        if pos < len(text):
+            container.add_widget(_make_label(_clean_inline(text[pos:]), **kw))
+
     in_code = False
     for line in md_text.splitlines():
         s = line.strip()
@@ -199,15 +230,12 @@ def _render_markdown(container, md_text):
                 f"  {num}. {clean}", font_size=sp(12), color=_MUTED,
             ))
         elif s.startswith("- ") or s.startswith("* "):
-            clean = _clean_inline(s[2:])
-            container.add_widget(_make_label(
-                "  -- " + clean, font_size=sp(12), color=_MUTED,
-            ))
+            _add_line_with_links(s[2:], font_size=sp(12), color=_MUTED)
         elif re.match(r"^[-*]{3,}$", s):
             # Horizontal rule
             container.add_widget(Widget(size_hint_y=None, height=dp(12)))
         else:
-            container.add_widget(_make_label(_clean_inline(s)))
+            _add_line_with_links(s)
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +312,7 @@ KV = """
     height: dp(48)
     canvas.before:
         Color:
-            rgba: get_color_from_hex('#333333')
+            rgba: root.bg_color
         Rectangle:
             pos: self.pos
             size: self.size
@@ -302,9 +330,9 @@ KV = """
         color: get_color_from_hex('#e0e0e0')
         font_size: sp(14)
     Button:
-        text: 'Done'
+        text: root.btn_text
         size_hint_x: 0.2
-        background_color: get_color_from_hex('#4a7a4a')
+        background_color: root.btn_color
         on_release: root.on_complete()
 
 # ---- Home screen ----
@@ -325,7 +353,7 @@ KV = """
         BoxLayout:
             id: banner_box
             size_hint_y: None
-            height: dp(80)
+            height: dp(100)
             padding: [dp(8), dp(4)]
 
         Label:
@@ -370,6 +398,10 @@ KV = """
                 text: 'Break down'
                 background_color: get_color_from_hex('#5a8a5a')
                 on_release: root.show_breakdown_dialog()
+            Button:
+                text: 'Completed'
+                background_color: get_color_from_hex('#5a5a7a')
+                on_release: root.toggle_show_completed()
 
         Label:
             text: 'Timer'
@@ -622,8 +654,50 @@ class Toolbar(BoxLayout):
 
     def go(self, screen_name, direction):
         sm = App.get_running_app().root
-        sm.transition = SlideTransition(direction=direction)
+        sm.transition = NoTransition()
         sm.current = screen_name
+
+    def on_parent(self, *args):
+        """Bind to owning screen's on_enter so we highlight on every visit."""
+        def _bind(dt):
+            screen = self._find_screen()
+            if screen:
+                screen.bind(on_enter=lambda *_a: self._update_highlight())
+            self._update_highlight()
+        Clock.schedule_once(_bind, 0)
+
+    def _find_screen(self):
+        w = self.parent
+        while w is not None:
+            if isinstance(w, Screen):
+                return w
+            w = w.parent
+        return None
+
+    def _update_highlight(self):
+        sm = App.get_running_app().root
+        if sm is None:
+            return
+        current = sm.current
+        _ACCENT_CLR = [0.416, 0.624, 0.710, 1]
+        _DARK_CLR = [0.227, 0.227, 0.227, 1]
+        screen_map = {
+            "home": 0,
+            "settings": 1,
+        }
+        help_screens = {"help_menu", "howto", "science", "about"}
+        test_screens = {"tests_menu", "bdefs", "stroop", "results"}
+        for i, child in enumerate(self.children[::-1]):
+            if not hasattr(child, "background_color"):
+                continue
+            is_active = False
+            if current in screen_map and screen_map[current] == i:
+                is_active = True
+            elif current in help_screens and i == 2:
+                is_active = True
+            elif current in test_screens and i == 3:
+                is_active = True
+            child.background_color = _ACCENT_CLR if is_active else _DARK_CLR
 
 
 class TaskRow(BoxLayout):
@@ -632,11 +706,23 @@ class TaskRow(BoxLayout):
     task_id = NumericProperty(0)
     icon = StringProperty("[ ]")
     title_text = StringProperty("")
+    btn_text = StringProperty("Done")
+    btn_color = ListProperty([0.29, 0.478, 0.29, 1])
+    bg_color = ListProperty([0.2, 0.2, 0.2, 1])
+    is_completed = BooleanProperty(False)
     home_ref = ObjectProperty(None, allownone=True)
 
     def on_complete(self):
         if self.home_ref:
-            self.home_ref.complete_task(self.task_id)
+            if self.is_completed:
+                self.home_ref.uncomplete_task(self.task_id)
+            else:
+                self.home_ref.complete_task(self.task_id)
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos) and self.home_ref and not self.is_completed:
+            self.home_ref.select_task(self.task_id)
+        return super().on_touch_down(touch)
 
 
 # ---------------------------------------------------------------------------
@@ -671,9 +757,46 @@ class HomeScreen(Screen):
         Clock.schedule_once(lambda dt: self.refresh_all(), 0)
         if not self._banner_loaded:
             self._banner_loaded = True
+            # Show fallback banner immediately so the user always sees it
+            fallback = self._make_fallback_banner()
+            self._set_banner(fallback)
+            # Then try to fetch a real image in the background
             threading.Thread(target=self._fetch_banner, daemon=True).start()
 
     # -- Banner image --
+
+    @staticmethod
+    def _find_font(size: int = 32):
+        """Try multiple font paths (Android, Linux, macOS) before falling back."""
+        candidates = [
+            # Android system fonts
+            "/system/fonts/Roboto-Bold.ttf",
+            "/system/fonts/DroidSans-Bold.ttf",
+            "/system/fonts/Roboto-Regular.ttf",
+            "/system/fonts/DroidSans.ttf",
+            # Linux desktop
+            "DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            # macOS
+            "/System/Library/Fonts/Helvetica.ttc",
+        ]
+        for path in candidates:
+            try:
+                return ImageFont.truetype(path, size)
+            except (OSError, IOError):
+                continue
+        # Pillow >= 10.1 supports size param on load_default
+        try:
+            return ImageFont.load_default(size=size)
+        except TypeError:
+            return ImageFont.load_default()
+
+    @classmethod
+    def _make_fallback_banner(cls):
+        """Create a solid-colour banner with 'Momentum' text."""
+        img = PILImage.new("RGB", (500, 120), (58, 90, 106))
+        cls._draw_title(img)
+        return img
 
     def _fetch_banner(self):
         """Download a random peaceful photo in a background thread."""
@@ -691,32 +814,31 @@ class HomeScreen(Screen):
             )
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": "Momentum/0.1"})
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    data = resp.read()
+                # Try with default SSL first, fall back to unverified context
+                # (Android may lack system CA certs for urllib)
+                try:
+                    resp = urllib.request.urlopen(req, timeout=8)
+                except (urllib.error.URLError, ssl.SSLError):
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    resp = urllib.request.urlopen(req, timeout=8, context=ctx)
+                data = resp.read()
+                resp.close()
                 pil_img = PILImage.open(io.BytesIO(data))
                 pil_img = pil_img.resize((500, 120), PILImage.LANCZOS)
                 self._draw_title(pil_img)
                 Clock.schedule_once(lambda dt, img=pil_img: self._set_banner(img), 0)
                 return
             except Exception:
-                log.debug("Banner fetch failed for %s", photo_id, exc_info=True)
-        # Fallback: solid colour banner with title
-        log.warning("Could not fetch any banner image; using fallback.")
-        fallback = PILImage.new("RGB", (500, 120), (42, 62, 71))
-        self._draw_title(fallback)
-        Clock.schedule_once(lambda dt, img=fallback: self._set_banner(img), 0)
+                log.warning("Banner fetch failed for %s", photo_id, exc_info=True)
+        log.warning("Could not fetch any banner image; fallback already shown.")
 
-    @staticmethod
-    def _draw_title(image):
+    @classmethod
+    def _draw_title(cls, image):
         """Draw 'Momentum' centred on the banner with a drop shadow."""
         draw = ImageDraw.Draw(image)
-        try:
-            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 32)
-        except OSError:
-            try:
-                font = ImageFont.load_default(size=32)
-            except TypeError:
-                font = ImageFont.load_default()
+        font = cls._find_font(32)
         text = "Momentum"
         bbox = draw.textbbox((0, 0), text, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -743,9 +865,17 @@ class HomeScreen(Screen):
     def refresh_tasks(self):
         task_list = self.ids.task_list
         task_list.clear_widgets()
+        prev_selected = self._selected_task_id
         self._selected_task_id = None
+
+        _NORMAL_BG = [0.2, 0.2, 0.2, 1]
+        _SEL_BG = [0.25, 0.25, 0.38, 1]
+        _GREEN = [0.29, 0.478, 0.29, 1]
+        _PURPLE = [0.35, 0.35, 0.48, 1]
+
         active = db.list_tasks(self.conn, status=TaskStatus.ACTIVE)
         pending = db.list_tasks(self.conn, status=TaskStatus.PENDING)
+        rows: list[TaskRow] = []
         for task in active + pending:
             row = TaskRow()
             row.task_id = task.id
@@ -753,9 +883,39 @@ class HomeScreen(Screen):
             prefix = "  " if task.is_subtask else ""
             row.title_text = f"{prefix}#{task.id} {task.title}"
             row.home_ref = self
+            row.btn_text = "Done"
+            row.btn_color = _GREEN
+            row.bg_color = _NORMAL_BG
             task_list.add_widget(row)
-            if self._selected_task_id is None:
-                self._selected_task_id = task.id
+            rows.append(row)
+
+        # Restore previous selection, or fall back to first task
+        sel_row = None
+        if prev_selected is not None:
+            for r in rows:
+                if r.task_id == prev_selected:
+                    sel_row = r
+                    break
+        if sel_row is None and rows:
+            sel_row = rows[0]
+        if sel_row:
+            self._selected_task_id = sel_row.task_id
+            sel_row.bg_color = _SEL_BG
+
+        if getattr(self, "_show_completed", False):
+            done = db.list_tasks(self.conn, status=TaskStatus.DONE)
+            for task in done:
+                row = TaskRow()
+                row.task_id = task.id
+                row.icon = "[x]"
+                prefix = "  " if task.is_subtask else ""
+                row.title_text = f"{prefix}#{task.id} {task.title}"
+                row.home_ref = self
+                row.btn_text = "Undo"
+                row.btn_color = _PURPLE
+                row.is_completed = True
+                row.bg_color = _NORMAL_BG
+                task_list.add_widget(row)
 
     def refresh_status(self):
         summary = db.get_status(self.conn)
@@ -822,9 +982,26 @@ class HomeScreen(Screen):
         content.add_widget(btn_row)
         popup.open()
 
+    def toggle_show_completed(self):
+        self._show_completed = not getattr(self, "_show_completed", False)
+        self.refresh_tasks()
+
+    def select_task(self, task_id):
+        """Highlight a task row as selected (for breakdown, timer, etc.)."""
+        self._selected_task_id = task_id
+        _SEL_BG = [0.25, 0.25, 0.38, 1]
+        _NORMAL_BG = [0.2, 0.2, 0.2, 1]
+        for child in self.ids.task_list.children:
+            if isinstance(child, TaskRow) and not child.is_completed:
+                child.bg_color = _SEL_BG if child.task_id == task_id else _NORMAL_BG
+
     def complete_task(self, task_id):
         db.complete_task(self.conn, task_id)
         self.nudge_text = get_nudge()
+        self.refresh_all()
+
+    def uncomplete_task(self, task_id):
+        db.uncomplete_task(self.conn, task_id)
         self.refresh_all()
 
     # -- Timer --
@@ -924,6 +1101,57 @@ class SettingsScreen(ScrollScreen):
         self._db_label = _make_label(db_text, font_size=sp(12), color=_MUTED)
         c.add_widget(self._db_label)
 
+        # -- Data management --
+        c.add_widget(Widget(size_hint_y=None, height=dp(12)))
+        c.add_widget(_make_label("Data Management", font_size=sp(16), bold=True, color=_ACCENT))
+        del_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+
+        def _delete_results(_):
+            home = self.manager.get_screen("home")
+            count = len(db.list_assessments(home.conn, limit=9999))
+            if count == 0:
+                self._show_msg("No Data", "No assessment results.")
+                return
+            db.delete_all_assessments(home.conn)
+            self._show_msg("Deleted", f"Deleted {count} assessment result(s).")
+
+        def _delete_tasks(_):
+            home = self.manager.get_screen("home")
+            count = len(db.list_tasks(home.conn))
+            if count == 0:
+                self._show_msg("No Data", "No tasks.")
+                return
+            db.delete_all_tasks(home.conn)
+            self._show_msg("Deleted", f"Deleted {count} task(s) and sessions.")
+
+        btn_del_tasks = Button(text="Delete all tasks", font_size=sp(11),
+                               background_color=(0.55, 0.35, 0.35, 1))
+        btn_del_tasks.bind(on_release=_delete_tasks)
+        del_row.add_widget(btn_del_tasks)
+        btn_del_results = Button(text="Delete test results", font_size=sp(11),
+                                 background_color=(0.55, 0.35, 0.35, 1))
+        btn_del_results.bind(on_release=_delete_results)
+        del_row.add_widget(btn_del_results)
+        c.add_widget(del_row)
+
+        # -- Browse & delete individual entries --
+        c.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        c.add_widget(_make_label(
+            "Browse & Delete Entries", font_size=sp(16), bold=True, color=_ACCENT,
+        ))
+        browse_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        for tbl_label, tbl_key in [("Tasks", "tasks"), ("Tests", "assessments")]:
+            btn = Button(text=f"Browse {tbl_label}", font_size=sp(11),
+                         background_color=(0.25, 0.25, 0.25, 1))
+            btn.bind(on_release=lambda _, k=tbl_key: self._browse(k))
+            browse_row.add_widget(btn)
+        c.add_widget(browse_row)
+        self._browse_box = BoxLayout(
+            orientation="vertical", size_hint_y=None, spacing=dp(2),
+        )
+        self._browse_box.bind(minimum_height=self._browse_box.setter("height"))
+        c.add_widget(self._browse_box)
+
         # -- Cloud sync --
         c.add_widget(Widget(size_hint_y=None, height=dp(8)))
         c.add_widget(_make_label("Sync via Cloud", font_size=sp(16), bold=True, color=_ACCENT))
@@ -991,6 +1219,61 @@ class SettingsScreen(ScrollScreen):
             home.conn.close()
         home.conn = db.get_connection()
 
+    def _browse(self, table):
+        """Populate the browse box with entries from *table*."""
+        box = self._browse_box
+        box.clear_widgets()
+        home = self.manager.get_screen("home")
+        if table == "tasks":
+            tasks = db.list_tasks(home.conn)
+            if not tasks:
+                box.add_widget(_make_label("  No tasks.", color=_MUTED))
+                return
+            for t in tasks:
+                row = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(4))
+                row.add_widget(_make_label(
+                    f"#{t.id} [{t.status.value}] {t.title}",
+                    font_size=sp(11), color=_TEXT,
+                ))
+                del_btn = Button(
+                    text="Del", size_hint_x=None, width=dp(50),
+                    font_size=sp(10), background_color=(0.55, 0.35, 0.35, 1),
+                )
+                del_btn.bind(
+                    on_release=lambda _, tid=t.id: self._delete_entry("tasks", tid)
+                )
+                row.add_widget(del_btn)
+                box.add_widget(row)
+        elif table == "assessments":
+            results = db.list_assessments(home.conn, limit=50)
+            if not results:
+                box.add_widget(_make_label("  No assessments.", color=_MUTED))
+                return
+            for r in results:
+                taken = r.taken_at.strftime("%Y-%m-%d %H:%M")
+                row = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(4))
+                row.add_widget(_make_label(
+                    f"#{r.id} {r.assessment_type.value} {r.score}/{r.max_score} ({taken})",
+                    font_size=sp(11), color=_TEXT,
+                ))
+                del_btn = Button(
+                    text="Del", size_hint_x=None, width=dp(50),
+                    font_size=sp(10), background_color=(0.55, 0.35, 0.35, 1),
+                )
+                del_btn.bind(
+                    on_release=lambda _, rid=r.id: self._delete_entry("assessments", rid)
+                )
+                row.add_widget(del_btn)
+                box.add_widget(row)
+
+    def _delete_entry(self, table, entry_id):
+        home = self.manager.get_screen("home")
+        if table == "tasks":
+            db.delete_task(home.conn, entry_id)
+        elif table == "assessments":
+            db.delete_assessment(home.conn, entry_id)
+        self._browse(table)
+
     @staticmethod
     def _show_msg(title, text):
         content = BoxLayout(orientation="vertical", padding=10, spacing=10)
@@ -1056,8 +1339,25 @@ class AboutScreen(ScrollScreen):
             "please reach out to a healthcare provider."
         ))
         c.add_widget(Widget(size_hint_y=None, height=dp(20)))
-        c.add_widget(_make_label("Author: Robin Oberg", color=_MUTED))
+        c.add_widget(_make_label(
+            "Created by Robin \u00d6berg", font_size=sp(15), bold=True, color=_ACCENT,
+        ))
+        c.add_widget(_make_label(
+            "Data Scientist, MSc Social Anthropology, "
+            "MSc Applied Cultural Analysis.", color=_MUTED,
+        ))
         c.add_widget(_make_label("robinoberg@live.com", color=_MUTED, font_size=sp(12)))
+        c.add_widget(Widget(size_hint_y=None, height=dp(16)))
+        c.add_widget(_make_label(
+            "Copyright \u00a9 2026 Robin \u00d6berg.", color=_MUTED,
+        ))
+        c.add_widget(_make_label(
+            "Licensed under the MIT License.", color=_MUTED,
+        ))
+        c.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        c.add_widget(_make_label(
+            "https://github.com/yidaki53/momentum", color=_MUTED, font_size=sp(12),
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -1069,15 +1369,15 @@ class HelpMenuScreen(Screen):
     """Sub-menu: How to Use, The Science, About."""
 
     def go_howto(self):
-        self.manager.transition = SlideTransition(direction="left")
+        self.manager.transition = NoTransition()
         self.manager.current = "howto"
 
     def go_science(self):
-        self.manager.transition = SlideTransition(direction="left")
+        self.manager.transition = NoTransition()
         self.manager.current = "science"
 
     def go_about(self):
-        self.manager.transition = SlideTransition(direction="left")
+        self.manager.transition = NoTransition()
         self.manager.current = "about"
 
 
@@ -1090,15 +1390,15 @@ class TestsMenuScreen(Screen):
     """Sub-menu: BDEFS, Stroop, View Results."""
 
     def go_bdefs(self):
-        self.manager.transition = SlideTransition(direction="left")
+        self.manager.transition = NoTransition()
         self.manager.current = "bdefs"
 
     def go_stroop(self):
-        self.manager.transition = SlideTransition(direction="left")
+        self.manager.transition = NoTransition()
         self.manager.current = "stroop"
 
     def go_results(self):
-        self.manager.transition = SlideTransition(direction="left")
+        self.manager.transition = NoTransition()
         self.manager.current = "results"
 
 
@@ -1193,15 +1493,30 @@ class BdefsScreen(Screen):
             msg += f"{d}: {s}/{n_qs * 4}\n"
         msg += f"\n{interpret_bdefs(saved.score, saved.max_score)}"
 
+        scroll = ScrollView(do_scroll_x=False)
+        inner = BoxLayout(orientation="vertical", spacing=6, padding=10,
+                          size_hint_y=None)
+        inner.bind(minimum_height=inner.setter("height"))
+        inner.add_widget(_make_label(msg, font_size=sp(13)))
+        inner.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        inner.add_widget(_make_label(
+            "Domain Advice", font_size=sp(15), bold=True, color=_ACCENT,
+        ))
+        for d, s in saved.domain_scores.items():
+            n_qs = len(BDEFS_QUESTIONS[d])
+            advice = domain_advice(d, s, n_qs * 4)
+            inner.add_widget(_make_label(d, font_size=sp(13), bold=True, color=_ACCENT))
+            inner.add_widget(_make_label(advice, font_size=sp(11), color=_MUTED))
+        scroll.add_widget(inner)
         content = BoxLayout(orientation="vertical", padding=10, spacing=10)
-        content.add_widget(_make_label(msg, font_size=sp(13)))
+        content.add_widget(scroll)
         close = Button(text="Close", size_hint_y=None, height=dp(44))
-        popup = Popup(title="Assessment Result", content=content, size_hint=(0.9, 0.65))
+        popup = Popup(title="Assessment Result", content=content, size_hint=(0.9, 0.75))
         close.bind(on_release=lambda _: popup.dismiss())
         content.add_widget(close)
         popup.open()
 
-        self.manager.transition = SlideTransition(direction="right")
+        self.manager.transition = NoTransition()
         self.manager.current = "tests_menu"
 
 
@@ -1311,7 +1626,7 @@ class StroopScreen(Screen):
 
         def _close(_):
             popup.dismiss()
-            self.manager.transition = SlideTransition(direction="right")
+            self.manager.transition = NoTransition()
             self.manager.current = "tests_menu"
 
         close.bind(on_release=_close)
@@ -1354,9 +1669,11 @@ class ResultsScreen(ScrollScreen):
 
         if bdefs_results:
             try:
+                latest_r = bdefs_results[0]  # most recent first
+                prev_r = bdefs_results[1] if len(bdefs_results) > 1 else None
                 radar_img = bdefs_radar(
-                    highlight=None, past=bdefs_results,
-                    title="Mean Executive Function Profile",
+                    latest=latest_r, previous=prev_r,
+                    title="Latest Executive Function Profile",
                 )
                 core_img = _pil_to_kivy_image(radar_img)
                 radar_widget = KivyImage(
@@ -1396,7 +1713,13 @@ class ResultsScreen(ScrollScreen):
 
             if r.assessment_type == AssessmentType.BDEFS:
                 for d, s in r.domain_scores.items():
+                    n_qs = len(BDEFS_QUESTIONS.get(d, []))
+                    max_d = n_qs * 4 if n_qs else 1
                     c.add_widget(_make_label(f"  {d}: {s}", font_size=sp(12), color=_MUTED))
+                    advice = domain_advice(d, s, max_d)
+                    c.add_widget(_make_label(
+                        f"    {advice}", font_size=sp(11), color=_MUTED,
+                    ))
                 c.add_widget(_make_label(
                     interpret_bdefs(r.score, r.max_score),
                     font_size=sp(12), color=_MUTED,

@@ -121,7 +121,7 @@ jobs:
             -n momentum \
             -v "$VERSION" \
             --description "A gentle CLI and GUI tool to help people with executive dysfunction get back on track" \
-            --maintainer "Robin Oberg <robinoberg@live.com>" \
+            --maintainer "Robin Öberg <robinoberg@live.com>" \
             --url "https://github.com/yidaki53/momentum" \
             --license MIT \
             --depends python3-tk \

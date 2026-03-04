@@ -32,15 +32,15 @@ def _make_bdefs_result(
 
 
 class TestBdefsRadar:
-    def test_returns_image_with_highlight(self) -> None:
+    def test_returns_image_with_latest(self) -> None:
         result = _make_bdefs_result()
-        img = bdefs_radar(highlight=result)
+        img = bdefs_radar(latest=result)
         assert isinstance(img, Image.Image)
         assert img.size[0] > 0 and img.size[1] > 0
 
-    def test_returns_image_from_past_only(self) -> None:
-        past = [_make_bdefs_result(score=20), _make_bdefs_result(score=40)]
-        img = bdefs_radar(past=past)
+    def test_returns_image_previous_only(self) -> None:
+        prev = _make_bdefs_result(score=20)
+        img = bdefs_radar(previous=prev)
         assert isinstance(img, Image.Image)
 
     def test_returns_image_no_data(self) -> None:
@@ -48,13 +48,13 @@ class TestBdefsRadar:
         assert isinstance(img, Image.Image)
 
     def test_custom_size(self) -> None:
-        img = bdefs_radar(highlight=_make_bdefs_result(), size=(300, 300), dpi=50)
+        img = bdefs_radar(latest=_make_bdefs_result(), size=(300, 300), dpi=50)
         assert isinstance(img, Image.Image)
 
-    def test_with_highlight_and_past(self) -> None:
-        highlight = _make_bdefs_result(score=30)
-        past = [_make_bdefs_result(score=20)]
-        img = bdefs_radar(highlight=highlight, past=past)
+    def test_with_latest_and_previous(self) -> None:
+        latest = _make_bdefs_result(score=30)
+        previous = _make_bdefs_result(score=20)
+        img = bdefs_radar(latest=latest, previous=previous)
         assert isinstance(img, Image.Image)
 
 

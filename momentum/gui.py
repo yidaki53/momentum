@@ -25,6 +25,7 @@ from momentum.assessments import (
     RESULTS_GUIDE,
     STROOP_INSTRUCTIONS,
     StroopResult,
+    domain_advice,
     generate_stroop_trials,
     interpret_bdefs,
     interpret_stroop,
@@ -299,6 +300,14 @@ class MomentumApp:
             side=tk.LEFT, padx=2
         )
 
+        self._show_completed_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            btn_frame,
+            text="Show completed",
+            variable=self._show_completed_var,
+            command=self._refresh_tasks,
+        ).pack(side=tk.RIGHT, padx=2)
+
         # --- Timer ---
         timer_frame = ttk.Frame(self.root)
         timer_frame.pack(fill=tk.X, **pad)
@@ -350,7 +359,6 @@ class MomentumApp:
 
         active = db.list_tasks(self.conn, status=TaskStatus.ACTIVE)
         pending = db.list_tasks(self.conn, status=TaskStatus.PENDING)
-        done = db.list_tasks(self.conn, status=TaskStatus.DONE)
 
         for task in active + pending:
             icon = "[~]" if task.status == TaskStatus.ACTIVE else "[ ]"
@@ -360,11 +368,15 @@ class MomentumApp:
             )
             self._task_ids.append(task.id)
 
-        for task in done:
-            prefix = "    " if task.is_subtask else ""
-            self._task_listbox.insert(tk.END, f"{prefix}[x] #{task.id}  {task.title}")
-            self._task_listbox.itemconfig(tk.END, fg="#777777")
-            self._task_ids.append(task.id)
+        if self._show_completed_var.get():
+            done = db.list_tasks(self.conn, status=TaskStatus.DONE)
+            for task in done:
+                prefix = "    " if task.is_subtask else ""
+                self._task_listbox.insert(
+                    tk.END, f"{prefix}[x] #{task.id}  {task.title}"
+                )
+                self._task_listbox.itemconfig(tk.END, fg="#777777")
+                self._task_ids.append(task.id)
 
     def _refresh_status(self) -> None:
         """Update the status bar."""
@@ -652,6 +664,160 @@ class MomentumApp:
         )
         ttk.Button(btn_frame, text="Close", command=win.destroy).pack(side=tk.RIGHT)
 
+        # --- Data management ---
+        ttk.Label(win, text="Data Management", style="Title.TLabel").pack(
+            anchor=tk.W, padx=12, pady=(10, 4)
+        )
+        data_frame = ttk.Frame(win)
+        data_frame.pack(fill=tk.X, padx=12)
+
+        def _delete_results() -> None:
+            count = len(db.list_assessments(self.conn, limit=9999))
+            if count == 0:
+                messagebox.showinfo("No data", "No assessment results.", parent=win)
+                return
+            if messagebox.askyesno(
+                "Confirm",
+                f"Delete all {count} assessment result{'s' if count != 1 else ''}?",
+                parent=win,
+            ):
+                db.delete_all_assessments(self.conn)
+                messagebox.showinfo(
+                    "Deleted", "All assessment results deleted.", parent=win
+                )
+
+        def _delete_tasks() -> None:
+            count = len(db.list_tasks(self.conn))
+            if count == 0:
+                messagebox.showinfo("No data", "No tasks.", parent=win)
+                return
+            if messagebox.askyesno(
+                "Confirm",
+                f"Delete all {count} task{'s' if count != 1 else ''} and focus sessions?",
+                parent=win,
+            ):
+                db.delete_all_tasks(self.conn)
+                self._refresh_tasks()
+                self._refresh_status()
+                messagebox.showinfo(
+                    "Deleted", "All tasks and sessions deleted.", parent=win
+                )
+
+        ttk.Button(
+            data_frame, text="Delete all test results", command=_delete_results
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Button(data_frame, text="Delete all tasks", command=_delete_tasks).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Button(data_frame, text="Browse database", command=self._on_browse_db).pack(
+            side=tk.LEFT, padx=2
+        )
+
+    def _on_browse_db(self) -> None:
+        """Open a database browser window."""
+        win = tk.Toplevel(self.root)
+        win.title("Browse Database")
+        win.geometry("640x500")
+        win.configure(bg="#2b2b2b")
+        win.transient(self.root)
+
+        # Table selector
+        sel_frame = ttk.Frame(win)
+        sel_frame.pack(fill=tk.X, padx=8, pady=4)
+        table_var = tk.StringVar(value="tasks")
+
+        listbox = tk.Listbox(
+            win,
+            bg="#333",
+            fg="#e0e0e0",
+            selectbackground="#6a9fb5",
+            selectforeground="#fff",
+            font=("monospace", 9),
+            activestyle="none",
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        listbox.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+        row_ids: list[str] = []
+
+        def _load() -> None:
+            listbox.delete(0, tk.END)
+            row_ids.clear()
+            tbl = table_var.get()
+            if tbl == "tasks":
+                for t in db.list_tasks(self.conn):
+                    listbox.insert(tk.END, f"#{t.id}  [{t.status.value}]  {t.title}")
+                    row_ids.append(str(t.id))
+            elif tbl == "assessments":
+                for r in db.list_assessments(self.conn, limit=100):
+                    listbox.insert(
+                        tk.END,
+                        f"#{r.id}  {r.assessment_type.value}  "
+                        f"{r.score}/{r.max_score}  {r.taken_at:%Y-%m-%d %H:%M}",
+                    )
+                    row_ids.append(str(r.id))
+            elif tbl == "sessions":
+                for s in db.list_focus_sessions(self.conn, limit=100):
+                    listbox.insert(
+                        tk.END,
+                        f"#{s.id}  {s.duration_minutes}min  task={s.task_id}  "
+                        f"{s.completed_at:%Y-%m-%d %H:%M}",
+                    )
+                    row_ids.append(str(s.id))
+            elif tbl == "daily_log":
+                for lg in db.list_all_daily_logs(self.conn):
+                    listbox.insert(
+                        tk.END,
+                        f"{lg.date}  tasks={lg.tasks_completed}  "
+                        f"focus={lg.focus_minutes}min",
+                    )
+                    row_ids.append(str(lg.date))
+
+        for tbl_name in ("tasks", "assessments", "sessions", "daily_log"):
+            tk.Radiobutton(
+                sel_frame,
+                text=tbl_name,
+                variable=table_var,
+                value=tbl_name,
+                command=_load,
+                bg="#2b2b2b",
+                fg="#e0e0e0",
+                selectcolor="#333",
+                activebackground="#2b2b2b",
+                activeforeground="#e0e0e0",
+                font=("sans-serif", 9),
+            ).pack(side=tk.LEFT, padx=4)
+
+        def _delete_selected() -> None:
+            sel = listbox.curselection()
+            if not sel:
+                return
+            idx = sel[0]
+            eid = row_ids[idx]
+            tbl = table_var.get()
+            ok = False
+            if tbl == "tasks":
+                ok = db.delete_task(self.conn, int(eid))
+            elif tbl == "assessments":
+                ok = db.delete_assessment(self.conn, int(eid))
+            elif tbl == "sessions":
+                ok = db.delete_focus_session(self.conn, int(eid))
+            elif tbl == "daily_log":
+                ok = db.delete_daily_log(self.conn, eid)
+            if ok:
+                _load()
+                self._refresh_tasks()
+                self._refresh_status()
+
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(fill=tk.X, padx=8, pady=4)
+        ttk.Button(btn_frame, text="Delete selected", command=_delete_selected).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Button(btn_frame, text="Refresh", command=_load).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="Close", command=win.destroy).pack(side=tk.RIGHT)
+        _load()
+
     def _reconnect_db(self) -> None:
         """Close current DB connection and open a new one at the configured path."""
         self.conn.close()
@@ -908,7 +1074,13 @@ class MomentumApp:
             "Momentum v0.1.0\n\n"
             "A gentle tool to help people with executive\n"
             "dysfunction get back on track, one small step\n"
-            "at a time.",
+            "at a time.\n\n"
+            "Created by Robin \u00d6berg\n"
+            "Data Scientist, MSc Social Anthropology,\n"
+            "MSc Applied Cultural Analysis.\n\n"
+            "Copyright \u00a9 2026 Robin \u00d6berg.\n"
+            "Licensed under the MIT License.\n\n"
+            "https://github.com/yidaki53/momentum",
             parent=self.root,
         )
 
@@ -1128,22 +1300,19 @@ class MomentumApp:
     def _show_bdefs_result(self, saved: "AssessmentResult") -> None:
         """Open a results window with radar chart and score breakdown."""
 
-        past_results = [
-            r
-            for r in db.list_assessments(
-                self.conn, assessment_type=AssessmentType.BDEFS, limit=50
-            )
-            if r.id != saved.id
-        ]
+        all_bdefs = db.list_assessments(
+            self.conn, assessment_type=AssessmentType.BDEFS, limit=50
+        )
+        previous = next((r for r in all_bdefs if r.id != saved.id), None)
 
         rwin = tk.Toplevel(self.root)
         rwin.title("Assessment Result")
-        rwin.geometry("620x680")
+        rwin.geometry("620x780")
         rwin.configure(bg="#2b2b2b")
         rwin.transient(self.root)
 
         # Radar chart
-        radar_img = bdefs_radar(highlight=saved, past=past_results)
+        radar_img = bdefs_radar(latest=saved, previous=previous)
         radar_tk = ImageTk.PhotoImage(radar_img)
         radar_label = tk.Label(rwin, image=radar_tk, bg="#2b2b2b")  # type: ignore[arg-type]
         radar_label.image = radar_tk  # prevent GC
@@ -1162,6 +1331,14 @@ class MomentumApp:
             ttk.Label(score_frame, text=f"  {d}: {s}/{n_qs * 4}", style="TLabel").pack(
                 anchor=tk.W
             )
+            advice = domain_advice(d, s, n_qs * 4)
+            if advice:
+                ttk.Label(
+                    score_frame,
+                    text=f"    {advice}",
+                    style="Nudge.TLabel",
+                    wraplength=560,
+                ).pack(anchor=tk.W)
 
         ttk.Label(
             rwin,
@@ -1222,12 +1399,14 @@ class MomentumApp:
                 style="Nudge.TLabel",
             ).pack(padx=16, anchor=tk.W)
         else:
-            # --- BDEFS radar chart (mean in blue, individual greyed) ---
+            # --- BDEFS radar chart (latest in blue, previous in grey) ---
             if bdefs_results:
+                latest_r = bdefs_results[0]  # most recent first
+                prev_r = bdefs_results[1] if len(bdefs_results) > 1 else None
                 radar_img = bdefs_radar(
-                    highlight=None,
-                    past=bdefs_results,
-                    title="Mean Executive Function Profile",
+                    latest=latest_r,
+                    previous=prev_r,
+                    title="Latest Executive Function Profile",
                 )
                 radar_tk = ImageTk.PhotoImage(radar_img)
                 self._results_images.append(radar_tk)
@@ -1327,6 +1506,10 @@ class MomentumApp:
                     "Image fetch failed for %s; retrying.", photo_id, exc_info=True
                 )
         log.warning("Could not fetch any peaceful image after %d attempts.", attempts)
+        # Fallback: solid-colour banner with title text
+        fallback = Image.new("RGB", (_IMG_WIDTH, _IMG_HEIGHT), (58, 90, 106))
+        self._draw_title(fallback)
+        self.root.after(0, self._set_image, fallback)
 
     @staticmethod
     def _draw_title(image: Image.Image) -> None:

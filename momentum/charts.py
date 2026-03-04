@@ -67,8 +67,8 @@ def _domain_values(result: AssessmentResult) -> list[float]:
 
 
 def bdefs_radar(
-    highlight: Optional[AssessmentResult] = None,
-    past: Optional[list[AssessmentResult]] = None,
+    latest: Optional[AssessmentResult] = None,
+    previous: Optional[AssessmentResult] = None,
     *,
     title: str = "Executive Function Profile",
     size: tuple[int, int] = (540, 440),
@@ -78,34 +78,20 @@ def bdefs_radar(
 
     Parameters
     ----------
-    highlight:
-        The result to draw in blue (current result or the mean).
-        If *None*, the mean of *past* is used as the highlight.
-    past:
-        Previous results rendered as grey polygons in the background.
+    latest:
+        The most recent result, drawn in blue.
+    previous:
+        The second-most-recent result, drawn in grey.
     title:
         Chart title.
     """
-    past = past or []
-
-    # If no explicit highlight, compute the mean of past results.
-    if highlight is None and past:
-        mean_vals = [0.0] * len(_DOMAIN_ORDER)
-        for r in past:
-            for i, v in enumerate(_domain_values(r)):
-                mean_vals[i] += v
-            n = len(past)
-        mean_vals = [v / n for v in mean_vals]
-    elif highlight is not None:
-        mean_vals = _domain_values(highlight)
-    else:
-        mean_vals = [0.0] * len(_DOMAIN_ORDER)
+    latest_vals = _domain_values(latest) if latest else [0.0] * len(_DOMAIN_ORDER)
 
     n_axes = len(_DOMAIN_ORDER)
     angles = np.linspace(0, 2 * math.pi, n_axes, endpoint=False).tolist()
     # Close the polygon
     angles += angles[:1]
-    mean_vals_closed = mean_vals + mean_vals[:1]
+    latest_closed = latest_vals + latest_vals[:1]
 
     fig_w, fig_h = size[0] / dpi, size[1] / dpi
     fig = Figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor=_BG)
@@ -127,16 +113,31 @@ def bdefs_radar(
     ax.spines["polar"].set_color(_GRID)
     ax.grid(color=_GRID, linewidth=0.5)
 
-    # Past results (grey)
-    for r in past:
-        vals = _domain_values(r) + _domain_values(r)[:1]
-        ax.plot(angles, vals, color=_GREY_LINE, linewidth=0.8, alpha=0.5)
-        ax.fill(angles, vals, color=_GREY_FILL)
+    # Previous result (grey)
+    if previous is not None:
+        prev_vals = _domain_values(previous) + _domain_values(previous)[:1]
+        ax.plot(
+            angles,
+            prev_vals,
+            color=_GREY_LINE,
+            linewidth=1.2,
+            alpha=0.6,
+            label="Previous",
+        )
+        ax.fill(angles, prev_vals, color=_GREY_FILL)
 
-    # Highlight (blue)
-    ax.plot(angles, mean_vals_closed, color=_BLUE_LINE, linewidth=2)
-    ax.fill(angles, mean_vals_closed, color=_BLUE_FILL)
+    # Latest result (blue)
+    ax.plot(angles, latest_closed, color=_BLUE_LINE, linewidth=2, label="Latest")
+    ax.fill(angles, latest_closed, color=_BLUE_FILL)
 
+    ax.legend(
+        loc="upper right",
+        bbox_to_anchor=(1.3, 1.1),
+        fontsize=8,
+        facecolor=_BG,
+        edgecolor=_GRID,
+        labelcolor=_FG,
+    )
     ax.set_title(title, color=_FG, fontsize=11, fontweight="bold", pad=18)
 
     return _fig_to_pil(fig, dpi=dpi)

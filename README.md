@@ -91,6 +91,12 @@ momentum config --show
 | `config` | Configure database location / cloud sync. |
 | `test` | Take a self-assessment (BDEFS or `--stroop`). |
 | `test-results` | View past assessment results. |
+| `about` | Show copyright, license, and author information. |
+| `science` | Display the science behind Momentum (SCIENCE.md). |
+| `delete-results` | Delete all saved assessment results. |
+| `delete-tasks` | Delete all tasks and focus sessions. |
+| `browse-db` | Browse database tables and list entries. |
+| `delete-entry` | Delete a specific entry by table and ID. |
 | `autostart` | Manage autostart on login (`--enable`, `--disable`, `--status`). |
 
 ## Self-Assessment Tests
@@ -194,5 +200,6 @@ make test
 - `encouragement.py` -- Curated CBT/self-compassion message bank
 - `display.py` -- Rich terminal formatting
 - `autostart.py` -- Systemd/XDG autostart management
+- `assessments.py` -- BDEFS/Stroop scoring, interpretation, and domain-specific advice
 - `charts.py` -- Matplotlib radar and timeseries charts with trend lines
 - `mobile/main.py` -- Kivy mobile app (Android)

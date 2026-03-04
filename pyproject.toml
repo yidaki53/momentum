@@ -2,7 +2,7 @@
 name = "momentum"
 version = "0.1.0"
 description = "A gentle CLI and GUI tool to help people with executive dysfunction get back on track"
-authors = ["Robin Oberg"]
+authors = ["Robin Öberg"]
 
 [tool.poetry.dependencies]
 python = ">=3.11,<4.0"
@@ -22,6 +22,8 @@ ruff = "^0.9.0"
 mypy = "^1.0.0"
 pyinstaller = {version = "^6.0.0", python = ">=3.11,<3.15"}
 pre-commit = "^4.5.1"
+buildozer = "^1.5.0"
+cython = "0.29.36"
 
 [tool.ruff]
 line-length = 88
@@ -30,6 +32,9 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"mobile/main.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.11"

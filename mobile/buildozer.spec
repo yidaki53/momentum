@@ -39,4 +39,4 @@ ios.kivy_ios_branch = master
 [buildozer]
 log_level = 2
 warn_on_root = 1
-build_dir = /media/robin/persistence/buildozer-build
+build_dir = /tmp/buildozer-build
