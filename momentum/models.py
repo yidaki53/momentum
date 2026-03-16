@@ -97,6 +97,7 @@ class AssessmentType(str, enum.Enum):
 
     BDEFS = "bdefs"  # Barkley Deficits in Executive Functioning Scale (self-report)
     STROOP = "stroop"  # Stroop Color and Word Test
+    BISBAS = "bisbas"  # BIS/BAS motivational style questionnaire
 
 
 class AssessmentResult(BaseModel):
@@ -126,8 +127,19 @@ class WindowPosition(str, enum.Enum):
     TOP_LEFT = "top-left"
 
 
+class ThemeMode(str, enum.Enum):
+    """Visual theme preference."""
+
+    DARK = "dark"
+    LIGHT = "light"
+
+
 class AppConfig(BaseModel):
     """Application configuration (persisted to ~/.config/momentum/config.json)."""
 
     db_path: Optional[str] = None  # None = use default (~/.local/share/momentum/)
     window_position: WindowPosition = WindowPosition.CENTRE
+    theme_mode: ThemeMode = ThemeMode.DARK
+    accessibility_large_text: bool = False
+    accessibility_high_contrast: bool = False
+    accessibility_reduce_visual_load: bool = False

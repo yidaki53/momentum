@@ -1,6 +1,6 @@
 """Self-assessment instruments for executive-dysfunction screening.
 
-Two tests are provided:
+Three tests are provided:
 
 * **BDEFS-style self-report** -- a brief questionnaire modelled on the
   Barkley Deficits in Executive Functioning Scale.  It covers five domains
@@ -11,6 +11,10 @@ Two tests are provided:
 * **Stroop colour-word test** -- a timed task that measures the ability to
   inhibit automatic responses.  The participant names the *colour* of
   colour-words that are printed in a mismatched colour.
+
+* **BIS/BAS motivational profile** -- a brief self-report based on the
+  Behavioural Inhibition / Behavioural Activation framework. It helps tailor
+  task prompts, focus interval defaults, and encouragement style.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
-from momentum.models import AssessmentResultCreate, AssessmentType
+from momentum.models import AssessmentResult, AssessmentResultCreate, AssessmentType
 
 # ---------------------------------------------------------------------------
 # BDEFS-style self-report
@@ -103,6 +107,211 @@ def interpret_bdefs(score: int, max_score: int) -> str:
     if pct <= 75:
         return "Moderate difficulties -- structured routines and support strategies are recommended."
     return "Significant difficulties -- consider seeking professional assessment and support."
+
+
+# ---------------------------------------------------------------------------
+# BIS/BAS motivational profile
+# ---------------------------------------------------------------------------
+
+BISBAS_SCALE = {
+    1: "Very false for me",
+    2: "Somewhat false for me",
+    3: "Somewhat true for me",
+    4: "Very true for me",
+}
+BISBAS_SCALE_LABELS = [f"{k} - {v}" for k, v in BISBAS_SCALE.items()]
+
+BISBAS_QUESTIONS: dict[str, list[str]] = {
+    "Behavioral Inhibition (BIS)": [
+        "I worry about making mistakes when I start something important.",
+        "Criticism or disapproval can easily make me hold back.",
+        "I often hesitate because I am concerned about negative outcomes.",
+        "Uncertain situations tend to make me cautious and avoidant.",
+        "When I feel pressured, I find it hard to initiate action.",
+    ],
+    "BAS Drive": [
+        "When I decide on a goal, I keep working until I reach it.",
+        "I stay focused on goals even when progress is slow.",
+        "I usually push through obstacles when something matters to me.",
+        "I find it easy to re-engage with a goal after interruptions.",
+        "I actively pursue long-term goals even when effort is required.",
+    ],
+    "BAS Reward Responsiveness": [
+        "Completing even a small step gives me a noticeable boost.",
+        "I feel energised by seeing clear signs of progress.",
+        "I respond strongly to praise or positive feedback.",
+        "Small rewards help me keep momentum on difficult tasks.",
+        "The possibility of success strongly increases my motivation.",
+    ],
+    "BAS Fun Seeking": [
+        "I get bored quickly if tasks feel repetitive.",
+        "I prefer starting tasks that feel interesting right away.",
+        "Novelty helps me engage more than routine.",
+        "I am more likely to begin tasks that feel stimulating.",
+        "I often switch focus when something feels more engaging.",
+    ],
+}
+
+BISBAS_MIN_PER_ITEM = 1
+BISBAS_MAX_PER_ITEM = 4
+
+
+def bisbas_max_score() -> int:
+    """Maximum possible BIS/BAS total score."""
+    n_items = sum(len(qs) for qs in BISBAS_QUESTIONS.values())
+    return n_items * BISBAS_MAX_PER_ITEM
+
+
+def score_bisbas(answers: dict[str, list[int]]) -> AssessmentResultCreate:
+    """Score a completed BIS/BAS questionnaire."""
+    domain_scores: dict[str, int] = {}
+    total = 0
+    for domain, scores in answers.items():
+        ds = sum(scores)
+        domain_scores[domain] = ds
+        total += ds
+    return AssessmentResultCreate(
+        assessment_type=AssessmentType.BISBAS,
+        score=total,
+        max_score=bisbas_max_score(),
+        domain_scores=domain_scores,
+    )
+
+
+def interpret_bisbas(score: int, max_score: int, domain_scores: dict[str, int]) -> str:
+    """Return a plain-English interpretation of BIS/BAS profile data."""
+    pct = score / max_score * 100 if max_score else 0
+    bis = domain_scores.get("Behavioral Inhibition (BIS)", 0)
+    drive = domain_scores.get("BAS Drive", 0)
+    reward = domain_scores.get("BAS Reward Responsiveness", 0)
+    fun = domain_scores.get("BAS Fun Seeking", 0)
+    max_domain = len(BISBAS_QUESTIONS["Behavioral Inhibition (BIS)"]) * 4
+    bis_pct = bis / max_domain * 100 if max_domain else 0
+    drive_pct = drive / max_domain * 100 if max_domain else 0
+    reward_pct = reward / max_domain * 100 if max_domain else 0
+    fun_pct = fun / max_domain * 100 if max_domain else 0
+
+    parts: list[str] = []
+    if bis_pct >= 75:
+        parts.append(
+            "Your BIS score is high, which can make starting feel risky or pressured."
+        )
+    elif bis_pct <= 40:
+        parts.append(
+            "Your BIS score is low-to-moderate, suggesting threat-sensitivity is less dominant."
+        )
+    else:
+        parts.append("Your BIS score is moderate.")
+
+    if drive_pct >= 75:
+        parts.append("You show strong goal-drive persistence.")
+    elif drive_pct <= 50:
+        parts.append(
+            "Your BAS Drive is on the lower side, so external structure may help."
+        )
+    else:
+        parts.append("Your BAS Drive is moderate.")
+
+    if reward_pct >= 75:
+        parts.append("You respond strongly to visible rewards and progress cues.")
+    elif reward_pct <= 50:
+        parts.append("Immediate rewards may be less activating for you than structure.")
+
+    if fun_pct >= 75:
+        parts.append("You likely benefit from variety and shorter work blocks.")
+    elif fun_pct <= 50:
+        parts.append("You may tolerate routine better than novelty-driven pacing.")
+
+    if pct <= 33:
+        parts.append("Overall endorsement is low.")
+    elif pct >= 66:
+        parts.append("Overall endorsement is high.")
+    else:
+        parts.append("Overall endorsement is moderate.")
+    return " ".join(parts)
+
+
+@dataclass(frozen=True)
+class PersonalisationProfile:
+    """Operational defaults derived from BIS/BAS profile data."""
+
+    focus_minutes: int = 15
+    break_minutes: int = 5
+    nudge_style: str = "balanced"
+    suggest_breakdown: bool = False
+    encourage_reward: bool = False
+    add_reassurance: bool = False
+
+
+def personalise_from_bisbas(domain_scores: dict[str, int]) -> PersonalisationProfile:
+    """Map BIS/BAS domain scores to app behavior defaults."""
+    max_domain = len(BISBAS_QUESTIONS["Behavioral Inhibition (BIS)"]) * 4
+    if max_domain <= 0:
+        return PersonalisationProfile()
+
+    bis = domain_scores.get("Behavioral Inhibition (BIS)", 0)
+    drive = domain_scores.get("BAS Drive", 0)
+    reward = domain_scores.get("BAS Reward Responsiveness", 0)
+    fun = domain_scores.get("BAS Fun Seeking", 0)
+
+    bis_pct = bis / max_domain * 100
+    drive_pct = drive / max_domain * 100
+    reward_pct = reward / max_domain * 100
+    fun_pct = fun / max_domain * 100
+
+    high_bis = bis_pct >= 75
+    low_drive = drive_pct <= 50
+    high_drive = drive_pct >= 75
+    high_reward = reward_pct >= 75
+    high_fun = fun_pct >= 75
+
+    focus_minutes = 15
+    break_minutes = 5
+
+    if high_bis or low_drive:
+        focus_minutes = 10
+        break_minutes = 6
+
+    if high_drive and high_reward and not high_bis and not low_drive:
+        focus_minutes = 20
+        break_minutes = 5
+
+    if high_fun:
+        focus_minutes = min(focus_minutes, 12)
+        break_minutes = max(break_minutes, 6)
+
+    nudge_style = "balanced"
+    if high_bis:
+        nudge_style = "reassuring"
+    elif high_reward or high_drive:
+        nudge_style = "reward"
+
+    return PersonalisationProfile(
+        focus_minutes=focus_minutes,
+        break_minutes=break_minutes,
+        nudge_style=nudge_style,
+        suggest_breakdown=(high_bis or low_drive),
+        encourage_reward=(high_reward or high_drive),
+        add_reassurance=high_bis,
+    )
+
+
+def personalised_nudge(message: str, profile: PersonalisationProfile) -> str:
+    """Return a profile-adjusted encouragement line."""
+    if profile.nudge_style == "reassuring":
+        return f"No pressure — one tiny step is enough. {message}"
+    if profile.nudge_style == "reward":
+        return f"Nice momentum. Small wins count. {message}"
+    return message
+
+
+def profile_from_latest_bisbas(
+    latest_bisbas: AssessmentResult | None,
+) -> PersonalisationProfile:
+    """Build a behavior profile from the latest BIS/BAS result (or defaults)."""
+    if latest_bisbas is None or latest_bisbas.assessment_type != AssessmentType.BISBAS:
+        return PersonalisationProfile()
+    return personalise_from_bisbas(latest_bisbas.domain_scores)
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +400,17 @@ STROOP_INSTRUCTIONS = (
     "Your accuracy and response time are recorded. Results are stored locally "
     "and never shared."
 )
+BISBAS_INSTRUCTIONS = (
+    "This is a BIS/BAS motivational profile questionnaire based on "
+    "Carver and White's Reinforcement Sensitivity framework.\\n\\n"
+    "It covers four domains: Behavioral Inhibition (BIS), BAS Drive, "
+    "BAS Reward Responsiveness, and BAS Fun Seeking.\\n\\n"
+    "For each statement, rate how true it is for you:\\n"
+    "  1 = Very false for me   2 = Somewhat false for me\\n"
+    "  3 = Somewhat true for me   4 = Very true for me\\n\\n"
+    "There are 20 items and it takes about 2-4 minutes. "
+    "Your profile is used to personalize timer defaults and encouragement style."
+)
 
 RESULTS_GUIDE = (
     "The radar chart compares your two most recent BDEFS assessments. "
@@ -198,7 +418,9 @@ RESULTS_GUIDE = (
     "Higher values indicate greater difficulty in that area.\n\n"
     "The line chart tracks your total BDEFS score over time. "
     "The dashed trend line shows the overall direction. "
-    "A downward trend suggests improvement."
+    "A downward trend suggests improvement.\\n\\n"
+    "BIS/BAS results are shown as domain totals and used to tailor task support "
+    "defaults such as focus length and encouragement style."
 )
 
 
@@ -358,6 +580,66 @@ _DOMAIN_ADVICE: dict[str, dict[str, str]] = {
 }
 
 
+_BISBAS_DOMAIN_ADVICE: dict[str, dict[str, str]] = {
+    "Behavioral Inhibition (BIS)": {
+        "low": (
+            "Lower BIS suggests fewer threat-related start barriers. Keep using clear "
+            "goals and routines to maintain consistency."
+        ),
+        "moderate": (
+            "Moderate BIS suggests occasional avoidance when stakes feel high. Use "
+            "micro-starts and low-pressure language when initiating tasks."
+        ),
+        "high": (
+            "High BIS suggests threat-sensitivity at task start. Use very small first "
+            "steps, reassurance prompts, and shorter focus blocks to reduce pressure."
+        ),
+    },
+    "BAS Drive": {
+        "low": (
+            "Lower BAS Drive can make sustained pursuit harder. Time-box starts and "
+            "external accountability can reduce reliance on willpower."
+        ),
+        "moderate": (
+            "Moderate BAS Drive benefits from regular structure and visible progress "
+            "cues to keep momentum."
+        ),
+        "high": (
+            "High BAS Drive is a strength for persistence. You can often tolerate "
+            "longer focus intervals when goals are clear."
+        ),
+    },
+    "BAS Reward Responsiveness": {
+        "low": (
+            "Lower reward responsiveness means progress cues may feel less motivating. "
+            "Use fixed routines and implementation intentions in addition to rewards."
+        ),
+        "moderate": (
+            "Moderate reward responsiveness benefits from tracking completed steps and "
+            "small planned rewards."
+        ),
+        "high": (
+            "High reward responsiveness means visible progress and celebrations are "
+            "likely to strongly improve engagement."
+        ),
+    },
+    "BAS Fun Seeking": {
+        "low": (
+            "Lower fun-seeking suggests routine may be easier to sustain. Consistent "
+            "daily workflows can work well for you."
+        ),
+        "moderate": (
+            "Moderate fun-seeking benefits from occasional variety while preserving a "
+            "stable task structure."
+        ),
+        "high": (
+            "High fun-seeking often benefits from shorter, varied work blocks and "
+            "frequent task switching within planned boundaries."
+        ),
+    },
+}
+
+
 def domain_advice(domain: str, score: int, max_domain_score: int) -> str:
     """Return practical, science-based advice for a specific BDEFS domain.
 
@@ -372,6 +654,19 @@ def domain_advice(domain: str, score: int, max_domain_score: int) -> str:
         return advice_map["minimal"]
     if pct <= 50:
         return advice_map["mild"]
+    if pct <= 75:
+        return advice_map["moderate"]
+    return advice_map["high"]
+
+
+def bisbas_domain_advice(domain: str, score: int, max_domain_score: int) -> str:
+    """Return practical advice for a BIS/BAS subscale score."""
+    advice_map = _BISBAS_DOMAIN_ADVICE.get(domain)
+    if advice_map is None:
+        return ""
+    pct = score / max_domain_score * 100 if max_domain_score else 0
+    if pct <= 50:
+        return advice_map["low"]
     if pct <= 75:
         return advice_map["moderate"]
     return advice_map["high"]

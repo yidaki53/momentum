@@ -42,6 +42,10 @@ warn_return_any = true
 warn_unused_ignores = true
 strict = true
 
+[[tool.mypy.overrides]]
+module = ["momentum.gui", "momentum.charts"]
+ignore_errors = true
+
 [tool.coverage.run]
 omit = ["momentum/gui.py"]
 

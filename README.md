@@ -83,13 +83,13 @@ momentum config --show
 | `break-down` | Break a task into smaller sub-steps (interactive). |
 | `done` | Mark a task as done. |
 | `list` | List your tasks. Use `--all` to include completed. |
-| `focus` | Start a focus timer (default 15 min). |
-| `take-break` | Take a break (default 5 min). |
+| `focus` | Start a focus timer (default 15 min, personalised when BIS/BAS profile is available). |
+| `take-break` | Take a break (default 5 min, personalised when BIS/BAS profile is available). |
 | `status` | See tasks completed, focus time, and streak. |
 | `nudge` | Get a gentle encouragement message. |
 | `gui` | Open the GUI dashboard. |
 | `config` | Configure database location / cloud sync. |
-| `test` | Take a self-assessment (BDEFS or `--stroop`). |
+| `test` | Take a self-assessment (BDEFS, `--stroop`, or `--bisbas`). |
 | `test-results` | View past assessment results. |
 | `about` | Show copyright, license, and author information. |
 | `science` | Display the science behind Momentum (SCIENCE.md). |
@@ -101,16 +101,18 @@ momentum config --show
 
 ## Self-Assessment Tests
 
-Momentum includes two evidence-based self-assessment tools:
+Momentum includes three evidence-based self-assessment tools:
 
 - **BDEFS** -- A brief executive-function questionnaire covering time management, organisation, self-restraint, self-motivation, and emotion regulation. Results are visualised as a radar chart and tracked over time with a trend line.
 - **Stroop** -- A timed colour-word test measuring inhibitory control. Accuracy and response times are recorded.
+- **BIS/BAS** -- A motivational-style profile (Behavioural Inhibition / Behavioural Activation) used to personalise default focus/break durations and encouragement tone.
 
-Both tests include instruction pages before starting. Past results can be viewed with charts and interpretations.
+All tests include instruction pages before starting. Past results can be viewed with charts and interpretations.
 
 ```bash
 momentum test              # BDEFS self-assessment
 momentum test --stroop     # Stroop colour-word test
+momentum test --bisbas     # BIS/BAS motivational profile
 momentum test-results      # View past results
 ```
 
@@ -122,7 +124,8 @@ momentum test-results      # View past results
 - Focus timer with start/stop
 - Status summary (today's progress, streak)
 - Encouragement button
-- **Menu bar**: Menu (Settings, Quit), Help (How to Use, The Science, About), and Tests (BDEFS, Stroop, View Results)
+- **Menu bar**: Menu (Settings, Quit), Help (How to Use, The Science, About), and Tests (BDEFS, BIS/BAS, Stroop, View Results)
+- Appearance settings for dark/light mode and accessibility options (larger text, higher contrast, reduced visual load)
 
 The GUI shares the same database as the CLI -- you can use both interchangeably.
 
@@ -154,7 +157,13 @@ By default, data is stored in `~/.local/share/momentum/momentum.db` (SQLite). Th
 
 ## Mobile (Android)
 
-A full-featured Kivy-based Android app is in `mobile/`. It mirrors all desktop GUI features: task management, focus timer, BDEFS and Stroop assessments with charts, settings, and help pages.
+A full-featured Kivy-based Android app is in `mobile/`. It mirrors desktop capabilities with touch-focused navigation and includes:
+
+- Bottom navigation toolbar (Home, Settings, Help, Tests)
+- Task management + focus timer + personalised nudges
+- BDEFS, BIS/BAS, and Stroop assessments with result history
+- Light/dark theme and accessibility options (larger text, higher contrast, reduced visual load)
+- Shared local data model with CLI and desktop GUI
 
 Pre-built APKs are attached to [GitHub releases](../../releases). To install, download `momentum-android.apk` and sideload it.
 
@@ -200,6 +209,6 @@ make test
 - `encouragement.py` -- Curated CBT/self-compassion message bank
 - `display.py` -- Rich terminal formatting
 - `autostart.py` -- Systemd/XDG autostart management
-- `assessments.py` -- BDEFS/Stroop scoring, interpretation, and domain-specific advice
+- `assessments.py` -- BDEFS/BIS-BAS/Stroop scoring, interpretation, domain-specific advice, and personalization helpers
 - `charts.py` -- Matplotlib radar and timeseries charts with trend lines
 - `mobile/main.py` -- Kivy mobile app (Android)

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from momentum.models import AppConfig
+from momentum.models import AppConfig, ThemeMode
 
 
 def _is_android() -> bool:
@@ -122,5 +122,31 @@ def reset_db_path() -> AppConfig:
     """Reset to the default local database path."""
     config = load_config()
     config.db_path = None
+    save_config(config)
+    return config
+
+
+def set_theme_mode(mode: str) -> AppConfig:
+    """Persist visual theme mode."""
+    config = load_config()
+    config.theme_mode = ThemeMode(mode)
+    save_config(config)
+    return config
+
+
+def set_accessibility_options(
+    *,
+    large_text: Optional[bool] = None,
+    high_contrast: Optional[bool] = None,
+    reduce_visual_load: Optional[bool] = None,
+) -> AppConfig:
+    """Persist accessibility options."""
+    config = load_config()
+    if large_text is not None:
+        config.accessibility_large_text = large_text
+    if high_contrast is not None:
+        config.accessibility_high_contrast = high_contrast
+    if reduce_visual_load is not None:
+        config.accessibility_reduce_visual_load = reduce_visual_load
     save_config(config)
     return config

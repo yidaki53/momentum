@@ -29,6 +29,23 @@ Momentum's encouragement messages reflect the principles of self-compassion -- t
 - [Ferrari et al. (2019) -- Self-compassion interventions meta-analysis, Mindfulness](https://doi.org/10.1007/s12671-019-01134-6)
 - [Adie et al. (2021) -- Self-compassion, activation and depression, Mindfulness](https://doi.org/10.1007/s12671-021-01637-1)
 
+## BIS/BAS Motivational Personalization
+
+Momentum now includes a BIS/BAS profile (Behavioural Inhibition / Behavioural Activation) to personalise support. The BIS/BAS framework captures meaningful individual differences in threat-sensitivity (BIS) and reward/goal responsiveness (BAS). In practice, this helps explain why one user may need lower-pressure initiation cues and shorter focus blocks, while another benefits more from reward-framed nudges and longer persistence blocks.
+
+In Momentum, this is used in a lightweight way: profile-informed defaults adjust focus/break length and encouragement style without changing the underlying task model. The goal is not diagnosis, but reducing activation friction by matching prompts to motivational style.
+
+- [Carver & White (1994) -- BIS/BAS scales, Journal of Personality and Social Psychology](https://doi.org/10.1037/0022-3514.67.2.319)
+
+## Accessibility, Reduced Visual Load, and Interface Friction
+
+Executive dysfunction is often worsened by excessive UI complexity, high decision overhead, and visually noisy interfaces. Momentum's light/dark mode, higher-contrast option, larger text, reduced-visual-load mode, and bottom mobile navigation are intended to lower interaction cost and improve readability under fatigue.
+
+These choices align with established accessibility and usability guidance: strong contrast and readable typography improve perceptual clarity, and predictable navigation reduces cognitive switching costs. In short, interface simplicity is treated as a therapeutic support feature, not just visual polish.
+
+- [W3C WCAG 2.2 -- Contrast and readable presentation guidance](https://www.w3.org/TR/WCAG22/)
+- [Nielsen Norman Group -- Recognition over recall and consistency in navigation](https://www.nngroup.com/articles/ten-usability-heuristics/)
+
 ## Nature Imagery and Mood
 
 The peaceful nature images Momentum displays at launch are not merely decorative. Viewing images of natural environments has been shown to increase feelings of comfort and relaxation with a large effect size, while reducing activity in the orbitofrontal cortex -- a brain region that is hyperactive in depression and anxiety. Importantly, people with more depressive symptoms benefit more from viewing nature than those without, making this a particularly fitting intervention for Momentum's users.

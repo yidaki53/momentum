@@ -12,7 +12,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 from tkinter import messagebox, scrolledtext, simpledialog, ttk
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
@@ -22,14 +22,22 @@ from momentum.assessments import (
     BDEFS_INSTRUCTIONS,
     BDEFS_QUESTIONS,
     BDEFS_SCALE,
+    BISBAS_INSTRUCTIONS,
+    BISBAS_QUESTIONS,
+    BISBAS_SCALE,
     RESULTS_GUIDE,
     STROOP_INSTRUCTIONS,
     StroopResult,
+    bisbas_domain_advice,
     domain_advice,
     generate_stroop_trials,
     interpret_bdefs,
+    interpret_bisbas,
     interpret_stroop,
+    personalised_nudge,
+    profile_from_latest_bisbas,
     score_bdefs,
+    score_bisbas,
     score_stroop,
 )
 from momentum.charts import bdefs_radar, bdefs_timeseries
@@ -40,8 +48,12 @@ from momentum.models import (
     FocusSessionCreate,
     TaskCreate,
     TaskStatus,
+    ThemeMode,
     WindowPosition,
 )
+
+if TYPE_CHECKING:
+    from momentum.assessments import PersonalisationProfile
 
 log = logging.getLogger(__name__)
 
@@ -91,11 +103,121 @@ class MomentumApp:
     FOCUS_DEFAULT_MINUTES: int = 15
     BREAK_DEFAULT_MINUTES: int = 5
 
+    def _font_size(self, base: int) -> int:
+        """Scale base font size when large-text accessibility is enabled."""
+        scale = 1.2 if self._config.accessibility_large_text else 1.0
+        return max(8, int(base * scale))
+
+    def _theme(self) -> dict[str, str]:
+        """Resolve the active colour palette from config."""
+        if self._config.theme_mode == ThemeMode.LIGHT:
+            palette = {
+                "bg": "#f5f6f8",
+                "panel": "#ffffff",
+                "fg": "#1f2933",
+                "muted": "#5f6b76",
+                "accent": "#2f6f8f",
+                "timer": "#a86f00",
+                "selection": "#9cc8e0",
+                "progress_trough": "#d9e1e8",
+            }
+        else:
+            palette = {
+                "bg": "#2b2b2b",
+                "panel": "#333333",
+                "fg": "#e0e0e0",
+                "muted": "#b5b5b5",
+                "accent": "#6a9fb5",
+                "timer": "#e8c547",
+                "selection": "#6a9fb5",
+                "progress_trough": "#444444",
+            }
+
+        if self._config.accessibility_high_contrast:
+            if self._config.theme_mode == ThemeMode.LIGHT:
+                palette.update(
+                    {
+                        "fg": "#000000",
+                        "muted": "#222222",
+                        "accent": "#005fcc",
+                        "selection": "#79b0ff",
+                    }
+                )
+            else:
+                palette.update(
+                    {
+                        "fg": "#ffffff",
+                        "muted": "#e6e6e6",
+                        "accent": "#8cc9ff",
+                        "selection": "#6dafff",
+                    }
+                )
+        return palette
+
+    def _input_palette(self) -> dict[str, str]:
+        """Resolve colors for direct tk widgets (Entry/Listbox/Radiobutton)."""
+        if self._config.theme_mode == ThemeMode.LIGHT:
+            colors = {
+                "input_bg": "#ffffff",
+                "input_fg": self._palette["fg"],
+                "select_bg": self._palette["selection"],
+                "radio_select": "#d9e1e8",
+                "link": "#1b5fa7",
+            }
+        else:
+            colors = {
+                "input_bg": "#333333",
+                "input_fg": self._palette["fg"],
+                "select_bg": self._palette["selection"],
+                "radio_select": "#333333",
+                "link": "#82b1ff",
+            }
+        if self._config.accessibility_high_contrast:
+            colors["link"] = (
+                "#004ecb" if self._config.theme_mode == ThemeMode.LIGHT else "#9cd1ff"
+            )
+        return colors
+
+    def _apply_runtime_theme(self) -> None:
+        """Apply palette changes to already-created top-level widgets."""
+        self.root.configure(bg=self._palette["bg"])
+        self._configure_styles()
+        if hasattr(self, "_task_listbox"):
+            inputs = self._input_palette()
+            self._task_listbox.configure(
+                bg=self._palette["panel"],
+                fg=self._palette["fg"],
+                selectbackground=inputs["select_bg"],
+                selectforeground=self._palette["fg"],
+                font=("sans-serif", self._font_size(10)),
+            )
+        if hasattr(self, "_image_label"):
+            self._image_label.configure(bg=self._palette["bg"])
+
+    def _personalisation_profile(self) -> PersonalisationProfile:
+        """Get personalization defaults from the latest BIS/BAS result."""
+        latest = db.list_assessments(
+            self.conn, assessment_type=AssessmentType.BISBAS, limit=1
+        )
+        return profile_from_latest_bisbas(latest[0] if latest else None)
+
+    def _refresh_personalisation(self) -> None:
+        """Refresh timer defaults and button labels from BIS/BAS profile."""
+        profile = self._personalisation_profile()
+        self.FOCUS_DEFAULT_MINUTES = profile.focus_minutes
+        self.BREAK_DEFAULT_MINUTES = profile.break_minutes
+        if hasattr(self, "_focus_button"):
+            self._focus_button.configure(text=f"Focus {self.FOCUS_DEFAULT_MINUTES} min")
+        if hasattr(self, "_break_button"):
+            self._break_button.configure(text=f"Break {self.BREAK_DEFAULT_MINUTES} min")
+
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("Momentum")
         self._apply_window_position(520, 720)
-        self.root.configure(bg="#2b2b2b")
+        self._config = cfg.load_config()
+        self._palette = self._theme()
+        self.root.configure(bg=self._palette["bg"])
         self._set_app_icon()
 
         self.conn = db.get_connection()
@@ -112,7 +234,13 @@ class MomentumApp:
         self._build_ui()
         self._refresh_tasks()
         self._refresh_status()
-        threading.Thread(target=self._fetch_image, daemon=True).start()
+        self._refresh_personalisation()
+        if self._config.accessibility_reduce_visual_load:
+            fallback = Image.new("RGB", (_IMG_WIDTH, _IMG_HEIGHT), (58, 90, 106))
+            self._draw_title(fallback)
+            self._set_image(fallback)
+        else:
+            threading.Thread(target=self._fetch_image, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Window position
@@ -157,61 +285,71 @@ class MomentumApp:
         self.root.wm_iconphoto(True, self._icon_image)
 
     def _configure_styles(self) -> None:
-        """Configure ttk styles for a dark, calming theme."""
-        bg = "#2b2b2b"
-        fg = "#e0e0e0"
-        accent = "#6a9fb5"
+        """Configure ttk styles for the active theme and accessibility options."""
+        bg = self._palette["bg"]
+        fg = self._palette["fg"]
+        accent = self._palette["accent"]
 
         self._style.configure("TFrame", background=bg)
         self._style.configure(
-            "TLabel", background=bg, foreground=fg, font=("sans-serif", 10)
+            "TLabel",
+            background=bg,
+            foreground=fg,
+            font=("sans-serif", self._font_size(10)),
         )
         self._style.configure(
             "Title.TLabel",
             background=bg,
             foreground=accent,
-            font=("sans-serif", 14, "bold"),
+            font=("sans-serif", self._font_size(14), "bold"),
         )
         self._style.configure(
             "Timer.TLabel",
             background=bg,
-            foreground="#e8c547",
-            font=("monospace", 28, "bold"),
+            foreground=self._palette["timer"],
+            font=("monospace", self._font_size(28), "bold"),
         )
         self._style.configure(
             "Nudge.TLabel",
             background=bg,
-            foreground="#b5b5b5",
-            font=("sans-serif", 10, "italic"),
+            foreground=self._palette["muted"],
+            font=("sans-serif", self._font_size(10), "italic"),
             wraplength=460,
         )
-        self._style.configure("TButton", font=("sans-serif", 9))
-        self._style.configure("Accent.TButton", font=("sans-serif", 9, "bold"))
+        self._style.configure("TButton", font=("sans-serif", self._font_size(9)))
         self._style.configure(
-            "Horizontal.TProgressbar", troughcolor="#444", background=accent
+            "Accent.TButton", font=("sans-serif", self._font_size(9), "bold")
+        )
+        self._style.configure(
+            "Horizontal.TProgressbar",
+            troughcolor=self._palette["progress_trough"],
+            background=accent,
         )
 
     def _build_ui(self) -> None:
         """Construct all UI elements."""
         pad = {"padx": 10, "pady": 5}
+        panel_bg = self._palette["panel"]
+        fg = self._palette["fg"]
+        accent = self._palette["accent"]
 
         # --- Menu bar ---
         menubar = tk.Menu(
             self.root,
-            bg="#333",
-            fg="#e0e0e0",
-            activebackground="#6a9fb5",
-            activeforeground="#fff",
+            bg=panel_bg,
+            fg=fg,
+            activebackground=accent,
+            activeforeground=fg,
         )
         self.root.configure(menu=menubar)
 
         app_menu = tk.Menu(
             menubar,
             tearoff=0,
-            bg="#333",
-            fg="#e0e0e0",
-            activebackground="#6a9fb5",
-            activeforeground="#fff",
+            bg=panel_bg,
+            fg=fg,
+            activebackground=accent,
+            activeforeground=fg,
         )
         app_menu.add_command(label="Settings", command=self._on_settings)
         app_menu.add_separator()
@@ -221,10 +359,10 @@ class MomentumApp:
         help_menu = tk.Menu(
             menubar,
             tearoff=0,
-            bg="#333",
-            fg="#e0e0e0",
-            activebackground="#6a9fb5",
-            activeforeground="#fff",
+            bg=panel_bg,
+            fg=fg,
+            activebackground=accent,
+            activeforeground=fg,
         )
         help_menu.add_command(label="How to Use", command=self._on_help)
         help_menu.add_command(label="The Science", command=self._on_science)
@@ -234,12 +372,13 @@ class MomentumApp:
         tests_menu = tk.Menu(
             menubar,
             tearoff=0,
-            bg="#333",
-            fg="#e0e0e0",
-            activebackground="#6a9fb5",
-            activeforeground="#fff",
+            bg=panel_bg,
+            fg=fg,
+            activebackground=accent,
+            activeforeground=fg,
         )
         tests_menu.add_command(label="Take Self-Assessment", command=self._on_bdefs)
+        tests_menu.add_command(label="Take BIS/BAS Profile", command=self._on_bisbas)
         tests_menu.add_command(label="Take Stroop Test", command=self._on_stroop)
         tests_menu.add_separator()
         tests_menu.add_command(label="View Results", command=self._on_view_results)
@@ -248,7 +387,7 @@ class MomentumApp:
         # --- Peaceful image banner ---
         self._image_label = tk.Label(
             self.root,
-            bg="#2b2b2b",
+            bg=self._palette["bg"],
             height=_IMG_HEIGHT // 8,
         )
         self._image_label.pack(fill=tk.X, padx=10, pady=(6, 0))
@@ -270,11 +409,11 @@ class MomentumApp:
 
         self._task_listbox = tk.Listbox(
             list_container,
-            bg="#333",
-            fg="#e0e0e0",
-            selectbackground="#6a9fb5",
-            selectforeground="#fff",
-            font=("sans-serif", 10),
+            bg=panel_bg,
+            fg=fg,
+            selectbackground=self._palette["selection"],
+            selectforeground=fg,
+            font=("sans-serif", self._font_size(10)),
             activestyle="none",
             borderwidth=0,
             highlightthickness=0,
@@ -324,15 +463,19 @@ class MomentumApp:
 
         timer_btn_frame = ttk.Frame(timer_frame)
         timer_btn_frame.pack()
-        ttk.Button(
+        self._focus_button = ttk.Button(
             timer_btn_frame,
-            text="Focus 15 min",
+            text=f"Focus {self.FOCUS_DEFAULT_MINUTES} min",
             command=self._on_focus,
             style="Accent.TButton",
-        ).pack(side=tk.LEFT, padx=2)
-        ttk.Button(timer_btn_frame, text="Break 5 min", command=self._on_break).pack(
-            side=tk.LEFT, padx=2
         )
+        self._focus_button.pack(side=tk.LEFT, padx=2)
+        self._break_button = ttk.Button(
+            timer_btn_frame,
+            text=f"Break {self.BREAK_DEFAULT_MINUTES} min",
+            command=self._on_break,
+        )
+        self._break_button.pack(side=tk.LEFT, padx=2)
         ttk.Button(timer_btn_frame, text="Stop", command=self._on_stop_timer).pack(
             side=tk.LEFT, padx=2
         )
@@ -342,7 +485,9 @@ class MomentumApp:
         nudge_frame.pack(fill=tk.X, **pad)
 
         self._nudge_label = ttk.Label(
-            nudge_frame, text=get_nudge(), style="Nudge.TLabel"
+            nudge_frame,
+            text=personalised_nudge(get_nudge(), self._personalisation_profile()),
+            style="Nudge.TLabel",
         )
         self._nudge_label.pack(pady=5)
 
@@ -375,7 +520,7 @@ class MomentumApp:
                 self._task_listbox.insert(
                     tk.END, f"{prefix}[x] #{task.id}  {task.title}"
                 )
-                self._task_listbox.itemconfig(tk.END, fg="#777777")
+                self._task_listbox.itemconfig(tk.END, fg=self._palette["muted"])
                 self._task_ids.append(task.id)
 
     def _refresh_status(self) -> None:
@@ -420,7 +565,9 @@ class MomentumApp:
         db.complete_task(self.conn, task_id)
         self._refresh_tasks()
         self._refresh_status()
-        self._nudge_label.configure(text=get_nudge())
+        self._nudge_label.configure(
+            text=personalised_nudge(get_nudge(), self._personalisation_profile())
+        )
 
     def _on_toggle_task(self, event: tk.Event) -> None:  # type: ignore[type-arg]
         """Double-click toggles a task between done and pending."""
@@ -434,7 +581,9 @@ class MomentumApp:
             db.uncomplete_task(self.conn, task_id)
         else:
             db.complete_task(self.conn, task_id)
-            self._nudge_label.configure(text=get_nudge())
+            self._nudge_label.configure(
+                text=personalised_nudge(get_nudge(), self._personalisation_profile())
+            )
         self._refresh_tasks()
         self._refresh_status()
 
@@ -510,7 +659,9 @@ class MomentumApp:
             )
             db.log_focus_session(self.conn, session_in)
             self._refresh_status()
-            self._nudge_label.configure(text=get_nudge())
+            self._nudge_label.configure(
+                text=personalised_nudge(get_nudge(), self._personalisation_profile())
+            )
             messagebox.showinfo(
                 "Focus complete",
                 f"{minutes}-minute focus session logged.",
@@ -533,7 +684,9 @@ class MomentumApp:
     # ------------------------------------------------------------------
 
     def _on_nudge(self) -> None:
-        self._nudge_label.configure(text=get_nudge())
+        self._nudge_label.configure(
+            text=personalised_nudge(get_nudge(), self._personalisation_profile())
+        )
 
     # ------------------------------------------------------------------
     # Settings
@@ -543,9 +696,10 @@ class MomentumApp:
         """Open the settings dialog."""
         win = tk.Toplevel(self.root)
         win.title("Settings")
-        win.geometry("440x480")
-        win.configure(bg="#2b2b2b")
+        win.geometry("520x680")
+        win.configure(bg=self._palette["bg"])
         win.transient(self.root)
+        inputs = self._input_palette()
         win.grab_set()
 
         pad = {"padx": 12, "pady": 4}
@@ -595,13 +749,14 @@ class MomentumApp:
         )
         custom_frame = ttk.Frame(win)
         custom_frame.pack(fill=tk.X, padx=12)
+        inputs = self._input_palette()
 
         path_entry = tk.Entry(
             custom_frame,
-            bg="#333",
-            fg="#e0e0e0",
-            insertbackground="#e0e0e0",
-            font=("sans-serif", 10),
+            bg=inputs["input_bg"],
+            fg=inputs["input_fg"],
+            insertbackground=inputs["input_fg"],
+            font=("sans-serif", self._font_size(10)),
         )
         path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
 
@@ -641,12 +796,96 @@ class MomentumApp:
                 variable=pos_var,
                 value=value,
                 command=_set_position,
-                bg="#2b2b2b",
-                fg="#e0e0e0",
-                selectcolor="#333",
-                activebackground="#2b2b2b",
-                activeforeground="#e0e0e0",
-                font=("sans-serif", 10),
+                bg=self._palette["bg"],
+                fg=self._palette["fg"],
+                selectcolor=inputs["radio_select"],
+                activebackground=self._palette["bg"],
+                activeforeground=self._palette["fg"],
+                font=("sans-serif", self._font_size(10)),
+            ).pack(anchor=tk.W)
+
+        # --- Theme and accessibility ---
+        ttk.Label(win, text="Appearance", style="Title.TLabel").pack(
+            anchor=tk.W, padx=12, pady=(10, 4)
+        )
+        appearance_frame = ttk.Frame(win)
+        appearance_frame.pack(fill=tk.X, padx=12)
+        theme_var = tk.StringVar(value=current.theme_mode.value)
+
+        def _set_theme() -> None:
+            cfg.set_theme_mode(theme_var.get())
+            self._config = cfg.load_config()
+            self._palette = self._theme()
+            self._apply_runtime_theme()
+            messagebox.showinfo(
+                "Theme updated",
+                "Theme saved. Reopen dialogs for complete repaint.",
+                parent=win,
+            )
+
+        for label, value in (
+            ("Dark", ThemeMode.DARK.value),
+            ("Light", ThemeMode.LIGHT.value),
+        ):
+            tk.Radiobutton(
+                appearance_frame,
+                text=label,
+                variable=theme_var,
+                value=value,
+                command=_set_theme,
+                bg=self._palette["bg"],
+                fg=self._palette["fg"],
+                selectcolor=inputs["radio_select"],
+                activebackground=self._palette["bg"],
+                activeforeground=self._palette["fg"],
+                font=("sans-serif", self._font_size(10)),
+            ).pack(anchor=tk.W)
+
+        ttk.Label(win, text="Accessibility", style="Title.TLabel").pack(
+            anchor=tk.W, padx=12, pady=(8, 4)
+        )
+        access_frame = ttk.Frame(win)
+        access_frame.pack(fill=tk.X, padx=12)
+
+        large_text_var = tk.BooleanVar(value=current.accessibility_large_text)
+        high_contrast_var = tk.BooleanVar(value=current.accessibility_high_contrast)
+        reduce_visual_var = tk.BooleanVar(
+            value=current.accessibility_reduce_visual_load
+        )
+
+        def _apply_accessibility() -> None:
+            cfg.set_accessibility_options(
+                large_text=large_text_var.get(),
+                high_contrast=high_contrast_var.get(),
+                reduce_visual_load=reduce_visual_var.get(),
+            )
+            self._config = cfg.load_config()
+            self._palette = self._theme()
+            self._apply_runtime_theme()
+            self._refresh_personalisation()
+            if self._config.accessibility_reduce_visual_load:
+                fallback = Image.new("RGB", (_IMG_WIDTH, _IMG_HEIGHT), (58, 90, 106))
+                self._draw_title(fallback)
+                self._set_image(fallback)
+            elif self._photo_image is None:
+                threading.Thread(target=self._fetch_image, daemon=True).start()
+
+        for label, var in (
+            ("Larger text", large_text_var),
+            ("Higher contrast", high_contrast_var),
+            ("Reduce visual load (simple banner)", reduce_visual_var),
+        ):
+            tk.Checkbutton(
+                access_frame,
+                text=label,
+                variable=var,
+                command=_apply_accessibility,
+                bg=self._palette["bg"],
+                fg=self._palette["fg"],
+                activebackground=self._palette["bg"],
+                activeforeground=self._palette["fg"],
+                selectcolor=inputs["radio_select"],
+                font=("sans-serif", self._font_size(10)),
             ).pack(anchor=tk.W)
 
         # Reset
@@ -718,8 +957,9 @@ class MomentumApp:
         win = tk.Toplevel(self.root)
         win.title("Browse Database")
         win.geometry("640x500")
-        win.configure(bg="#2b2b2b")
+        win.configure(bg=self._palette["bg"])
         win.transient(self.root)
+        inputs = self._input_palette()
 
         # Table selector
         sel_frame = ttk.Frame(win)
@@ -728,11 +968,11 @@ class MomentumApp:
 
         listbox = tk.Listbox(
             win,
-            bg="#333",
-            fg="#e0e0e0",
-            selectbackground="#6a9fb5",
-            selectforeground="#fff",
-            font=("monospace", 9),
+            bg=inputs["input_bg"],
+            fg=inputs["input_fg"],
+            selectbackground=inputs["select_bg"],
+            selectforeground=self._palette["fg"],
+            font=("monospace", self._font_size(9)),
             activestyle="none",
             borderwidth=0,
             highlightthickness=0,
@@ -780,12 +1020,12 @@ class MomentumApp:
                 variable=table_var,
                 value=tbl_name,
                 command=_load,
-                bg="#2b2b2b",
-                fg="#e0e0e0",
-                selectcolor="#333",
-                activebackground="#2b2b2b",
-                activeforeground="#e0e0e0",
-                font=("sans-serif", 9),
+                bg=self._palette["bg"],
+                fg=self._palette["fg"],
+                selectcolor=inputs["radio_select"],
+                activebackground=self._palette["bg"],
+                activeforeground=self._palette["fg"],
+                font=("sans-serif", self._font_size(9)),
             ).pack(side=tk.LEFT, padx=4)
 
         def _delete_selected() -> None:
@@ -847,15 +1087,16 @@ class MomentumApp:
         win = tk.Toplevel(self.root)
         win.title("How to Use")
         win.geometry("600x540")
-        win.configure(bg="#2b2b2b")
+        win.configure(bg=self._palette["bg"])
         win.transient(self.root)
+        inputs = self._input_palette()
 
         text = scrolledtext.ScrolledText(
             win,
             wrap=tk.WORD,
-            bg="#2b2b2b",
-            fg="#e0e0e0",
-            font=("sans-serif", 10),
+            bg=inputs["input_bg"],
+            fg=inputs["input_fg"],
+            font=("sans-serif", self._font_size(10)),
             borderwidth=0,
             highlightthickness=0,
             padx=16,
@@ -871,36 +1112,52 @@ class MomentumApp:
 
     def _render_markdown(self, widget: scrolledtext.ScrolledText, md: str) -> None:
         """Insert *md* into *widget* with basic visual formatting."""
+        inputs = self._input_palette()
+        h_fg = self._palette["accent"]
+        body_fg = self._palette["fg"]
+        muted_fg = self._palette["muted"]
+        code_bg = (
+            self._palette["panel"]
+            if self._config.theme_mode == ThemeMode.LIGHT
+            else "#1e1e1e"
+        )
         widget.tag_configure(
-            "h1", font=("sans-serif", 16, "bold"), foreground="#6a9fb5", spacing3=4
+            "h1",
+            font=("sans-serif", self._font_size(16), "bold"),
+            foreground=h_fg,
+            spacing3=4,
         )
         widget.tag_configure(
             "h2",
-            font=("sans-serif", 13, "bold"),
-            foreground="#6a9fb5",
+            font=("sans-serif", self._font_size(13), "bold"),
+            foreground=h_fg,
             spacing1=10,
             spacing3=2,
         )
         widget.tag_configure(
             "h3",
-            font=("sans-serif", 11, "bold"),
-            foreground="#6a9fb5",
+            font=("sans-serif", self._font_size(11), "bold"),
+            foreground=h_fg,
             spacing1=8,
             spacing3=2,
         )
-        widget.tag_configure("body", font=("sans-serif", 10), foreground="#e0e0e0")
+        widget.tag_configure(
+            "body",
+            font=("sans-serif", self._font_size(10)),
+            foreground=body_fg,
+        )
         widget.tag_configure(
             "bullet",
-            font=("sans-serif", 10),
-            foreground="#e0e0e0",
+            font=("sans-serif", self._font_size(10)),
+            foreground=body_fg,
             lmargin1=16,
             lmargin2=28,
         )
         widget.tag_configure(
             "code_block",
-            font=("monospace", 9),
-            foreground="#c5c8c6",
-            background="#1e1e1e",
+            font=("monospace", self._font_size(9)),
+            foreground=muted_fg,
+            background=code_bg,
             lmargin1=16,
             lmargin2=16,
             rmargin=16,
@@ -909,19 +1166,21 @@ class MomentumApp:
         )
         widget.tag_configure(
             "table_row",
-            font=("monospace", 9),
-            foreground="#e0e0e0",
+            font=("monospace", self._font_size(9)),
+            foreground=body_fg,
             lmargin1=8,
             lmargin2=8,
         )
         widget.tag_configure(
-            "bold", font=("sans-serif", 10, "bold"), foreground="#e0e0e0"
+            "bold",
+            font=("sans-serif", self._font_size(10), "bold"),
+            foreground=body_fg,
         )
         widget.tag_configure(
             "inline_code",
-            font=("monospace", 9),
-            foreground="#c5c8c6",
-            background="#1e1e1e",
+            font=("monospace", self._font_size(9)),
+            foreground=muted_fg,
+            background=code_bg,
         )
 
         link_count = 0
@@ -947,8 +1206,8 @@ class MomentumApp:
                     link_count += 1
                     widget.tag_configure(
                         tag,
-                        font=("sans-serif", 10),
-                        foreground="#82b1ff",
+                        font=("sans-serif", self._font_size(10)),
+                        foreground=inputs["link"],
                         underline=True,
                     )
                     widget.tag_bind(tag, "<Button-1>", _make_link(m.group(5)))
@@ -1049,15 +1308,16 @@ class MomentumApp:
         win = tk.Toplevel(self.root)
         win.title("The Science Behind Momentum")
         win.geometry("620x640")
-        win.configure(bg="#2b2b2b")
+        win.configure(bg=self._palette["bg"])
         win.transient(self.root)
+        inputs = self._input_palette()
 
         text = scrolledtext.ScrolledText(
             win,
             wrap=tk.WORD,
-            bg="#2b2b2b",
-            fg="#e0e0e0",
-            font=("sans-serif", 10),
+            bg=inputs["input_bg"],
+            fg=inputs["input_fg"],
+            font=("sans-serif", self._font_size(10)),
             borderwidth=0,
             highlightthickness=0,
             padx=16,
@@ -1101,11 +1361,12 @@ class MomentumApp:
         win = tk.Toplevel(self.root)
         win.title("Executive Function Self-Assessment")
         win.geometry("560x520")
-        win.configure(bg="#2b2b2b")
+        win.configure(bg=self._palette["bg"])
         win.transient(self.root)
         win.grab_set()
+        inputs = self._input_palette()
 
-        canvas = tk.Canvas(win, bg="#2b2b2b", highlightthickness=0)
+        canvas = tk.Canvas(win, bg=self._palette["bg"], highlightthickness=0)
         scrollbar = ttk.Scrollbar(win, orient=tk.VERTICAL, command=canvas.yview)
         inner = ttk.Frame(canvas)
 
@@ -1152,12 +1413,12 @@ class MomentumApp:
                         text=str(val),
                         variable=var,
                         value=val,
-                        bg="#2b2b2b",
-                        fg="#e0e0e0",
-                        selectcolor="#333",
-                        activebackground="#2b2b2b",
-                        activeforeground="#e0e0e0",
-                        font=("sans-serif", 9),
+                        bg=self._palette["bg"],
+                        fg=self._palette["fg"],
+                        selectcolor=inputs["radio_select"],
+                        activebackground=self._palette["bg"],
+                        activeforeground=self._palette["fg"],
+                        font=("sans-serif", self._font_size(9)),
                     ).pack(side=tk.LEFT)
                 row += 1
             vars_map[domain] = domain_vars
@@ -1168,6 +1429,112 @@ class MomentumApp:
             saved = db.save_assessment(self.conn, create_model)
             win.destroy()
             self._show_bdefs_result(saved)
+
+        ttk.Button(inner, text="Submit", command=_submit, style="Accent.TButton").grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            pady=12,
+        )
+
+    def _on_bisbas(self) -> None:
+        """Run the BIS/BAS motivational profile in a dialog."""
+        if not messagebox.askokcancel(
+            "BIS/BAS Motivational Profile",
+            BISBAS_INSTRUCTIONS + "\n\nPress OK to begin.",
+            parent=self.root,
+        ):
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("BIS/BAS Motivational Profile")
+        win.geometry("600x560")
+        win.configure(bg=self._palette["bg"])
+        win.transient(self.root)
+        win.grab_set()
+
+        canvas = tk.Canvas(win, bg=self._palette["bg"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(win, orient=tk.VERTICAL, command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind(
+            "<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        ttk.Label(
+            inner,
+            text="Rate each statement (1 = very false ... 4 = very true)",
+            style="Title.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky=tk.W, padx=12, pady=(8, 4))
+
+        vars_map: dict[str, list[tk.IntVar]] = {}
+        row = 1
+        for domain, questions in BISBAS_QUESTIONS.items():
+            ttk.Label(inner, text=domain, style="Title.TLabel").grid(
+                row=row,
+                column=0,
+                columnspan=2,
+                sticky=tk.W,
+                padx=12,
+                pady=(10, 2),
+            )
+            row += 1
+            domain_vars: list[tk.IntVar] = []
+            for q in questions:
+                ttk.Label(inner, text=q, style="TLabel", wraplength=420).grid(
+                    row=row,
+                    column=0,
+                    sticky=tk.W,
+                    padx=(20, 4),
+                    pady=2,
+                )
+                var = tk.IntVar(value=2)
+                domain_vars.append(var)
+                opt_frame = ttk.Frame(inner)
+                opt_frame.grid(row=row, column=1, sticky=tk.W, padx=4, pady=2)
+                for val in BISBAS_SCALE:
+                    tk.Radiobutton(
+                        opt_frame,
+                        text=str(val),
+                        variable=var,
+                        value=val,
+                        bg=self._palette["bg"],
+                        fg=self._palette["fg"],
+                        selectcolor=self._palette["panel"],
+                        activebackground=self._palette["bg"],
+                        activeforeground=self._palette["fg"],
+                        font=("sans-serif", self._font_size(9)),
+                    ).pack(side=tk.LEFT)
+                row += 1
+            vars_map[domain] = domain_vars
+
+        def _submit() -> None:
+            answers = {d: [v.get() for v in vs] for d, vs in vars_map.items()}
+            create_model = score_bisbas(answers)
+            saved = db.save_assessment(self.conn, create_model)
+            self._refresh_personalisation()
+            win.destroy()
+
+            lines: list[str] = [f"Total score: {saved.score}/{saved.max_score}", ""]
+            for d, s in saved.domain_scores.items():
+                max_domain = len(BISBAS_QUESTIONS.get(d, [])) * 4
+                lines.append(f"{d}: {s}/{max_domain if max_domain else 1}")
+                advice = bisbas_domain_advice(d, s, max_domain if max_domain else 1)
+                if advice:
+                    lines.append(f"  - {advice}")
+            lines.append("")
+            lines.append(
+                interpret_bisbas(saved.score, saved.max_score, saved.domain_scores)
+            )
+            lines.append("")
+            lines.append(
+                f"Personalized defaults applied: focus {self.FOCUS_DEFAULT_MINUTES} min, "
+                f"break {self.BREAK_DEFAULT_MINUTES} min."
+            )
+            messagebox.showinfo("BIS/BAS Result", "\n".join(lines), parent=self.root)
 
         ttk.Button(inner, text="Submit", command=_submit, style="Accent.TButton").grid(
             row=row,
@@ -1194,9 +1561,10 @@ class MomentumApp:
         win = tk.Toplevel(self.root)
         win.title("Stroop Colour-Word Test")
         win.geometry("400x300")
-        win.configure(bg="#2b2b2b")
+        win.configure(bg=self._palette["bg"])
         win.transient(self.root)
         win.grab_set()
+        inputs = self._input_palette()
 
         ttk.Label(
             win,
@@ -1218,8 +1586,8 @@ class MomentumApp:
         word_label = tk.Label(
             win,
             text="",
-            font=("sans-serif", 36, "bold"),
-            bg="#2b2b2b",
+            font=("sans-serif", self._font_size(32), "bold"),
+            bg=self._palette["bg"],
         )
         word_label.pack(pady=16)
 
@@ -1227,10 +1595,10 @@ class MomentumApp:
         entry = tk.Entry(
             win,
             textvariable=entry_var,
-            bg="#333",
-            fg="#e0e0e0",
-            insertbackground="#e0e0e0",
-            font=("sans-serif", 14),
+            bg=inputs["input_bg"],
+            fg=inputs["input_fg"],
+            insertbackground=inputs["input_fg"],
+            font=("sans-serif", self._font_size(14)),
             justify=tk.CENTER,
         )
         entry.pack(padx=40, fill=tk.X)
@@ -1308,13 +1676,13 @@ class MomentumApp:
         rwin = tk.Toplevel(self.root)
         rwin.title("Assessment Result")
         rwin.geometry("620x780")
-        rwin.configure(bg="#2b2b2b")
+        rwin.configure(bg=self._palette["bg"])
         rwin.transient(self.root)
 
         # Radar chart
         radar_img = bdefs_radar(latest=saved, previous=previous)
         radar_tk = ImageTk.PhotoImage(radar_img)
-        radar_label = tk.Label(rwin, image=radar_tk, bg="#2b2b2b")  # type: ignore[arg-type]
+        radar_label = tk.Label(rwin, image=radar_tk, bg=self._palette["bg"])  # type: ignore[arg-type]
         radar_label.image = radar_tk  # prevent GC
         radar_label.pack(padx=8, pady=(8, 0))
 
@@ -1355,11 +1723,12 @@ class MomentumApp:
         win = tk.Toplevel(self.root)
         win.title("Assessment Results")
         win.geometry("680x780")
-        win.configure(bg="#2b2b2b")
+        win.configure(bg=self._palette["bg"])
         win.transient(self.root)
+        inputs = self._input_palette()
 
         # Scrollable canvas for the whole window
-        outer_canvas = tk.Canvas(win, bg="#2b2b2b", highlightthickness=0)
+        outer_canvas = tk.Canvas(win, bg=self._palette["bg"], highlightthickness=0)
         v_scroll = ttk.Scrollbar(win, orient=tk.VERTICAL, command=outer_canvas.yview)
         content = ttk.Frame(outer_canvas)
         content.bind(
@@ -1410,7 +1779,7 @@ class MomentumApp:
                 )
                 radar_tk = ImageTk.PhotoImage(radar_img)
                 self._results_images.append(radar_tk)
-                tk.Label(content, image=radar_tk, bg="#2b2b2b").pack(
+                tk.Label(content, image=radar_tk, bg=self._palette["bg"]).pack(
                     padx=8, pady=(8, 0)
                 )
 
@@ -1419,15 +1788,17 @@ class MomentumApp:
             if ts_img is not None:
                 ts_tk = ImageTk.PhotoImage(ts_img)
                 self._results_images.append(ts_tk)
-                tk.Label(content, image=ts_tk, bg="#2b2b2b").pack(padx=8, pady=(4, 8))
+                tk.Label(content, image=ts_tk, bg=self._palette["bg"]).pack(
+                    padx=8, pady=(4, 8)
+                )
 
             # --- Textual list of all results ---
             text = scrolledtext.ScrolledText(
                 content,
                 wrap=tk.WORD,
-                bg="#2b2b2b",
-                fg="#e0e0e0",
-                font=("sans-serif", 10),
+                bg=inputs["input_bg"],
+                fg=inputs["input_fg"],
+                font=("sans-serif", self._font_size(10)),
                 borderwidth=0,
                 highlightthickness=0,
                 padx=16,
@@ -1437,11 +1808,19 @@ class MomentumApp:
             text.pack(fill=tk.BOTH, expand=True, padx=4)
 
             text.tag_configure(
-                "heading", font=("sans-serif", 12, "bold"), foreground="#6a9fb5"
+                "heading",
+                font=("sans-serif", self._font_size(12), "bold"),
+                foreground=self._palette["accent"],
             )
-            text.tag_configure("body", font=("sans-serif", 10), foreground="#e0e0e0")
             text.tag_configure(
-                "interp", font=("sans-serif", 10, "italic"), foreground="#b5b5b5"
+                "body",
+                font=("sans-serif", self._font_size(10)),
+                foreground=self._palette["fg"],
+            )
+            text.tag_configure(
+                "interp",
+                font=("sans-serif", self._font_size(10), "italic"),
+                foreground=self._palette["muted"],
             )
 
             for r in results:
@@ -1464,6 +1843,19 @@ class MomentumApp:
                     text.insert(
                         tk.END,
                         f"  {interpret_stroop(r.score, r.max_score, avg_ms)}\n",
+                        "interp",
+                    )
+                elif r.assessment_type == AssessmentType.BISBAS:
+                    for d, s in r.domain_scores.items():
+                        max_domain = len(BISBAS_QUESTIONS.get(d, [])) * 4
+                        text.insert(
+                            tk.END,
+                            f"    {d}: {s}/{max_domain if max_domain else 1}\n",
+                            "body",
+                        )
+                    text.insert(
+                        tk.END,
+                        f"  {interpret_bisbas(r.score, r.max_score, r.domain_scores)}\n",
                         "interp",
                     )
                 text.insert(tk.END, "\n")

@@ -46,6 +46,7 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 from kivy.uix.togglebutton import ToggleButton
 from kivy.uix.widget import Widget
+from kivy.utils import get_color_from_hex
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
 
@@ -54,14 +55,21 @@ from momentum import db
 from momentum.assessments import (
     BDEFS_INSTRUCTIONS,
     BDEFS_QUESTIONS,
+    BISBAS_INSTRUCTIONS,
+    BISBAS_QUESTIONS,
     RESULTS_GUIDE,
     STROOP_INSTRUCTIONS,
     StroopResult,
+    bisbas_domain_advice,
     domain_advice,
     generate_stroop_trials,
     interpret_bdefs,
+    interpret_bisbas,
     interpret_stroop,
+    personalised_nudge,
+    profile_from_latest_bisbas,
     score_bdefs,
+    score_bisbas,
     score_stroop,
 )
 from momentum.charts import bdefs_radar, bdefs_timeseries
@@ -71,6 +79,7 @@ from momentum.models import (
     FocusSessionCreate,
     TaskCreate,
     TaskStatus,
+    ThemeMode,
 )
 
 log = logging.getLogger(__name__)
@@ -79,10 +88,57 @@ log = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
-_ACCENT = (0.416, 0.624, 0.710, 1)      # #6a9fb5
-_TEXT = (0.878, 0.878, 0.878, 1)          # #e0e0e0
-_MUTED = (0.71, 0.71, 0.71, 1)           # #b5b5b5
-_BG = (0.169, 0.169, 0.169, 1)           # #2b2b2b
+def _resolve_palette() -> dict[str, list[float]]:
+    """Build the active mobile color palette from persisted config."""
+    conf = cfg.load_config()
+    if conf.theme_mode == ThemeMode.LIGHT:
+        palette = {
+            "bg": get_color_from_hex("#f5f6f8"),
+            "panel": get_color_from_hex("#ffffff"),
+            "text": get_color_from_hex("#1f2933"),
+            "muted": get_color_from_hex("#5f6b76"),
+            "accent": get_color_from_hex("#2f6f8f"),
+            "toolbar": get_color_from_hex("#dbe3ea"),
+            "input_bg": get_color_from_hex("#ffffff"),
+            "timer": get_color_from_hex("#a86f00"),
+            "neutral_button": get_color_from_hex("#d9e1e8"),
+            "success_button": get_color_from_hex("#5a8a5a"),
+            "secondary_button": get_color_from_hex("#7a6a9f"),
+            "danger_button": get_color_from_hex("#9f6a6a"),
+        }
+    else:
+        palette = {
+            "bg": get_color_from_hex("#2b2b2b"),
+            "panel": get_color_from_hex("#333333"),
+            "text": get_color_from_hex("#e0e0e0"),
+            "muted": get_color_from_hex("#b5b5b5"),
+            "accent": get_color_from_hex("#6a9fb5"),
+            "toolbar": get_color_from_hex("#1e1e1e"),
+            "input_bg": get_color_from_hex("#333333"),
+            "timer": get_color_from_hex("#e8c547"),
+            "neutral_button": get_color_from_hex("#3a3a3a"),
+            "success_button": get_color_from_hex("#5a8a5a"),
+            "secondary_button": get_color_from_hex("#5a5a7a"),
+            "danger_button": get_color_from_hex("#9f6a6a"),
+        }
+    if conf.accessibility_high_contrast:
+        if conf.theme_mode == ThemeMode.LIGHT:
+            palette["text"] = get_color_from_hex("#000000")
+            palette["muted"] = get_color_from_hex("#222222")
+            palette["accent"] = get_color_from_hex("#005fcc")
+        else:
+            palette["text"] = get_color_from_hex("#ffffff")
+            palette["muted"] = get_color_from_hex("#e6e6e6")
+            palette["accent"] = get_color_from_hex("#8cc9ff")
+    return palette
+
+
+_PALETTE = _resolve_palette()
+_APP_CFG = cfg.load_config()
+_ACCENT = _PALETTE["accent"]
+_TEXT = _PALETTE["text"]
+_MUTED = _PALETTE["muted"]
+_BG = _PALETTE["bg"]
 
 # Fallback photo IDs if IMAGES.md is missing
 _FALLBACK_PHOTOS = [
@@ -133,8 +189,10 @@ def _find_md(name: str) -> str:
 
 def _make_label(text, **kw):
     """Create a self-sizing Label with text wrapping."""
+    app = App.get_running_app()
+    default_text = list(app.text_color) if app and hasattr(app, "text_color") else _TEXT
     defaults = dict(
-        font_size=sp(14), color=_TEXT,
+        font_size=sp(14), color=default_text,
         size_hint_y=None, text_size=(None, None), halign="left", valign="top",
     )
     defaults.update(kw)
@@ -243,15 +301,12 @@ def _render_markdown(container, md_text):
 # ---------------------------------------------------------------------------
 
 KV = """
-#:import get_color_from_hex kivy.utils.get_color_from_hex
 #:import dp kivy.metrics.dp
 #:import sp kivy.metrics.sp
 
-# ---- Reusable styles ----
-
 <AccentLabel@Label>:
-    color: get_color_from_hex('#6a9fb5')
-    font_size: sp(16)
+    color: app.accent_color
+    font_size: sp(16) * app.font_scale
     bold: True
     size_hint_y: None
     height: dp(32)
@@ -259,53 +314,53 @@ KV = """
     halign: 'left'
 
 <DarkButton@Button>:
-    background_color: get_color_from_hex('#6a9fb5')
-    font_size: sp(14)
+    background_color: app.accent_color
+    color: app.text_color
+    font_size: sp(14) * app.font_scale
     size_hint_y: None
     height: dp(44)
     bold: True
 
-# ---- Toolbar ----
-
 <Toolbar>:
     size_hint_y: None
-    height: dp(44)
+    height: dp(48)
     spacing: dp(2)
     padding: [dp(2), dp(2)]
     canvas.before:
         Color:
-            rgba: get_color_from_hex('#1e1e1e')
+            rgba: app.toolbar_color
         Rectangle:
             pos: self.pos
             size: self.size
-
     Button:
         text: 'Home'
-        font_size: sp(12)
+        font_size: sp(12) * app.font_scale
         bold: True
-        background_color: get_color_from_hex('#6a9fb5')
-        size_hint_x: 0.18
+        background_color: app.accent_color
+        color: app.text_color
+        size_hint_x: 0.25
         on_release: root.go('home', 'right')
     Button:
         text: 'Settings'
-        font_size: sp(11)
-        background_color: get_color_from_hex('#3a3a3a')
-        size_hint_x: 0.22
+        font_size: sp(11) * app.font_scale
+        background_color: app.neutral_button_color
+        color: app.text_color
+        size_hint_x: 0.25
         on_release: root.go('settings', 'left')
     Button:
         text: 'Help'
-        font_size: sp(12)
-        background_color: get_color_from_hex('#3a3a3a')
-        size_hint_x: 0.18
+        font_size: sp(12) * app.font_scale
+        background_color: app.neutral_button_color
+        color: app.text_color
+        size_hint_x: 0.25
         on_release: root.go('help_menu', 'left')
     Button:
         text: 'Tests'
-        font_size: sp(12)
-        background_color: get_color_from_hex('#3a3a3a')
-        size_hint_x: 0.18
+        font_size: sp(12) * app.font_scale
+        background_color: app.neutral_button_color
+        color: app.text_color
+        size_hint_x: 0.25
         on_release: root.go('tests_menu', 'left')
-
-# ---- Task row ----
 
 <TaskRow>:
     size_hint_y: None
@@ -319,61 +374,53 @@ KV = """
     Label:
         text: root.icon
         size_hint_x: 0.1
-        color: get_color_from_hex('#6a9fb5')
-        font_size: sp(16)
+        color: app.accent_color
+        font_size: sp(16) * app.font_scale
     Label:
         text: root.title_text
         size_hint_x: 0.7
         text_size: self.size
         halign: 'left'
         valign: 'middle'
-        color: get_color_from_hex('#e0e0e0')
-        font_size: sp(14)
+        color: app.text_color
+        font_size: sp(14) * app.font_scale
     Button:
         text: root.btn_text
         size_hint_x: 0.2
         background_color: root.btn_color
+        color: app.text_color
         on_release: root.on_complete()
-
-# ---- Home screen ----
 
 <HomeScreen>:
     BoxLayout:
         orientation: 'vertical'
         canvas.before:
             Color:
-                rgba: get_color_from_hex('#2b2b2b')
+                rgba: app.bg_color
             Rectangle:
                 pos: self.pos
                 size: self.size
-
-        Toolbar:
-
-        # Nature image banner
         BoxLayout:
             id: banner_box
             size_hint_y: None
             height: dp(100)
             padding: [dp(8), dp(4)]
-
         Label:
             text: root.status_text
             size_hint_y: None
             height: dp(32)
-            color: get_color_from_hex('#6a9fb5')
-            font_size: sp(13)
-
+            color: app.accent_color
+            font_size: sp(13) * app.font_scale
         Label:
             text: 'Tasks'
             size_hint_y: None
             height: dp(28)
-            color: get_color_from_hex('#6a9fb5')
-            font_size: sp(18)
+            color: app.accent_color
+            font_size: sp(18) * app.font_scale
             bold: True
             halign: 'left'
             text_size: self.size
             padding: [dp(12), 0]
-
         ScrollView:
             size_hint_y: 0.35
             do_scroll_x: False
@@ -384,7 +431,6 @@ KV = """
                 height: self.minimum_height
                 spacing: dp(2)
                 padding: [dp(8), 0]
-
         BoxLayout:
             size_hint_y: None
             height: dp(44)
@@ -392,97 +438,95 @@ KV = """
             padding: [dp(8), dp(4)]
             Button:
                 text: 'Add task'
-                background_color: get_color_from_hex('#6a9fb5')
+                background_color: app.accent_color
+                color: app.text_color
                 on_release: root.show_add_dialog()
             Button:
                 text: 'Break down'
-                background_color: get_color_from_hex('#5a8a5a')
+                background_color: app.success_button_color
+                color: app.text_color
                 on_release: root.show_breakdown_dialog()
             Button:
                 text: 'Completed'
-                background_color: get_color_from_hex('#5a5a7a')
+                background_color: app.secondary_button_color
+                color: app.text_color
                 on_release: root.toggle_show_completed()
-
         Label:
             text: 'Timer'
             size_hint_y: None
             height: dp(28)
-            color: get_color_from_hex('#6a9fb5')
-            font_size: sp(18)
+            color: app.accent_color
+            font_size: sp(18) * app.font_scale
             bold: True
             halign: 'left'
             text_size: self.size
             padding: [dp(12), 0]
-
         Label:
             text: root.timer_display
             size_hint_y: None
             height: dp(50)
-            color: get_color_from_hex('#e8c547')
-            font_size: sp(36)
+            color: app.timer_color
+            font_size: sp(36) * app.font_scale
             bold: True
-
         ProgressBar:
             value: root.timer_progress
             max: 100
             size_hint_y: None
             height: dp(8)
-
         BoxLayout:
             size_hint_y: None
             height: dp(48)
             spacing: dp(8)
             padding: [dp(8), dp(4)]
             Button:
-                text: 'Focus 15m'
-                background_color: get_color_from_hex('#6a9fb5')
-                font_size: sp(14)
+                text: root.focus_button_text
+                background_color: app.accent_color
+                color: app.text_color
+                font_size: sp(14) * app.font_scale
                 bold: True
                 on_release: root.start_focus()
             Button:
-                text: 'Break 5m'
-                background_color: get_color_from_hex('#7a6a9f')
-                font_size: sp(14)
+                text: root.break_button_text
+                background_color: app.secondary_button_color
+                color: app.text_color
+                font_size: sp(14) * app.font_scale
                 on_release: root.start_break()
             Button:
                 text: 'Stop'
-                background_color: get_color_from_hex('#9f6a6a')
-                font_size: sp(14)
+                background_color: app.danger_button_color
+                color: app.text_color
+                font_size: sp(14) * app.font_scale
                 on_release: root.stop_timer()
-
         Label:
             text: root.nudge_text
             size_hint_y: None
             height: dp(56)
-            color: get_color_from_hex('#b5b5b5')
-            font_size: sp(13)
+            color: app.muted_color
+            font_size: sp(13) * app.font_scale
             italic: True
             text_size: self.width - dp(24), None
             halign: 'center'
-
         Button:
             text: 'New encouragement'
             size_hint_y: None
             height: dp(40)
-            background_color: get_color_from_hex('#5a5a7a')
+            background_color: app.secondary_button_color
+            color: app.text_color
             on_release: root.refresh_nudge()
-
         Widget:
             size_hint_y: None
             height: dp(4)
-
-# ---- Scrollable content screen (reused by Settings, Science, Help, Results) ----
+        Toolbar:
 
 <ScrollScreen>:
     BoxLayout:
         orientation: 'vertical'
         canvas.before:
             Color:
-                rgba: get_color_from_hex('#2b2b2b')
+                rgba: app.bg_color
             Rectangle:
                 pos: self.pos
                 size: self.size
-        Toolbar:
         ScrollView:
             do_scroll_x: False
             BoxLayout:
@@ -492,19 +536,17 @@ KV = """
                 height: self.minimum_height
                 padding: [dp(16), dp(12)]
                 spacing: dp(4)
-
-# ---- Tests menu screen ----
+        Toolbar:
 
 <TestsMenuScreen>:
     BoxLayout:
         orientation: 'vertical'
         canvas.before:
             Color:
-                rgba: get_color_from_hex('#2b2b2b')
+                rgba: app.bg_color
             Rectangle:
                 pos: self.pos
                 size: self.size
-        Toolbar:
         BoxLayout:
             orientation: 'vertical'
             padding: [dp(16), dp(24)]
@@ -515,8 +557,12 @@ KV = """
                 text: 'Take BDEFS Assessment'
                 on_release: root.go_bdefs()
             DarkButton:
+                text: 'Take BIS/BAS Profile'
+                background_color: app.secondary_button_color
+                on_release: root.go_bisbas()
+            DarkButton:
                 text: 'Take Stroop Test'
-                background_color: get_color_from_hex('#7a6a9f')
+                background_color: app.neutral_button_color
                 on_release: root.go_stroop()
             Widget:
                 size_hint_y: None
@@ -525,22 +571,20 @@ KV = """
                 text: 'Results'
             DarkButton:
                 text: 'View Past Results'
-                background_color: get_color_from_hex('#5a8a5a')
+                background_color: app.success_button_color
                 on_release: root.go_results()
             Widget:
-
-# ---- Help menu screen ----
+        Toolbar:
 
 <HelpMenuScreen>:
     BoxLayout:
         orientation: 'vertical'
         canvas.before:
             Color:
-                rgba: get_color_from_hex('#2b2b2b')
+                rgba: app.bg_color
             Rectangle:
                 pos: self.pos
                 size: self.size
-        Toolbar:
         BoxLayout:
             orientation: 'vertical'
             padding: [dp(16), dp(24)]
@@ -552,26 +596,24 @@ KV = """
                 on_release: root.go_howto()
             DarkButton:
                 text: 'The Science'
-                background_color: get_color_from_hex('#5a8a5a')
+                background_color: app.success_button_color
                 on_release: root.go_science()
             DarkButton:
                 text: 'About'
-                background_color: get_color_from_hex('#5a5a7a')
+                background_color: app.secondary_button_color
                 on_release: root.go_about()
             Widget:
-
-# ---- BDEFS screen ----
+        Toolbar:
 
 <BdefsScreen>:
     BoxLayout:
         orientation: 'vertical'
         canvas.before:
             Color:
-                rgba: get_color_from_hex('#2b2b2b')
+                rgba: app.bg_color
             Rectangle:
                 pos: self.pos
                 size: self.size
-        Toolbar:
         ScrollView:
             do_scroll_x: False
             BoxLayout:
@@ -581,66 +623,79 @@ KV = """
                 height: self.minimum_height
                 padding: [dp(12), dp(8)]
                 spacing: dp(4)
+        Toolbar:
 
-# ---- Stroop screen ----
+<BisbasScreen>:
+    BoxLayout:
+        orientation: 'vertical'
+        canvas.before:
+            Color:
+                rgba: app.bg_color
+            Rectangle:
+                pos: self.pos
+                size: self.size
+        ScrollView:
+            do_scroll_x: False
+            BoxLayout:
+                id: bisbas_content
+                orientation: 'vertical'
+                size_hint_y: None
+                height: self.minimum_height
+                padding: [dp(12), dp(8)]
+                spacing: dp(4)
+        Toolbar:
 
 <StroopScreen>:
     BoxLayout:
         orientation: 'vertical'
         canvas.before:
             Color:
-                rgba: get_color_from_hex('#2b2b2b')
+                rgba: app.bg_color
             Rectangle:
                 pos: self.pos
                 size: self.size
-        Toolbar:
         BoxLayout:
             orientation: 'vertical'
             padding: [dp(16), dp(16)]
             spacing: dp(12)
-
             Label:
                 text: 'Type the COLOUR of the text, not the word.'
-                color: get_color_from_hex('#e0e0e0')
+                color: app.text_color
                 halign: 'center'
-                font_size: sp(15)
+                font_size: sp(15) * app.font_scale
                 size_hint_y: None
                 height: dp(30)
-
             Label:
                 text: root.progress_text
-                color: get_color_from_hex('#b5b5b5')
-                font_size: sp(13)
+                color: app.muted_color
+                font_size: sp(13) * app.font_scale
                 size_hint_y: None
                 height: dp(24)
-
             Label:
                 text: root.word_text
-                font_size: sp(48)
+                font_size: sp(48) * app.font_scale
                 bold: True
                 color: root.word_color
                 size_hint_y: None
                 height: dp(80)
-
             TextInput:
                 id: stroop_input
                 hint_text: 'Type colour here...'
                 multiline: False
-                font_size: sp(18)
+                font_size: sp(18) * app.font_scale
                 size_hint_y: None
                 height: dp(48)
-                background_color: get_color_from_hex('#333333')
-                foreground_color: get_color_from_hex('#e0e0e0')
+                background_color: app.input_bg_color
+                foreground_color: app.text_color
                 on_text_validate: root.on_answer(self.text)
-
             Label:
                 text: root.feedback_text
-                color: get_color_from_hex('#b5b5b5')
-                font_size: sp(13)
+                color: app.muted_color
+                font_size: sp(13) * app.font_scale
                 size_hint_y: None
                 height: dp(24)
-
             Widget:
+        Toolbar:
 """
 
 
@@ -650,7 +705,7 @@ KV = """
 
 
 class Toolbar(BoxLayout):
-    """Top navigation bar present on every screen."""
+    """Bottom navigation bar present on every screen."""
 
     def go(self, screen_name, direction):
         sm = App.get_running_app().root
@@ -675,18 +730,19 @@ class Toolbar(BoxLayout):
         return None
 
     def _update_highlight(self):
-        sm = App.get_running_app().root
-        if sm is None:
+        app = App.get_running_app()
+        sm = app.root
+        if sm is None or app is None:
             return
         current = sm.current
-        _ACCENT_CLR = [0.416, 0.624, 0.710, 1]
-        _DARK_CLR = [0.227, 0.227, 0.227, 1]
+        accent = list(app.accent_color)
+        neutral = list(app.neutral_button_color)
         screen_map = {
             "home": 0,
             "settings": 1,
         }
         help_screens = {"help_menu", "howto", "science", "about"}
-        test_screens = {"tests_menu", "bdefs", "stroop", "results"}
+        test_screens = {"tests_menu", "bdefs", "bisbas", "stroop", "results"}
         for i, child in enumerate(self.children[::-1]):
             if not hasattr(child, "background_color"):
                 continue
@@ -697,7 +753,7 @@ class Toolbar(BoxLayout):
                 is_active = True
             elif current in test_screens and i == 3:
                 is_active = True
-            child.background_color = _ACCENT_CLR if is_active else _DARK_CLR
+            child.background_color = accent if is_active else neutral
 
 
 class TaskRow(BoxLayout):
@@ -737,6 +793,8 @@ class HomeScreen(Screen):
     timer_display = StringProperty("00:00")
     timer_progress = NumericProperty(0)
     nudge_text = StringProperty("")
+    focus_button_text = StringProperty("Focus 15m")
+    break_button_text = StringProperty("Break 5m")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -753,7 +811,8 @@ class HomeScreen(Screen):
     def on_enter(self):
         if self.conn is None:
             self.conn = db.get_connection()
-        self.nudge_text = get_nudge()
+        self._refresh_profile_ui()
+        self.nudge_text = personalised_nudge(get_nudge(), self._profile())
         Clock.schedule_once(lambda dt: self.refresh_all(), 0)
         if not self._banner_loaded:
             self._banner_loaded = True
@@ -761,7 +820,20 @@ class HomeScreen(Screen):
             fallback = self._make_fallback_banner()
             self._set_banner(fallback)
             # Then try to fetch a real image in the background
-            threading.Thread(target=self._fetch_banner, daemon=True).start()
+            app = App.get_running_app()
+            if app is None or not app.reduce_visual_load:
+                threading.Thread(target=self._fetch_banner, daemon=True).start()
+
+    def _profile(self):
+        latest = db.list_assessments(
+            self.conn, assessment_type=AssessmentType.BISBAS, limit=1
+        )
+        return profile_from_latest_bisbas(latest[0] if latest else None)
+
+    def _refresh_profile_ui(self):
+        profile = self._profile()
+        self.focus_button_text = f"Focus {profile.focus_minutes}m"
+        self.break_button_text = f"Break {profile.break_minutes}m"
 
     # -- Banner image --
 
@@ -997,7 +1069,7 @@ class HomeScreen(Screen):
 
     def complete_task(self, task_id):
         db.complete_task(self.conn, task_id)
-        self.nudge_text = get_nudge()
+        self.nudge_text = personalised_nudge(get_nudge(), self._profile())
         self.refresh_all()
 
     def uncomplete_task(self, task_id):
@@ -1007,10 +1079,10 @@ class HomeScreen(Screen):
     # -- Timer --
 
     def start_focus(self):
-        self._start_timer(15, is_break=False)
+        self._start_timer(self._profile().focus_minutes, is_break=False)
 
     def start_break(self):
-        self._start_timer(5, is_break=True)
+        self._start_timer(self._profile().break_minutes, is_break=True)
 
     def _start_timer(self, minutes, is_break=False):
         if self._timer_running:
@@ -1054,7 +1126,8 @@ class HomeScreen(Screen):
             )
             db.log_focus_session(self.conn, session_in)
             self.refresh_status()
-            self.nudge_text = get_nudge()
+            self.nudge_text = personalised_nudge(get_nudge(), self._profile())
+            self._refresh_profile_ui()
 
     def stop_timer(self):
         self._timer_running = False
@@ -1064,7 +1137,7 @@ class HomeScreen(Screen):
         self.timer_progress = 0
 
     def refresh_nudge(self):
-        self.nudge_text = get_nudge()
+        self.nudge_text = personalised_nudge(get_nudge(), self._profile())
 
 
 # ---------------------------------------------------------------------------
@@ -1083,27 +1156,140 @@ class ScrollScreen(Screen):
 
 
 class SettingsScreen(ScrollScreen):
-    """Settings: DB location, cloud sync, reset."""
+    """Settings: data paths, appearance/accessibility, and management."""
 
     def on_enter(self):
         c = self.ids.content
         c.clear_widgets()
 
+        app = App.get_running_app()
+        accent = list(app.accent_color) if app else list(_ACCENT)
+        text = list(app.text_color) if app else list(_TEXT)
+        muted = list(app.muted_color) if app else list(_MUTED)
+        neutral = list(app.neutral_button_color) if app else [0.25, 0.25, 0.25, 1]
+        secondary = list(app.secondary_button_color) if app else [0.35, 0.35, 0.48, 1]
+        success = list(app.success_button_color) if app else [0.29, 0.478, 0.29, 1]
+        danger = list(app.danger_button_color) if app else [0.55, 0.35, 0.35, 1]
+        input_bg = list(app.input_bg_color) if app else [0.2, 0.2, 0.2, 1]
+
         current = cfg.load_config()
         resolved = cfg.get_db_path()
         db_text = current.db_path if current.db_path else f"{resolved} (default)"
 
-        c.add_widget(_make_label("Settings", font_size=sp(20), bold=True, color=_ACCENT))
+        c.add_widget(_make_label("Settings", font_size=sp(20), bold=True, color=accent))
         c.add_widget(Widget(size_hint_y=None, height=dp(8)))
 
         # -- Database location --
-        c.add_widget(_make_label("Database Location", font_size=sp(16), bold=True, color=_ACCENT))
-        self._db_label = _make_label(db_text, font_size=sp(12), color=_MUTED)
+        c.add_widget(_make_label("Database Location", font_size=sp(16), bold=True, color=accent))
+        self._db_label = _make_label(db_text, font_size=sp(12), color=muted)
         c.add_widget(self._db_label)
+
+        # -- Cloud sync --
+        c.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        c.add_widget(_make_label("Sync via Cloud", font_size=sp(16), bold=True, color=accent))
+        cloud_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        for provider in ("OneDrive", "Dropbox", "Google Drive"):
+            btn = Button(
+                text=provider,
+                font_size=sp(12),
+                background_color=list(neutral),
+                color=list(text),
+            )
+            key = provider.lower().replace(" ", "-")
+            btn.bind(on_release=lambda _, p=key: self._sync(p))
+            cloud_row.add_widget(btn)
+        c.add_widget(cloud_row)
+
+        # -- Custom path --
+        c.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        c.add_widget(_make_label("Custom Database Path", font_size=sp(16), bold=True, color=accent))
+        path_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        self._path_input = TextInput(
+            hint_text="Enter path...",
+            multiline=False,
+            font_size=sp(13),
+            size_hint_x=0.7,
+            background_color=input_bg,
+            foreground_color=text,
+        )
+        path_row.add_widget(self._path_input)
+        set_btn = Button(
+            text="Set",
+            size_hint_x=0.3,
+            font_size=sp(13),
+            background_color=list(accent),
+            color=list(text),
+        )
+        set_btn.bind(on_release=lambda _: self._set_custom())
+        path_row.add_widget(set_btn)
+        c.add_widget(path_row)
+
+        # -- Appearance --
+        c.add_widget(Widget(size_hint_y=None, height=dp(12)))
+        c.add_widget(_make_label("Appearance", font_size=sp(16), bold=True, color=accent))
+        theme_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        for label, mode, color in (
+            ("Dark", ThemeMode.DARK.value, neutral),
+            ("Light", ThemeMode.LIGHT.value, secondary),
+        ):
+            tb = ToggleButton(
+                text=label,
+                group="theme_mode",
+                state="down" if current.theme_mode.value == mode else "normal",
+                background_color=list(color),
+                color=list(text),
+                font_size=sp(12),
+            )
+            tb.bind(
+                on_release=lambda inst, m=mode: self._set_theme(m) if inst.state == "down" else None
+            )
+            theme_row.add_widget(tb)
+        c.add_widget(theme_row)
+
+        # -- Accessibility --
+        c.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        c.add_widget(_make_label("Accessibility", font_size=sp(16), bold=True, color=accent))
+        access_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        large_text_btn = ToggleButton(
+            text="Larger text",
+            state="down" if current.accessibility_large_text else "normal",
+            background_color=list(success),
+            color=list(text),
+            font_size=sp(11),
+        )
+        high_contrast_btn = ToggleButton(
+            text="High contrast",
+            state="down" if current.accessibility_high_contrast else "normal",
+            background_color=list(secondary),
+            color=list(text),
+            font_size=sp(11),
+        )
+        reduce_visual_btn = ToggleButton(
+            text="Reduce visuals",
+            state="down" if current.accessibility_reduce_visual_load else "normal",
+            background_color=list(neutral),
+            color=list(text),
+            font_size=sp(11),
+        )
+        access_row.add_widget(large_text_btn)
+        access_row.add_widget(high_contrast_btn)
+        access_row.add_widget(reduce_visual_btn)
+        c.add_widget(access_row)
+
+        def _apply_accessibility(_):
+            self._set_accessibility(
+                large_text=large_text_btn.state == "down",
+                high_contrast=high_contrast_btn.state == "down",
+                reduce_visual_load=reduce_visual_btn.state == "down",
+            )
+
+        large_text_btn.bind(on_release=_apply_accessibility)
+        high_contrast_btn.bind(on_release=_apply_accessibility)
+        reduce_visual_btn.bind(on_release=_apply_accessibility)
 
         # -- Data management --
         c.add_widget(Widget(size_hint_y=None, height=dp(12)))
-        c.add_widget(_make_label("Data Management", font_size=sp(16), bold=True, color=_ACCENT))
+        c.add_widget(_make_label("Data Management", font_size=sp(16), bold=True, color=accent))
         del_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
 
         def _delete_results(_):
@@ -1124,12 +1310,20 @@ class SettingsScreen(ScrollScreen):
             db.delete_all_tasks(home.conn)
             self._show_msg("Deleted", f"Deleted {count} task(s) and sessions.")
 
-        btn_del_tasks = Button(text="Delete all tasks", font_size=sp(11),
-                               background_color=(0.55, 0.35, 0.35, 1))
+        btn_del_tasks = Button(
+            text="Delete all tasks",
+            font_size=sp(11),
+            background_color=list(danger),
+            color=list(text),
+        )
         btn_del_tasks.bind(on_release=_delete_tasks)
         del_row.add_widget(btn_del_tasks)
-        btn_del_results = Button(text="Delete test results", font_size=sp(11),
-                                 background_color=(0.55, 0.35, 0.35, 1))
+        btn_del_results = Button(
+            text="Delete test results",
+            font_size=sp(11),
+            background_color=list(danger),
+            color=list(text),
+        )
         btn_del_results.bind(on_release=_delete_results)
         del_row.add_widget(btn_del_results)
         c.add_widget(del_row)
@@ -1137,12 +1331,16 @@ class SettingsScreen(ScrollScreen):
         # -- Browse & delete individual entries --
         c.add_widget(Widget(size_hint_y=None, height=dp(8)))
         c.add_widget(_make_label(
-            "Browse & Delete Entries", font_size=sp(16), bold=True, color=_ACCENT,
+            "Browse & Delete Entries", font_size=sp(16), bold=True, color=accent,
         ))
         browse_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
         for tbl_label, tbl_key in [("Tasks", "tasks"), ("Tests", "assessments")]:
-            btn = Button(text=f"Browse {tbl_label}", font_size=sp(11),
-                         background_color=(0.25, 0.25, 0.25, 1))
+            btn = Button(
+                text=f"Browse {tbl_label}",
+                font_size=sp(11),
+                background_color=list(neutral),
+                color=list(text),
+            )
             btn.bind(on_release=lambda _, k=tbl_key: self._browse(k))
             browse_row.add_widget(btn)
         c.add_widget(browse_row)
@@ -1152,39 +1350,15 @@ class SettingsScreen(ScrollScreen):
         self._browse_box.bind(minimum_height=self._browse_box.setter("height"))
         c.add_widget(self._browse_box)
 
-        # -- Cloud sync --
-        c.add_widget(Widget(size_hint_y=None, height=dp(8)))
-        c.add_widget(_make_label("Sync via Cloud", font_size=sp(16), bold=True, color=_ACCENT))
-        cloud_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        for provider in ("OneDrive", "Dropbox", "Google Drive"):
-            btn = Button(text=provider, font_size=sp(12),
-                         background_color=(0.25, 0.25, 0.25, 1))
-            key = provider.lower().replace(" ", "-")
-            btn.bind(on_release=lambda _, p=key: self._sync(p))
-            cloud_row.add_widget(btn)
-        c.add_widget(cloud_row)
-
-        # -- Custom path --
-        c.add_widget(Widget(size_hint_y=None, height=dp(8)))
-        c.add_widget(_make_label("Custom Database Path", font_size=sp(16), bold=True, color=_ACCENT))
-        path_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        self._path_input = TextInput(
-            hint_text="Enter path...", multiline=False, font_size=sp(13),
-            size_hint_x=0.7,
-            background_color=(0.2, 0.2, 0.2, 1), foreground_color=_TEXT,
-        )
-        path_row.add_widget(self._path_input)
-        set_btn = Button(text="Set", size_hint_x=0.3, font_size=sp(13),
-                         background_color=_ACCENT)
-        set_btn.bind(on_release=lambda _: self._set_custom())
-        path_row.add_widget(set_btn)
-        c.add_widget(path_row)
-
         # -- Reset --
         c.add_widget(Widget(size_hint_y=None, height=dp(16)))
         reset_btn = Button(
-            text="Reset to Default", size_hint_y=None, height=dp(44),
-            background_color=(0.55, 0.35, 0.35, 1), font_size=sp(14),
+            text="Reset to Default",
+            size_hint_y=None,
+            height=dp(44),
+            background_color=list(danger),
+            color=list(text),
+            font_size=sp(14),
         )
         reset_btn.bind(on_release=lambda _: self._reset())
         c.add_widget(reset_btn)
@@ -1213,6 +1387,39 @@ class SettingsScreen(ScrollScreen):
         self._db_label.text = f"{new_path} (default)"
         self._reconnect()
 
+    def _set_theme(self, mode: str):
+        cfg.set_theme_mode(mode)
+        app = App.get_running_app()
+        if app is not None:
+            app.reload_palette()
+        self._refresh_home_runtime_state()
+        Clock.schedule_once(lambda dt: self.on_enter(), 0)
+
+    def _set_accessibility(self, *, large_text: bool, high_contrast: bool, reduce_visual_load: bool):
+        cfg.set_accessibility_options(
+            large_text=large_text,
+            high_contrast=high_contrast,
+            reduce_visual_load=reduce_visual_load,
+        )
+        app = App.get_running_app()
+        if app is not None:
+            app.reload_palette()
+        self._refresh_home_runtime_state()
+        Clock.schedule_once(lambda dt: self.on_enter(), 0)
+
+    def _refresh_home_runtime_state(self):
+        home = self.manager.get_screen("home")
+        if home.conn is None:
+            home.conn = db.get_connection()
+        home._refresh_profile_ui()
+        home.nudge_text = personalised_nudge(get_nudge(), home._profile())
+        app = App.get_running_app()
+        if app is not None and app.reduce_visual_load:
+            fallback = home._make_fallback_banner()
+            home._set_banner(fallback)
+        else:
+            threading.Thread(target=home._fetch_banner, daemon=True).start()
+
     def _reconnect(self):
         home = self.manager.get_screen("home")
         if home.conn:
@@ -1221,23 +1428,28 @@ class SettingsScreen(ScrollScreen):
 
     def _browse(self, table):
         """Populate the browse box with entries from *table*."""
+        app = App.get_running_app()
+        text = list(app.text_color) if app else list(_TEXT)
+        muted = list(app.muted_color) if app else list(_MUTED)
+        danger = list(app.danger_button_color) if app else [0.55, 0.35, 0.35, 1]
+
         box = self._browse_box
         box.clear_widgets()
         home = self.manager.get_screen("home")
         if table == "tasks":
             tasks = db.list_tasks(home.conn)
             if not tasks:
-                box.add_widget(_make_label("  No tasks.", color=_MUTED))
+                box.add_widget(_make_label("  No tasks.", color=muted))
                 return
             for t in tasks:
                 row = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(4))
                 row.add_widget(_make_label(
                     f"#{t.id} [{t.status.value}] {t.title}",
-                    font_size=sp(11), color=_TEXT,
+                    font_size=sp(11), color=text,
                 ))
                 del_btn = Button(
                     text="Del", size_hint_x=None, width=dp(50),
-                    font_size=sp(10), background_color=(0.55, 0.35, 0.35, 1),
+                    font_size=sp(10), background_color=danger, color=text,
                 )
                 del_btn.bind(
                     on_release=lambda _, tid=t.id: self._delete_entry("tasks", tid)
@@ -1247,18 +1459,18 @@ class SettingsScreen(ScrollScreen):
         elif table == "assessments":
             results = db.list_assessments(home.conn, limit=50)
             if not results:
-                box.add_widget(_make_label("  No assessments.", color=_MUTED))
+                box.add_widget(_make_label("  No assessments.", color=muted))
                 return
             for r in results:
                 taken = r.taken_at.strftime("%Y-%m-%d %H:%M")
                 row = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(4))
                 row.add_widget(_make_label(
                     f"#{r.id} {r.assessment_type.value} {r.score}/{r.max_score} ({taken})",
-                    font_size=sp(11), color=_TEXT,
+                    font_size=sp(11), color=text,
                 ))
                 del_btn = Button(
                     text="Del", size_hint_x=None, width=dp(50),
-                    font_size=sp(10), background_color=(0.55, 0.35, 0.35, 1),
+                    font_size=sp(10), background_color=danger, color=text,
                 )
                 del_btn.bind(
                     on_release=lambda _, rid=r.id: self._delete_entry("assessments", rid)
@@ -1276,9 +1488,15 @@ class SettingsScreen(ScrollScreen):
 
     @staticmethod
     def _show_msg(title, text):
+        app = App.get_running_app()
+        fg = list(app.text_color) if app else list(_TEXT)
+        accent = list(app.accent_color) if app else list(_ACCENT)
         content = BoxLayout(orientation="vertical", padding=10, spacing=10)
-        content.add_widget(Label(text=text, font_size=sp(13), color=_TEXT))
-        btn = Button(text="OK", size_hint_y=None, height=dp(44))
+        content.add_widget(Label(text=text, font_size=sp(13), color=fg))
+        btn = Button(
+            text="OK", size_hint_y=None, height=dp(44),
+            background_color=accent, color=fg,
+        )
         popup = Popup(title=title, content=content, size_hint=(0.85, 0.3))
         btn.bind(on_release=lambda _: popup.dismiss())
         content.add_widget(btn)
@@ -1387,11 +1605,14 @@ class HelpMenuScreen(Screen):
 
 
 class TestsMenuScreen(Screen):
-    """Sub-menu: BDEFS, Stroop, View Results."""
+    """Sub-menu: BDEFS, BIS/BAS, Stroop, View Results."""
 
     def go_bdefs(self):
         self.manager.transition = NoTransition()
         self.manager.current = "bdefs"
+    def go_bisbas(self):
+        self.manager.transition = NoTransition()
+        self.manager.current = "bisbas"
 
     def go_stroop(self):
         self.manager.transition = NoTransition()
@@ -1515,6 +1736,130 @@ class BdefsScreen(Screen):
         close.bind(on_release=lambda _: popup.dismiss())
         content.add_widget(close)
         popup.open()
+
+        self.manager.transition = NoTransition()
+        self.manager.current = "tests_menu"
+
+
+# ---------------------------------------------------------------------------
+# Tests -> BIS/BAS
+# ---------------------------------------------------------------------------
+
+
+class BisbasScreen(Screen):
+    """BIS/BAS motivational-style self-assessment."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._vars: dict[str, list[list[ToggleButton]]] = {}
+
+    def on_enter(self):
+        content = self.ids.bisbas_content
+        content.clear_widgets()
+        self._vars = {}
+
+        content.add_widget(_make_label(
+            BISBAS_INSTRUCTIONS, font_size=sp(12), color=_MUTED,
+        ))
+        content.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        content.add_widget(_make_label(
+            "Rate each statement\n1 = Very false   2 = Somewhat false   "
+            "3 = Somewhat true   4 = Very true",
+            font_size=sp(13), color=_MUTED,
+        ))
+
+        q_index = 0
+        for domain, questions in BISBAS_QUESTIONS.items():
+            content.add_widget(Widget(size_hint_y=None, height=dp(8)))
+            content.add_widget(_make_label(domain, font_size=sp(16), bold=True, color=_ACCENT))
+
+            domain_groups: list[list[ToggleButton]] = []
+            for q in questions:
+                content.add_widget(_make_label(q, font_size=sp(13)))
+                group_name = f"bisbas_q{q_index}"
+                btn_row = BoxLayout(
+                    size_hint_y=None, height=dp(40), spacing=dp(4), padding=[dp(8), 0]
+                )
+                buttons: list[ToggleButton] = []
+                for val in range(1, 5):
+                    tb = ToggleButton(
+                        text=str(val),
+                        group=group_name,
+                        font_size=sp(14),
+                        background_color=_ACCENT if val == 1 else (0.25, 0.25, 0.25, 1),
+                    )
+                    if val == 1:
+                        tb.state = "down"
+                    tb.bind(state=self._make_toggle_cb())
+                    btn_row.add_widget(tb)
+                    buttons.append(tb)
+                content.add_widget(btn_row)
+                domain_groups.append(buttons)
+                q_index += 1
+            self._vars[domain] = domain_groups
+
+        content.add_widget(Widget(size_hint_y=None, height=dp(12)))
+        submit = Button(
+            text="Submit", size_hint_y=None, height=dp(48),
+            background_color=_ACCENT, font_size=sp(16), bold=True,
+        )
+        submit.bind(on_release=lambda _: self._submit())
+        content.add_widget(submit)
+        content.add_widget(Widget(size_hint_y=None, height=dp(20)))
+
+    @staticmethod
+    def _make_toggle_cb():
+        def cb(inst, state):
+            inst.background_color = list(_ACCENT) if state == "down" else [0.25, 0.25, 0.25, 1]
+        return cb
+
+    @staticmethod
+    def _get_val(buttons: list[ToggleButton]) -> int:
+        for i, b in enumerate(buttons):
+            if b.state == "down":
+                return i + 1
+        return 1
+
+    def _submit(self):
+        answers: dict[str, list[int]] = {}
+        for domain, groups in self._vars.items():
+            answers[domain] = [self._get_val(btns) for btns in groups]
+
+        home = self.manager.get_screen("home")
+        create_model = score_bisbas(answers)
+        saved = db.save_assessment(home.conn, create_model)
+
+        msg = f"Total: {saved.score}/{saved.max_score}\n\n"
+        for d, s in saved.domain_scores.items():
+            max_domain = len(BISBAS_QUESTIONS.get(d, [])) * 4
+            msg += f"{d}: {s}/{max_domain if max_domain else 1}\n"
+        msg += f"\n{interpret_bisbas(saved.score, saved.max_score, saved.domain_scores)}"
+
+        scroll = ScrollView(do_scroll_x=False)
+        inner = BoxLayout(orientation="vertical", spacing=6, padding=10, size_hint_y=None)
+        inner.bind(minimum_height=inner.setter("height"))
+        inner.add_widget(_make_label(msg, font_size=sp(13)))
+        inner.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        inner.add_widget(_make_label(
+            "Domain Advice", font_size=sp(15), bold=True, color=_ACCENT,
+        ))
+        for d, s in saved.domain_scores.items():
+            max_domain = len(BISBAS_QUESTIONS.get(d, [])) * 4
+            advice = bisbas_domain_advice(d, s, max_domain if max_domain else 1)
+            inner.add_widget(_make_label(d, font_size=sp(13), bold=True, color=_ACCENT))
+            inner.add_widget(_make_label(advice, font_size=sp(11), color=_MUTED))
+        scroll.add_widget(inner)
+
+        content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+        content.add_widget(scroll)
+        close = Button(text="Close", size_hint_y=None, height=dp(44))
+        popup = Popup(title="BIS/BAS Result", content=content, size_hint=(0.9, 0.75))
+        close.bind(on_release=lambda _: popup.dismiss())
+        content.add_widget(close)
+        popup.open()
+
+        home._refresh_profile_ui()
+        home.nudge_text = personalised_nudge(get_nudge(), home._profile())
 
         self.manager.transition = NoTransition()
         self.manager.current = "tests_menu"
@@ -1733,6 +2078,21 @@ class ResultsScreen(ScrollScreen):
                     interpret_stroop(r.score, r.max_score, avg_ms),
                     font_size=sp(12), color=_MUTED,
                 ))
+            elif r.assessment_type == AssessmentType.BISBAS:
+                for d, s in r.domain_scores.items():
+                    max_domain = len(BISBAS_QUESTIONS.get(d, [])) * 4
+                    max_domain = max_domain if max_domain else 1
+                    c.add_widget(_make_label(
+                        f"  {d}: {s}/{max_domain}", font_size=sp(12), color=_MUTED,
+                    ))
+                    advice = bisbas_domain_advice(d, s, max_domain)
+                    c.add_widget(_make_label(
+                        f"    {advice}", font_size=sp(11), color=_MUTED,
+                    ))
+                c.add_widget(_make_label(
+                    interpret_bisbas(r.score, r.max_score, r.domain_scores),
+                    font_size=sp(12), color=_MUTED,
+                ))
 
         c.add_widget(Widget(size_hint_y=None, height=dp(20)))
 
@@ -1746,8 +2106,46 @@ class MomentumApp(App):
     """Kivy application entry point."""
 
     title = "Momentum"
+    bg_color = ListProperty(list(_PALETTE["bg"]))
+    text_color = ListProperty(list(_PALETTE["text"]))
+    muted_color = ListProperty(list(_PALETTE["muted"]))
+    accent_color = ListProperty(list(_PALETTE["accent"]))
+    toolbar_color = ListProperty(list(_PALETTE["toolbar"]))
+    input_bg_color = ListProperty(list(_PALETTE["input_bg"]))
+    timer_color = ListProperty(list(_PALETTE["timer"]))
+    neutral_button_color = ListProperty(list(_PALETTE["neutral_button"]))
+    success_button_color = ListProperty(list(_PALETTE["success_button"]))
+    secondary_button_color = ListProperty(list(_PALETTE["secondary_button"]))
+    danger_button_color = ListProperty(list(_PALETTE["danger_button"]))
+    font_scale = NumericProperty(1.0)
+    reduce_visual_load = BooleanProperty(False)
+
+    def reload_palette(self):
+        """Reload theme/accessibility config and update bound KV properties."""
+        global _PALETTE, _APP_CFG, _ACCENT, _TEXT, _MUTED, _BG
+        _APP_CFG = cfg.load_config()
+        _PALETTE = _resolve_palette()
+        _ACCENT = _PALETTE["accent"]
+        _TEXT = _PALETTE["text"]
+        _MUTED = _PALETTE["muted"]
+        _BG = _PALETTE["bg"]
+
+        self.bg_color = list(_PALETTE["bg"])
+        self.text_color = list(_PALETTE["text"])
+        self.muted_color = list(_PALETTE["muted"])
+        self.accent_color = list(_PALETTE["accent"])
+        self.toolbar_color = list(_PALETTE["toolbar"])
+        self.input_bg_color = list(_PALETTE["input_bg"])
+        self.timer_color = list(_PALETTE["timer"])
+        self.neutral_button_color = list(_PALETTE["neutral_button"])
+        self.success_button_color = list(_PALETTE["success_button"])
+        self.secondary_button_color = list(_PALETTE["secondary_button"])
+        self.danger_button_color = list(_PALETTE["danger_button"])
+        self.font_scale = 1.15 if _APP_CFG.accessibility_large_text else 1.0
+        self.reduce_visual_load = _APP_CFG.accessibility_reduce_visual_load
 
     def build(self):
+        self.reload_palette()
         Builder.load_string(KV)
         sm = ScreenManager()
         sm.add_widget(HomeScreen(name="home"))
@@ -1758,6 +2156,7 @@ class MomentumApp(App):
         sm.add_widget(AboutScreen(name="about"))
         sm.add_widget(TestsMenuScreen(name="tests_menu"))
         sm.add_widget(BdefsScreen(name="bdefs"))
+        sm.add_widget(BisbasScreen(name="bisbas"))
         sm.add_widget(StroopScreen(name="stroop"))
         sm.add_widget(ResultsScreen(name="results"))
         return sm

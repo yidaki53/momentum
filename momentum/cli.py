@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import typer
 
 from momentum import db, display, encouragement, timer
 from momentum.models import AssessmentType, FocusSessionCreate, TaskCreate, TaskStatus
+
+if TYPE_CHECKING:
+    from momentum.assessments import PersonalisationProfile
 
 app = typer.Typer(
     name="momentum",
@@ -17,9 +21,19 @@ app = typer.Typer(
 )
 
 
-def _conn() -> db.sqlite3.Connection:
+def _conn() -> sqlite3.Connection:
     """Get a database connection (convenience wrapper)."""
     return db.get_connection()
+
+
+def _personalisation_profile(
+    conn: sqlite3.Connection,
+) -> PersonalisationProfile:
+    """Return behavior defaults from the latest BIS/BAS result."""
+    from momentum.assessments import profile_from_latest_bisbas
+
+    latest = db.list_assessments(conn, assessment_type=AssessmentType.BISBAS, limit=1)
+    return profile_from_latest_bisbas(latest[0] if latest else None)
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +88,8 @@ def done(
     task_id: int = typer.Argument(..., help="ID of the task to mark complete"),
 ) -> None:
     """Mark a task as done."""
+    from momentum.assessments import personalised_nudge
+
     conn = _conn()
     task = db.complete_task(conn, task_id)
     if task is None:
@@ -81,7 +97,8 @@ def done(
         conn.close()
         raise typer.Exit(1)
     display.print_success(f"Completed: {task.title}")
-    display.print_nudge(encouragement.get_nudge())
+    profile = _personalisation_profile(conn)
+    display.print_nudge(personalised_nudge(encouragement.get_nudge(), profile))
     conn.close()
 
 
@@ -126,15 +143,22 @@ def list_tasks(
 
 @app.command()
 def focus(
-    minutes: int = typer.Option(
-        15, "--minutes", "-m", help="Focus duration in minutes"
+    minutes: Optional[int] = typer.Option(
+        None,
+        "--minutes",
+        "-m",
+        help="Focus duration in minutes (defaults to personalized value)",
     ),
     task_id: Optional[int] = typer.Option(
         None, "--task", "-t", help="Task ID to focus on"
     ),
 ) -> None:
     """Start a focus timer."""
+    from momentum.assessments import personalised_nudge
+
     conn = _conn()
+    profile = _personalisation_profile(conn)
+    focus_minutes = minutes if minutes is not None else profile.focus_minutes
     if task_id is not None:
         task = db.get_task(conn, task_id)
         if task is None:
@@ -142,19 +166,23 @@ def focus(
             conn.close()
             raise typer.Exit(1)
         db.set_task_active(conn, task_id)
-        display.print_info(f'Focusing on: "{task.title}" for {minutes} min')
+        display.print_info(f'Focusing on: "{task.title}" for {focus_minutes} min')
     else:
-        display.print_info(f"Starting {minutes}-minute focus session.")
+        display.print_info(f"Starting {focus_minutes}-minute focus session.")
 
-    completed = timer.run_focus(minutes=minutes, task_id=task_id)
+    completed = timer.run_focus(minutes=focus_minutes, task_id=task_id)
     if completed:
-        session_in = FocusSessionCreate(task_id=task_id, duration_minutes=minutes)
+        session_in = FocusSessionCreate(task_id=task_id, duration_minutes=focus_minutes)
         db.log_focus_session(conn, session_in)
         display.print_success("Focus session logged.")
+        display.print_nudge(personalised_nudge(encouragement.get_nudge(), profile))
 
-        should_break = typer.confirm("Take a 5-minute break?", default=True)
+        should_break = typer.confirm(
+            f"Take a {profile.break_minutes}-minute break?",
+            default=True,
+        )
         if should_break:
-            timer.run_break()
+            timer.run_break(minutes=profile.break_minutes)
     conn.close()
 
 
@@ -184,14 +212,23 @@ def status() -> None:
 @app.command()
 def nudge() -> None:
     """Get a gentle encouragement message."""
-    display.print_nudge(encouragement.get_nudge())
+    from momentum.assessments import personalised_nudge
+
+    conn = _conn()
+    profile = _personalisation_profile(conn)
+    display.print_nudge(personalised_nudge(encouragement.get_nudge(), profile))
+    conn.close()
 
 
 @app.command()
 def start() -> None:
     """A gentle way to begin. Suggests a small step to get going."""
+    from momentum.assessments import personalised_nudge
+
     conn = _conn()
     summary = db.get_status(conn)
+    profile = _personalisation_profile(conn)
+    focus_minutes = profile.focus_minutes
 
     # If there are active tasks, suggest continuing one
     if summary.active_tasks:
@@ -199,10 +236,12 @@ def start() -> None:
         display.print_info(f'You were working on: "{task.title}"')
         cont = typer.confirm("Continue with this?", default=True)
         if cont:
-            display.print_info("Starting a 15-minute focus session.")
-            completed = timer.run_focus(minutes=15, task_id=task.id)
+            display.print_info(f"Starting a {focus_minutes}-minute focus session.")
+            completed = timer.run_focus(minutes=focus_minutes, task_id=task.id)
             if completed:
-                session_in = FocusSessionCreate(task_id=task.id, duration_minutes=15)
+                session_in = FocusSessionCreate(
+                    task_id=task.id, duration_minutes=focus_minutes
+                )
                 db.log_focus_session(conn, session_in)
             conn.close()
             return
@@ -214,30 +253,40 @@ def start() -> None:
         go = typer.confirm("Work on this?", default=True)
         if go:
             db.set_task_active(conn, task.id)
-            display.print_info("Starting a 15-minute focus session.")
-            completed = timer.run_focus(minutes=15, task_id=task.id)
+            if profile.suggest_breakdown:
+                display.print_info(
+                    "If this feels overwhelming, use break-down to create tiny steps first."
+                )
+            display.print_info(f"Starting a {focus_minutes}-minute focus session.")
+            completed = timer.run_focus(minutes=focus_minutes, task_id=task.id)
             if completed:
-                session_in = FocusSessionCreate(task_id=task.id, duration_minutes=15)
+                session_in = FocusSessionCreate(
+                    task_id=task.id, duration_minutes=focus_minutes
+                )
                 db.log_focus_session(conn, session_in)
             conn.close()
             return
 
     # No tasks -- ask them to name one small thing
-    display.print_nudge("What is one small thing you could do right now?")
+    display.print_nudge(
+        personalised_nudge("What is one small thing you could do right now?", profile)
+    )
     thing = typer.prompt("Just one small thing", default="", show_default=False)
     if thing.strip():
         task_in = TaskCreate(title=thing.strip())
         task = db.add_task(conn, task_in)
         db.set_task_active(conn, task.id)
         display.print_success(f"Added and started: {task.title}")
-        go = typer.confirm("Focus on it for 15 minutes?", default=True)
+        go = typer.confirm(f"Focus on it for {focus_minutes} minutes?", default=True)
         if go:
-            completed = timer.run_focus(minutes=15, task_id=task.id)
+            completed = timer.run_focus(minutes=focus_minutes, task_id=task.id)
             if completed:
-                session_in = FocusSessionCreate(task_id=task.id, duration_minutes=15)
+                session_in = FocusSessionCreate(
+                    task_id=task.id, duration_minutes=focus_minutes
+                )
                 db.log_focus_session(conn, session_in)
     else:
-        display.print_nudge(encouragement.get_nudge())
+        display.print_nudge(personalised_nudge(encouragement.get_nudge(), profile))
 
     conn.close()
 
@@ -301,24 +350,87 @@ def run_test(
     stroop: bool = typer.Option(
         False, "--stroop", help="Take the Stroop colour-word test instead"
     ),
+    bisbas: bool = typer.Option(
+        False, "--bisbas", help="Take the BIS/BAS motivational profile test"
+    ),
 ) -> None:
-    """Take a self-assessment test (BDEFS or Stroop)."""
+    """Take a self-assessment test (BDEFS, Stroop, or BIS/BAS)."""
     import time as _time
 
     from momentum.assessments import (
         BDEFS_QUESTIONS,
         BDEFS_SCALE_LABELS,
+        BISBAS_QUESTIONS,
+        BISBAS_SCALE_LABELS,
         StroopResult,
+        bisbas_domain_advice,
         generate_stroop_trials,
         interpret_bdefs,
+        interpret_bisbas,
         interpret_stroop,
+        personalise_from_bisbas,
         score_bdefs,
+        score_bisbas,
         score_stroop,
     )
 
     conn = _conn()
 
-    if stroop:
+    if stroop and bisbas:
+        display.print_warning("Choose only one mode: --stroop or --bisbas.")
+        conn.close()
+        raise typer.Exit(1)
+
+    if bisbas:
+        from momentum.assessments import BISBAS_INSTRUCTIONS
+
+        display.print_info("BIS/BAS Motivational Profile")
+        display.console.print()
+        for paragraph in BISBAS_INSTRUCTIONS.split("\n\n"):
+            display.print_info(paragraph)
+        display.console.print()
+        display.print_info("Rate each statement:")
+        for label in BISBAS_SCALE_LABELS:
+            display.print_info(f"  {label}")
+        display.console.print()
+
+        bisbas_answers: dict[str, list[int]] = {}
+        for domain, questions in BISBAS_QUESTIONS.items():
+            display.console.print(f"\n[bold]{domain}[/bold]")
+            bisbas_domain_answers: list[int] = []
+            for q in questions:
+                while True:
+                    raw = typer.prompt(f"  {q} (1-4)")
+                    try:
+                        val = int(raw)
+                        if 1 <= val <= 4:
+                            bisbas_domain_answers.append(val)
+                            break
+                    except ValueError:
+                        pass
+                    display.print_warning("  Please enter 1, 2, 3, or 4.")
+            bisbas_answers[domain] = bisbas_domain_answers
+
+        create_model = score_bisbas(bisbas_answers)
+        saved = db.save_assessment(conn, create_model)
+        display.print_info(f"\nTotal score: {saved.score}/{saved.max_score}")
+        for domain, score in saved.domain_scores.items():
+            n_qs = len(BISBAS_QUESTIONS.get(domain, []))
+            max_domain = n_qs * 4 if n_qs else 1
+            display.print_info(f"  {domain}: {score}/{max_domain}")
+            advice = bisbas_domain_advice(domain, score, max_domain)
+            if advice:
+                display.console.print(f"    [dim italic]{advice}[/dim italic]")
+
+        profile = personalise_from_bisbas(saved.domain_scores)
+        display.print_info(
+            "  Personalized defaults: "
+            f"focus={profile.focus_minutes}m, break={profile.break_minutes}m"
+        )
+        display.print_nudge(
+            interpret_bisbas(saved.score, saved.max_score, saved.domain_scores)
+        )
+    elif stroop:
         # --- Stroop test ---
         from momentum.assessments import STROOP_INSTRUCTIONS
 
@@ -357,7 +469,7 @@ def run_test(
             per_trial=per_trial,
         )
         create_model = score_stroop(result)
-        saved = db.save_assessment(conn, create_model)
+        db.save_assessment(conn, create_model)
         display.print_info(
             f"\nResult: {correct}/{len(trials)} correct, "
             f"avg {result.avg_time_s:.1f}s per trial"
@@ -379,26 +491,26 @@ def run_test(
             display.print_info(f"  {label}")
         display.console.print()
 
-        answers: dict[str, list[int]] = {}
+        bdefs_answers: dict[str, list[int]] = {}
         for domain, questions in BDEFS_QUESTIONS.items():
             display.console.print(f"\n[bold]{domain}[/bold]")
-            domain_answers: list[int] = []
+            bdefs_domain_answers: list[int] = []
             for q in questions:
                 while True:
                     raw = typer.prompt(f"  {q} (1-4)")
                     try:
                         val = int(raw)
                         if 1 <= val <= 4:
-                            domain_answers.append(val)
+                            bdefs_domain_answers.append(val)
                             break
                     except ValueError:
                         pass
                     display.print_warning("  Please enter 1, 2, 3, or 4.")
-            answers[domain] = domain_answers
+            bdefs_answers[domain] = bdefs_domain_answers
 
         from momentum.assessments import domain_advice
 
-        create_model = score_bdefs(answers)
+        create_model = score_bdefs(bdefs_answers)
         saved = db.save_assessment(conn, create_model)
         display.print_info(f"\nTotal score: {saved.score}/{saved.max_score}")
         for d, s in saved.domain_scores.items():
@@ -415,7 +527,7 @@ def run_test(
 @app.command(name="test-results")
 def test_results(
     test_type: Optional[str] = typer.Option(
-        None, "--type", "-t", help="Filter by type: bdefs or stroop"
+        None, "--type", "-t", help="Filter by type: bdefs, stroop, or bisbas"
     ),
     limit: int = typer.Option(10, "--limit", "-n", help="Number of results to show"),
 ) -> None:
@@ -424,8 +536,13 @@ def test_results(
         BDEFS_QUESTIONS as _BQ,
     )
     from momentum.assessments import (
+        BISBAS_QUESTIONS as _BIQ,
+    )
+    from momentum.assessments import (
+        bisbas_domain_advice,
         domain_advice,
         interpret_bdefs,
+        interpret_bisbas,
         interpret_stroop,
     )
 
@@ -436,7 +553,7 @@ def test_results(
             atype = AssessmentType(test_type.lower())
         except ValueError:
             display.print_warning(
-                f"Unknown type '{test_type}'. Use 'bdefs' or 'stroop'."
+                f"Unknown type '{test_type}'. Use 'bdefs', 'stroop', or 'bisbas'."
             )
             conn.close()
             raise typer.Exit(1)
@@ -468,6 +585,17 @@ def test_results(
             avg_ms = r.domain_scores.get("avg_time_ms", 0)
             display.print_info(f"  Avg response: {avg_ms}ms")
             display.print_info(f"  {interpret_stroop(r.score, r.max_score, avg_ms)}")
+        elif r.assessment_type == AssessmentType.BISBAS:
+            for d, s in r.domain_scores.items():
+                n_qs = len(_BIQ.get(d, []))
+                max_domain = n_qs * 4 if n_qs else 1
+                display.print_info(f"    {d}: {s}/{max_domain}")
+                advice = bisbas_domain_advice(d, s, max_domain)
+                if advice:
+                    display.console.print(f"      [dim italic]{advice}[/dim italic]")
+            display.print_info(
+                f"  {interpret_bisbas(r.score, r.max_score, r.domain_scores)}"
+            )
 
     conn.close()
 
