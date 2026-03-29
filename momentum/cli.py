@@ -9,7 +9,14 @@ from typing import TYPE_CHECKING, Optional
 import typer
 
 from momentum import db, display, encouragement, timer
-from momentum.models import AssessmentType, FocusSessionCreate, TaskCreate, TaskStatus
+from momentum.models import AssessmentType, TaskStatus
+from momentum.services import (
+    AssessmentService,
+    PersonalisationService,
+    SessionService,
+    StatusService,
+    TaskService,
+)
 
 if TYPE_CHECKING:
     from momentum.assessments import PersonalisationProfile
@@ -30,10 +37,22 @@ def _personalisation_profile(
     conn: sqlite3.Connection,
 ) -> PersonalisationProfile:
     """Return behavior defaults from the latest BIS/BAS result."""
-    from momentum.assessments import profile_from_latest_bisbas
+    return PersonalisationService(conn).profile()
 
-    latest = db.list_assessments(conn, assessment_type=AssessmentType.BISBAS, limit=1)
-    return profile_from_latest_bisbas(latest[0] if latest else None)
+
+def _timer_service() -> timer.TimerService:
+    """Build the production timer service for CLI commands."""
+    return timer.default_timer_service()
+
+
+def _task_service(conn: sqlite3.Connection) -> TaskService:
+    """Build task workflow service for command handlers."""
+    return TaskService(conn)
+
+
+def _assessment_service(conn: sqlite3.Connection) -> AssessmentService:
+    """Build assessment workflow service for command handlers."""
+    return AssessmentService(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -45,8 +64,7 @@ def _personalisation_profile(
 def add(title: str = typer.Argument(..., help="What do you need to do?")) -> None:
     """Add a new task."""
     conn = _conn()
-    task_in = TaskCreate(title=title)
-    task = db.add_task(conn, task_in)
+    task = _task_service(conn).add_task(title)
     display.print_success(f"Added task #{task.id}: {task.title}")
     conn.close()
 
@@ -57,7 +75,8 @@ def break_down(
 ) -> None:
     """Break a task into smaller sub-steps (interactive)."""
     conn = _conn()
-    parent = db.get_task(conn, task_id)
+    tasks = _task_service(conn)
+    parent = tasks.get_task(task_id)
     if parent is None:
         display.print_warning(f"Task #{task_id} not found.")
         conn.close()
@@ -71,8 +90,7 @@ def break_down(
         step = typer.prompt("  Sub-step", default="", show_default=False)
         if not step.strip():
             break
-        sub = TaskCreate(title=step.strip(), parent_id=parent.id)
-        created = db.add_task(conn, sub)
+        created = tasks.add_subtask(parent_id=parent.id, title=step.strip())
         display.print_success(f"  Added #{created.id}: {created.title}")
         count += 1
 
@@ -91,7 +109,7 @@ def done(
     from momentum.assessments import personalised_nudge
 
     conn = _conn()
-    task = db.complete_task(conn, task_id)
+    task = _task_service(conn).complete_task(task_id)
     if task is None:
         display.print_warning(f"Task #{task_id} not found.")
         conn.close()
@@ -158,22 +176,22 @@ def focus(
 
     conn = _conn()
     profile = _personalisation_profile(conn)
+    sessions = SessionService(conn, _timer_service())
+    tasks = _task_service(conn)
     focus_minutes = minutes if minutes is not None else profile.focus_minutes
     if task_id is not None:
-        task = db.get_task(conn, task_id)
+        task = tasks.get_task(task_id)
         if task is None:
             display.print_warning(f"Task #{task_id} not found.")
             conn.close()
             raise typer.Exit(1)
-        db.set_task_active(conn, task_id)
+        tasks.activate_task(task_id)
         display.print_info(f'Focusing on: "{task.title}" for {focus_minutes} min')
     else:
         display.print_info(f"Starting {focus_minutes}-minute focus session.")
 
-    completed = timer.run_focus(minutes=focus_minutes, task_id=task_id)
+    completed = sessions.run_focus(minutes=focus_minutes, task_id=task_id)
     if completed:
-        session_in = FocusSessionCreate(task_id=task_id, duration_minutes=focus_minutes)
-        db.log_focus_session(conn, session_in)
         display.print_success("Focus session logged.")
         display.print_nudge(personalised_nudge(encouragement.get_nudge(), profile))
 
@@ -182,7 +200,7 @@ def focus(
             default=True,
         )
         if should_break:
-            timer.run_break(minutes=profile.break_minutes)
+            sessions.run_break(minutes=profile.break_minutes)
     conn.close()
 
 
@@ -192,7 +210,9 @@ def take_break(
 ) -> None:
     """Take a break. You have earned it."""
     display.print_info(f"Break time: {minutes} minutes.")
-    timer.run_break(minutes=minutes)
+    conn = _conn()
+    SessionService(conn, _timer_service()).run_break(minutes=minutes)
+    conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +224,7 @@ def take_break(
 def status() -> None:
     """See how your day is going."""
     conn = _conn()
-    summary = db.get_status(conn)
+    summary = StatusService(conn).summary()
     display.print_status(summary)
     conn.close()
 
@@ -226,44 +246,37 @@ def start() -> None:
     from momentum.assessments import personalised_nudge
 
     conn = _conn()
-    summary = db.get_status(conn)
     profile = _personalisation_profile(conn)
+    sessions = SessionService(conn, _timer_service())
+    tasks = _task_service(conn)
     focus_minutes = profile.focus_minutes
 
     # If there are active tasks, suggest continuing one
-    if summary.active_tasks:
-        task = summary.active_tasks[0]
+    active = tasks.first_active_task()
+    if active is not None:
+        task = active
         display.print_info(f'You were working on: "{task.title}"')
         cont = typer.confirm("Continue with this?", default=True)
         if cont:
             display.print_info(f"Starting a {focus_minutes}-minute focus session.")
-            completed = timer.run_focus(minutes=focus_minutes, task_id=task.id)
-            if completed:
-                session_in = FocusSessionCreate(
-                    task_id=task.id, duration_minutes=focus_minutes
-                )
-                db.log_focus_session(conn, session_in)
+            sessions.run_focus(minutes=focus_minutes, task_id=task.id)
             conn.close()
             return
 
     # If there are pending tasks, suggest the first one
-    if summary.pending_tasks:
-        task = summary.pending_tasks[0]
+    pending = tasks.first_pending_task()
+    if pending is not None:
+        task = pending
         display.print_info(f'How about starting with: "{task.title}"?')
         go = typer.confirm("Work on this?", default=True)
         if go:
-            db.set_task_active(conn, task.id)
+            tasks.activate_task(task.id)
             if profile.suggest_breakdown:
                 display.print_info(
                     "If this feels overwhelming, use break-down to create tiny steps first."
                 )
             display.print_info(f"Starting a {focus_minutes}-minute focus session.")
-            completed = timer.run_focus(minutes=focus_minutes, task_id=task.id)
-            if completed:
-                session_in = FocusSessionCreate(
-                    task_id=task.id, duration_minutes=focus_minutes
-                )
-                db.log_focus_session(conn, session_in)
+            sessions.run_focus(minutes=focus_minutes, task_id=task.id)
             conn.close()
             return
 
@@ -273,18 +286,12 @@ def start() -> None:
     )
     thing = typer.prompt("Just one small thing", default="", show_default=False)
     if thing.strip():
-        task_in = TaskCreate(title=thing.strip())
-        task = db.add_task(conn, task_in)
-        db.set_task_active(conn, task.id)
+        task = tasks.add_task(thing.strip())
+        tasks.activate_task(task.id)
         display.print_success(f"Added and started: {task.title}")
         go = typer.confirm(f"Focus on it for {focus_minutes} minutes?", default=True)
         if go:
-            completed = timer.run_focus(minutes=focus_minutes, task_id=task.id)
-            if completed:
-                session_in = FocusSessionCreate(
-                    task_id=task.id, duration_minutes=focus_minutes
-                )
-                db.log_focus_session(conn, session_in)
+            sessions.run_focus(minutes=focus_minutes, task_id=task.id)
     else:
         display.print_nudge(personalised_nudge(encouragement.get_nudge(), profile))
 
@@ -375,6 +382,7 @@ def run_test(
     )
 
     conn = _conn()
+    assessments = _assessment_service(conn)
 
     if stroop and bisbas:
         display.print_warning("Choose only one mode: --stroop or --bisbas.")
@@ -412,7 +420,7 @@ def run_test(
             bisbas_answers[domain] = bisbas_domain_answers
 
         create_model = score_bisbas(bisbas_answers)
-        saved = db.save_assessment(conn, create_model)
+        saved = assessments.save_result(create_model)
         display.print_info(f"\nTotal score: {saved.score}/{saved.max_score}")
         for domain, score in saved.domain_scores.items():
             n_qs = len(BISBAS_QUESTIONS.get(domain, []))
@@ -469,7 +477,7 @@ def run_test(
             per_trial=per_trial,
         )
         create_model = score_stroop(result)
-        db.save_assessment(conn, create_model)
+        assessments.save_result(create_model)
         display.print_info(
             f"\nResult: {correct}/{len(trials)} correct, "
             f"avg {result.avg_time_s:.1f}s per trial"
@@ -511,7 +519,7 @@ def run_test(
         from momentum.assessments import domain_advice
 
         create_model = score_bdefs(bdefs_answers)
-        saved = db.save_assessment(conn, create_model)
+        saved = assessments.save_result(create_model)
         display.print_info(f"\nTotal score: {saved.score}/{saved.max_score}")
         for d, s in saved.domain_scores.items():
             n_qs = len(BDEFS_QUESTIONS[d])
@@ -532,21 +540,8 @@ def test_results(
     limit: int = typer.Option(10, "--limit", "-n", help="Number of results to show"),
 ) -> None:
     """View past self-assessment results."""
-    from momentum.assessments import (
-        BDEFS_QUESTIONS as _BQ,
-    )
-    from momentum.assessments import (
-        BISBAS_QUESTIONS as _BIQ,
-    )
-    from momentum.assessments import (
-        bisbas_domain_advice,
-        domain_advice,
-        interpret_bdefs,
-        interpret_bisbas,
-        interpret_stroop,
-    )
-
     conn = _conn()
+    assessments = _assessment_service(conn)
     atype = None
     if test_type:
         try:
@@ -558,44 +553,17 @@ def test_results(
             conn.close()
             raise typer.Exit(1)
 
-    results = db.list_assessments(conn, assessment_type=atype, limit=limit)
-    if not results:
+    entries = assessments.history_entries(assessment_type=atype, limit=limit)
+    if not entries:
         display.print_info("No assessment results found.")
         conn.close()
         return
 
-    for r in results:
-        taken = r.taken_at.strftime("%Y-%m-%d %H:%M")
-        display.console.print(
-            f"\n[bold]#{r.id}[/bold] {r.assessment_type.value.upper()}  ({taken})"
-        )
-        display.print_info(f"  Score: {r.score}/{r.max_score}")
-        if r.assessment_type == AssessmentType.BDEFS:
-            for d, s in r.domain_scores.items():
-                n_qs = len(_BQ.get(d, []))
-                display.print_info(f"    {d}: {s}")
-                if n_qs:
-                    advice = domain_advice(d, s, n_qs * 4)
-                    if advice:
-                        display.console.print(
-                            f"      [dim italic]{advice}[/dim italic]"
-                        )
-            display.print_info(f"  {interpret_bdefs(r.score, r.max_score)}")
-        elif r.assessment_type == AssessmentType.STROOP:
-            avg_ms = r.domain_scores.get("avg_time_ms", 0)
-            display.print_info(f"  Avg response: {avg_ms}ms")
-            display.print_info(f"  {interpret_stroop(r.score, r.max_score, avg_ms)}")
-        elif r.assessment_type == AssessmentType.BISBAS:
-            for d, s in r.domain_scores.items():
-                n_qs = len(_BIQ.get(d, []))
-                max_domain = n_qs * 4 if n_qs else 1
-                display.print_info(f"    {d}: {s}/{max_domain}")
-                advice = bisbas_domain_advice(d, s, max_domain)
-                if advice:
-                    display.console.print(f"      [dim italic]{advice}[/dim italic]")
-            display.print_info(
-                f"  {interpret_bisbas(r.score, r.max_score, r.domain_scores)}"
-            )
+    for entry in entries:
+        display.console.print()
+        display.console.print(entry.header)
+        for line in entry.lines:
+            display.console.print(f"[blue]{line}[/blue]")
 
     conn.close()
 
@@ -649,7 +617,8 @@ def science() -> None:
 def delete_results() -> None:
     """Delete all self-assessment results."""
     conn = _conn()
-    count = len(db.list_assessments(conn, limit=9999))
+    assessments = _assessment_service(conn)
+    count = assessments.count_results()
     if count == 0:
         display.print_info("No assessment results to delete.")
         conn.close()
@@ -659,7 +628,7 @@ def delete_results() -> None:
         default=False,
     )
     if confirm:
-        deleted = db.delete_all_assessments(conn)
+        deleted = assessments.delete_all_results()
         display.print_success(
             f"Deleted {deleted} assessment result{'s' if deleted != 1 else ''}."
         )
@@ -706,12 +675,8 @@ def browse_db(
                 f"  #{t.id}  [{status}]  {t.title}  (created: {t.created_at:%Y-%m-%d})"
             )
     elif table == "assessments":
-        results = db.list_assessments(conn, limit=limit)
-        for r in results:
-            display.console.print(
-                f"  #{r.id}  {r.assessment_type.value}  "
-                f"score={r.score}/{r.max_score}  ({r.taken_at:%Y-%m-%d %H:%M})"
-            )
+        for row in _assessment_service(conn).browse_rows(limit=limit):
+            display.console.print(row)
     elif table == "sessions":
         sessions = db.list_focus_sessions(conn, limit=limit)
         for s in sessions:

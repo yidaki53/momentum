@@ -69,6 +69,14 @@ momentum autostart --enable
 
 # Sync your data via OneDrive (also: dropbox, google-drive)
 momentum config --sync onedrive
+# Switch timer flow between manual and automatic focus-break cycling
+momentum config --cycle-mode auto
+
+# Save an ACT journal check-in
+momentum journal
+
+# Review recent ACT journal entries
+momentum journal --list
 
 # Show current database location
 momentum config --show
@@ -83,12 +91,13 @@ momentum config --show
 | `break-down` | Break a task into smaller sub-steps (interactive). |
 | `done` | Mark a task as done. |
 | `list` | List your tasks. Use `--all` to include completed. |
-| `focus` | Start a focus timer (default 15 min, personalised when BIS/BAS profile is available). |
-| `take-break` | Take a break (default 5 min, personalised when BIS/BAS profile is available). |
+| `focus` | Start a focus timer (default 15 min, personalised from latest BIS/BAS + BDEFS + Stroop signals). |
+| `take-break` | Take a break (default 5 min, personalised from latest BIS/BAS + BDEFS + Stroop signals). |
 | `status` | See tasks completed, focus time, and streak. |
 | `nudge` | Get a gentle encouragement message. |
+| `journal` | Create or review structured ACT journal entries (`--list`). |
 | `gui` | Open the GUI dashboard. |
-| `config` | Configure database location / cloud sync. |
+| `config` | Configure database location / cloud sync / timer cycle mode (`--cycle-mode manual|auto`). |
 | `test` | Take a self-assessment (BDEFS, `--stroop`, or `--bisbas`). |
 | `test-results` | View past assessment results. |
 | `about` | Show copyright, license, and author information. |
@@ -105,9 +114,9 @@ Momentum includes three evidence-based self-assessment tools:
 
 - **BDEFS** -- A brief executive-function questionnaire covering time management, organisation, self-restraint, self-motivation, and emotion regulation. Results are visualised as a radar chart and tracked over time with a trend line.
 - **Stroop** -- A timed colour-word test measuring inhibitory control. Accuracy and response times are recorded.
-- **BIS/BAS** -- A motivational-style profile (Behavioural Inhibition / Behavioural Activation) used to personalise default focus/break durations and encouragement tone.
+- **BIS/BAS** -- A motivational-style profile (Behavioural Inhibition / Behavioural Activation) shown as a bar chart with reference lines (guidance anchors, not diagnostic cutoffs), plus tailored encouragement and practical tips.
 
-All tests include instruction pages before starting. Past results can be viewed with charts and interpretations.
+Personalization now blends recent BIS/BAS, BDEFS, and Stroop data to tune focus length, break length, and nudge style. All tests include instruction pages before starting, and past results can be viewed with charts and interpretations.
 
 ```bash
 momentum test              # BDEFS self-assessment
@@ -121,10 +130,12 @@ momentum test-results      # View past results
 `momentum gui` (or `make gui`) opens a tkinter window with:
 
 - Task list with add/complete/break-down controls
-- Focus timer with start/stop
+- Focus timer with start/stop and manual/auto cycle mode
 - Status summary (today's progress, streak)
 - Encouragement button
+- ACT journal check-in + ACT journal history
 - **Menu bar**: Menu (Settings, Quit), Help (How to Use, The Science, About), and Tests (BDEFS, BIS/BAS, Stroop, View Results)
+- BIS/BAS result windows and history charts with reference-line disclaimer + bespoke guidance text
 - Appearance settings for dark/light mode and accessibility options (larger text, higher contrast, reduced visual load)
 
 The GUI shares the same database as the CLI -- you can use both interchangeably.
@@ -160,8 +171,10 @@ By default, data is stored in `~/.local/share/momentum/momentum.db` (SQLite). Th
 A full-featured Kivy-based Android app is in `mobile/`. It mirrors desktop capabilities with touch-focused navigation and includes:
 
 - Bottom navigation toolbar (Home, Settings, Help, Tests)
-- Task management + focus timer + personalised nudges
+- Task management + focus timer + manual/auto cycle mode + personalised nudges
+- ACT journaling (quick check-in + history)
 - BDEFS, BIS/BAS, and Stroop assessments with result history
+- BIS/BAS bar chart results with reference-line disclaimer and bespoke guidance
 - Light/dark theme and accessibility options (larger text, higher contrast, reduced visual load)
 - Shared local data model with CLI and desktop GUI
 
@@ -210,5 +223,5 @@ make test
 - `display.py` -- Rich terminal formatting
 - `autostart.py` -- Systemd/XDG autostart management
 - `assessments.py` -- BDEFS/BIS-BAS/Stroop scoring, interpretation, domain-specific advice, and personalization helpers
-- `charts.py` -- Matplotlib radar and timeseries charts with trend lines
+- `charts.py` -- Matplotlib charts (BDEFS radar/timeseries and BIS/BAS profile bars with reference lines)
 - `mobile/main.py` -- Kivy mobile app (Android)

@@ -9,6 +9,8 @@ from typing import Optional
 
 from momentum.config import get_db_path as _config_get_db_path
 from momentum.models import (
+    ActJournalEntry,
+    ActJournalEntryCreate,
     AssessmentResult,
     AssessmentResultCreate,
     AssessmentType,
@@ -51,6 +53,16 @@ CREATE TABLE IF NOT EXISTS assessments (
     max_score       INTEGER NOT NULL,
     domain_scores   TEXT    NOT NULL DEFAULT '{}',
     taken_at        TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS act_journal_entries (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    values_focus      TEXT    NOT NULL,
+    challenge_context TEXT    NOT NULL,
+    thoughts_feelings TEXT    NOT NULL,
+    defusion_reframe  TEXT    NOT NULL,
+    committed_action  TEXT    NOT NULL,
+    created_at        TEXT    NOT NULL
 );
 """
 
@@ -313,6 +325,58 @@ def _row_to_assessment(row: sqlite3.Row) -> AssessmentResult:
         domain_scores=_json.loads(row["domain_scores"]),
         taken_at=datetime.fromisoformat(row["taken_at"]),
     )
+
+
+def _row_to_act_journal_entry(row: sqlite3.Row) -> ActJournalEntry:
+    """Convert a database row to an ActJournalEntry model."""
+    return ActJournalEntry(
+        id=row["id"],
+        values_focus=row["values_focus"],
+        challenge_context=row["challenge_context"],
+        thoughts_feelings=row["thoughts_feelings"],
+        defusion_reframe=row["defusion_reframe"],
+        committed_action=row["committed_action"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def add_act_journal_entry(
+    conn: sqlite3.Connection, entry_in: ActJournalEntryCreate
+) -> ActJournalEntry:
+    """Save a structured ACT journaling entry."""
+    now = datetime.now().isoformat()
+    cur = conn.execute(
+        "INSERT INTO act_journal_entries ("
+        "values_focus, challenge_context, thoughts_feelings, "
+        "defusion_reframe, committed_action, created_at"
+        ") VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            entry_in.values_focus,
+            entry_in.challenge_context,
+            entry_in.thoughts_feelings,
+            entry_in.defusion_reframe,
+            entry_in.committed_action,
+            now,
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM act_journal_entries WHERE id = ?",
+        (cur.lastrowid,),
+    ).fetchone()
+    return _row_to_act_journal_entry(row)
+
+
+def list_act_journal_entries(
+    conn: sqlite3.Connection,
+    limit: int = 20,
+) -> list[ActJournalEntry]:
+    """List ACT journal entries, most recent first."""
+    rows = conn.execute(
+        "SELECT * FROM act_journal_entries ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [_row_to_act_journal_entry(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

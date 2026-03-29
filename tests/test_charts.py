@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from PIL import Image
 
-from momentum.charts import bdefs_radar, bdefs_timeseries
+from momentum.charts import bdefs_momentum_glow, bdefs_radar, bdefs_timeseries
 from momentum.models import AssessmentResult, AssessmentType
 
 
@@ -84,3 +84,16 @@ class TestBdefsTimeseries:
         )
         result = bdefs_timeseries([stroop, _make_bdefs_result()])
         assert result is None  # only 1 BDEFS result
+
+
+class TestBdefsMomentumGlow:
+    def test_returns_image_for_latest_result(self) -> None:
+        img = bdefs_momentum_glow(_make_bdefs_result())
+        assert isinstance(img, Image.Image)
+        assert img.size[0] > 0 and img.size[1] > 0
+
+    def test_returns_image_with_previous_comparison(self) -> None:
+        latest = _make_bdefs_result(score=24)
+        previous = _make_bdefs_result(score=34)
+        img = bdefs_momentum_glow(latest, previous=previous)
+        assert isinstance(img, Image.Image)

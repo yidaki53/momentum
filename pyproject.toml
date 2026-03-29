@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "momentum"
-version = "0.1.0"
+version = "0.2.0"
 description = "A gentle CLI and GUI tool to help people with executive dysfunction get back on track"
 authors = ["Robin Öberg"]
 

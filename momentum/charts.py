@@ -15,6 +15,7 @@ matplotlib.use("Agg")  # non-interactive backend -- render to image buffers
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.figure import Figure
+from matplotlib.patches import FancyBboxPatch
 from PIL import Image
 
 from momentum.assessments import BDEFS_QUESTIONS
@@ -59,6 +60,20 @@ def _fig_to_pil(fig: Figure, dpi: int = 100) -> Image.Image:
 def _domain_values(result: AssessmentResult) -> list[float]:
     """Extract domain scores in canonical order, defaulting to 0."""
     return [float(result.domain_scores.get(d, 0)) for d in _DOMAIN_ORDER]
+
+
+def _domain_percentages(result: AssessmentResult) -> list[float]:
+    """Convert raw BDEFS scores into momentum percentages where higher is better."""
+    percentages: list[float] = []
+    for domain in _DOMAIN_ORDER:
+        questions = BDEFS_QUESTIONS[domain]
+        max_domain_score = len(questions) * 4
+        raw_score = float(result.domain_scores.get(domain, 0))
+        reserve = max(max_domain_score - raw_score, 0)
+        percentages.append(
+            (reserve / max_domain_score * 100) if max_domain_score else 0.0
+        )
+    return percentages
 
 
 # -----------------------------------------------------------------------
@@ -222,5 +237,162 @@ def bdefs_timeseries(
     ax.yaxis.grid(color=_GRID, linewidth=0.5)
 
     fig.autofmt_xdate(rotation=30, ha="right")
+
+    return _fig_to_pil(fig, dpi=dpi)
+
+
+def bdefs_momentum_glow(
+    latest: AssessmentResult,
+    previous: Optional[AssessmentResult] = None,
+    *,
+    title: str = "Momentum Reserve by Domain",
+    size: tuple[int, int] = (620, 360),
+    dpi: int = 100,
+) -> Image.Image:
+    """Draw a motivating domain-by-domain BDEFS chart.
+
+    The chart inverts BDEFS difficulty scores into a "momentum reserve" percentage,
+    so taller, brighter markers indicate more available headroom in that domain.
+    """
+    latest_pct = _domain_percentages(latest)
+    previous_pct = _domain_percentages(previous) if previous is not None else None
+    x = np.arange(len(_DOMAIN_ORDER), dtype=float)
+
+    fig_w, fig_h = size[0] / dpi, size[1] / dpi
+    fig = Figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor=_BG)
+    ax = fig.add_subplot(111)
+    ax.set_facecolor(_BG)
+
+    gradient = np.linspace(0.0, 1.0, 256).reshape(-1, 1)
+    ax.imshow(
+        gradient,
+        extent=(-0.7, len(_DOMAIN_ORDER) - 0.3, 0, 100),
+        origin="lower",
+        aspect="auto",
+        cmap=matplotlib.colormaps["GnBu"],
+        alpha=0.12,
+        zorder=0,
+    )
+
+    rng = np.random.default_rng(17)
+    star_x = rng.uniform(-0.45, len(_DOMAIN_ORDER) - 0.55, 32)
+    star_y = rng.uniform(62, 102, 32)
+    star_sizes = rng.uniform(6, 22, 32)
+    ax.scatter(
+        star_x, star_y, s=star_sizes, c="#f6f4d2", alpha=0.14, linewidths=0, zorder=0.5
+    )
+
+    for idx, value in enumerate(latest_pct):
+        beam = FancyBboxPatch(
+            (idx - 0.23, 0),
+            0.46,
+            value,
+            boxstyle="round,pad=0.02,rounding_size=0.22",
+            linewidth=0,
+            facecolor="#5db6b0",
+            alpha=0.2,
+            zorder=1,
+        )
+        ax.add_patch(beam)
+        ax.vlines(idx, 0, value, color="#8ee3ef", linewidth=2.2, alpha=0.55, zorder=2)
+
+    if previous_pct is not None:
+        ax.plot(
+            x,
+            previous_pct,
+            color="#a0a0a0",
+            linewidth=1.2,
+            linestyle="--",
+            alpha=0.65,
+            zorder=3,
+        )
+        ax.scatter(
+            x,
+            previous_pct,
+            s=96,
+            facecolors=_BG,
+            edgecolors="#c0c0c0",
+            linewidths=1.4,
+            alpha=0.9,
+            zorder=4,
+        )
+
+    ax.plot(x, latest_pct, color="#f6d365", linewidth=2.3, alpha=0.95, zorder=5)
+    ax.scatter(x, latest_pct, s=300, c="#f6d365", alpha=0.16, linewidths=0, zorder=5)
+    ax.scatter(x, latest_pct, s=135, c="#ffd27d", alpha=0.95, linewidths=0, zorder=6)
+    ax.scatter(x, latest_pct, s=34, c="#fff7dd", alpha=1.0, linewidths=0, zorder=7)
+
+    for idx, value in enumerate(latest_pct):
+        if previous_pct is None:
+            label = f"{value:.0f}%"
+            color = "#fff7dd"
+        else:
+            delta = value - previous_pct[idx]
+            if delta > 0.9:
+                label = f"+{delta:.0f}"
+                color = "#9be28f"
+            elif delta < -0.9:
+                label = f"{delta:.0f}"
+                color = "#ffb38a"
+            else:
+                label = "steady"
+                color = "#d9dde3"
+        ax.text(
+            idx,
+            min(value + 7.5, 98),
+            label,
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            color=color,
+            fontweight="bold",
+            zorder=8,
+        )
+
+    short_labels = [
+        d.replace("Organisation & Problem-Solving", "Organisation")
+        .replace("Self-Restraint", "Restraint")
+        .replace("Self-Motivation", "Motivation")
+        .replace("Emotion Regulation", "Emotion")
+        for d in _DOMAIN_ORDER
+    ]
+    ax.set_xticks(x)
+    ax.set_xticklabels(short_labels, color=_FG, fontsize=9)
+    ax.set_ylim(0, 104)
+    ax.set_xlim(-0.6, len(_DOMAIN_ORDER) - 0.4)
+    ax.set_yticks((15, 45, 75))
+    ax.set_yticklabels(("Needs support", "Building", "Rolling"), color=_FG, fontsize=8)
+    ax.tick_params(axis="x", length=0)
+    ax.tick_params(axis="y", length=0)
+    for y in (15, 45, 75):
+        ax.axhline(y, color=_GRID, linewidth=0.8, alpha=0.45, zorder=0)
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    latest_overall = (
+        (latest.max_score - latest.score) / latest.max_score * 100
+        if latest.max_score
+        else 0.0
+    )
+    subtitle = f"Higher glow means more available headroom. Overall momentum reserve: {latest_overall:.0f}%"
+    if previous is not None and previous.max_score:
+        prev_overall = (previous.max_score - previous.score) / previous.max_score * 100
+        delta = latest_overall - prev_overall
+        if abs(delta) >= 1:
+            direction = "up" if delta > 0 else "down"
+            subtitle += f"  |  vs previous: {abs(delta):.0f}% {direction}"
+
+    ax.set_title(title, color=_FG, fontsize=13, fontweight="bold", pad=16)
+    ax.text(
+        0.0,
+        1.02,
+        subtitle,
+        transform=ax.transAxes,
+        color="#d9dde3",
+        fontsize=8.5,
+        ha="left",
+        va="bottom",
+    )
 
     return _fig_to_pil(fig, dpi=dpi)

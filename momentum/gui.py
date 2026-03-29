@@ -35,21 +35,25 @@ from momentum.assessments import (
     interpret_bisbas,
     interpret_stroop,
     personalised_nudge,
-    profile_from_latest_bisbas,
     score_bdefs,
     score_bisbas,
     score_stroop,
 )
-from momentum.charts import bdefs_radar, bdefs_timeseries
+from momentum.charts import bdefs_momentum_glow
 from momentum.encouragement import get_break_message, get_nudge
 from momentum.models import (
     AssessmentResult,
     AssessmentType,
-    FocusSessionCreate,
-    TaskCreate,
     TaskStatus,
     ThemeMode,
     WindowPosition,
+)
+from momentum.services import (
+    AssessmentService,
+    PersonalisationService,
+    SessionService,
+    StatusService,
+    TaskService,
 )
 
 if TYPE_CHECKING:
@@ -194,12 +198,32 @@ class MomentumApp:
         if hasattr(self, "_image_label"):
             self._image_label.configure(bg=self._palette["bg"])
 
+    def _refresh_banner(self, *, force_fetch: bool = False) -> None:
+        """Refresh the top banner after appearance changes."""
+        if self._config.accessibility_reduce_visual_load:
+            rgb = (
+                (226, 235, 240)
+                if self._config.theme_mode == ThemeMode.LIGHT
+                else (58, 90, 106)
+            )
+            fallback = Image.new("RGB", (_IMG_WIDTH, _IMG_HEIGHT), rgb)
+            self._draw_title(fallback)
+            self._set_image(fallback)
+            return
+        if force_fetch or self._photo_image is None:
+            threading.Thread(target=self._fetch_image, daemon=True).start()
+
     def _personalisation_profile(self) -> PersonalisationProfile:
         """Get personalization defaults from the latest BIS/BAS result."""
-        latest = db.list_assessments(
-            self.conn, assessment_type=AssessmentType.BISBAS, limit=1
-        )
-        return profile_from_latest_bisbas(latest[0] if latest else None)
+        return PersonalisationService(self.conn).profile()
+
+    def _task_service(self) -> TaskService:
+        """Build the task workflow service for GUI interactions."""
+        return TaskService(self.conn)
+
+    def _assessment_service(self) -> AssessmentService:
+        """Build the assessment service for GUI interactions."""
+        return AssessmentService(self.conn)
 
     def _refresh_personalisation(self) -> None:
         """Refresh timer defaults and button labels from BIS/BAS profile."""
@@ -235,12 +259,7 @@ class MomentumApp:
         self._refresh_tasks()
         self._refresh_status()
         self._refresh_personalisation()
-        if self._config.accessibility_reduce_visual_load:
-            fallback = Image.new("RGB", (_IMG_WIDTH, _IMG_HEIGHT), (58, 90, 106))
-            self._draw_title(fallback)
-            self._set_image(fallback)
-        else:
-            threading.Thread(target=self._fetch_image, daemon=True).start()
+        self._refresh_banner(force_fetch=True)
 
     # ------------------------------------------------------------------
     # Window position
@@ -392,6 +411,19 @@ class MomentumApp:
         )
         self._image_label.pack(fill=tk.X, padx=10, pady=(6, 0))
 
+        # --- Nudge ---
+        nudge_frame = ttk.Frame(self.root)
+        nudge_frame.pack(fill=tk.X, **pad)
+
+        self._nudge_label = ttk.Label(
+            nudge_frame,
+            text=personalised_nudge(get_nudge(), self._personalisation_profile()),
+            style="Nudge.TLabel",
+        )
+        self._nudge_label.pack(pady=(5, 3))
+
+        ttk.Button(nudge_frame, text="New encouragement", command=self._on_nudge).pack()
+
         # --- Status bar ---
         self._status_frame = ttk.Frame(self.root)
         self._status_frame.pack(fill=tk.X, **pad)
@@ -480,19 +512,6 @@ class MomentumApp:
             side=tk.LEFT, padx=2
         )
 
-        # --- Nudge ---
-        nudge_frame = ttk.Frame(self.root)
-        nudge_frame.pack(fill=tk.X, **pad)
-
-        self._nudge_label = ttk.Label(
-            nudge_frame,
-            text=personalised_nudge(get_nudge(), self._personalisation_profile()),
-            style="Nudge.TLabel",
-        )
-        self._nudge_label.pack(pady=5)
-
-        ttk.Button(nudge_frame, text="New encouragement", command=self._on_nudge).pack()
-
     # ------------------------------------------------------------------
     # Data refresh
     # ------------------------------------------------------------------
@@ -501,9 +520,10 @@ class MomentumApp:
         """Reload the task list from the database."""
         self._task_listbox.delete(0, tk.END)
         self._task_ids: list[int] = []
+        tasks = self._task_service()
 
-        active = db.list_tasks(self.conn, status=TaskStatus.ACTIVE)
-        pending = db.list_tasks(self.conn, status=TaskStatus.PENDING)
+        active = tasks.list_tasks(status=TaskStatus.ACTIVE)
+        pending = tasks.list_tasks(status=TaskStatus.PENDING)
 
         for task in active + pending:
             icon = "[~]" if task.status == TaskStatus.ACTIVE else "[ ]"
@@ -514,7 +534,7 @@ class MomentumApp:
             self._task_ids.append(task.id)
 
         if self._show_completed_var.get():
-            done = db.list_tasks(self.conn, status=TaskStatus.DONE)
+            done = tasks.list_tasks(status=TaskStatus.DONE)
             for task in done:
                 prefix = "    " if task.is_subtask else ""
                 self._task_listbox.insert(
@@ -525,7 +545,7 @@ class MomentumApp:
 
     def _refresh_status(self) -> None:
         """Update the status bar."""
-        summary = db.get_status(self.conn)
+        summary = StatusService(self.conn).summary()
         today = summary.today
         text = (
             f"Today: {today.tasks_completed} done, {today.focus_minutes} min focused  |  "
@@ -552,8 +572,7 @@ class MomentumApp:
             "Add task", "What do you need to do?", parent=self.root
         )
         if title and title.strip():
-            task_in = TaskCreate(title=title.strip())
-            db.add_task(self.conn, task_in)
+            self._task_service().add_task(title.strip())
             self._refresh_tasks()
             self._refresh_status()
 
@@ -562,7 +581,7 @@ class MomentumApp:
         if task_id is None:
             messagebox.showinfo("Complete", "Select a task first.", parent=self.root)
             return
-        db.complete_task(self.conn, task_id)
+        self._task_service().complete_task(task_id)
         self._refresh_tasks()
         self._refresh_status()
         self._nudge_label.configure(
@@ -574,13 +593,14 @@ class MomentumApp:
         task_id = self._selected_task_id()
         if task_id is None:
             return
-        task = db.get_task(self.conn, task_id)
+        tasks = self._task_service()
+        task = tasks.get_task(task_id)
         if task is None:
             return
         if task.status == TaskStatus.DONE:
-            db.uncomplete_task(self.conn, task_id)
+            tasks.reopen_task(task_id)
         else:
-            db.complete_task(self.conn, task_id)
+            tasks.complete_task(task_id)
             self._nudge_label.configure(
                 text=personalised_nudge(get_nudge(), self._personalisation_profile())
             )
@@ -594,8 +614,7 @@ class MomentumApp:
             return
         step = simpledialog.askstring("Break down", "Add a sub-step:", parent=self.root)
         if step and step.strip():
-            sub = TaskCreate(title=step.strip(), parent_id=task_id)
-            db.add_task(self.conn, sub)
+            self._task_service().add_subtask(parent_id=task_id, title=step.strip())
             self._refresh_tasks()
 
     # ------------------------------------------------------------------
@@ -619,7 +638,7 @@ class MomentumApp:
         task_id = self._selected_task_id()
         if not is_break and task_id is not None:
             self._timer_task_id = task_id
-            db.set_task_active(self.conn, task_id)
+            self._task_service().activate_task(task_id)
             self._refresh_tasks()
         else:
             self._timer_task_id = None
@@ -654,10 +673,9 @@ class MomentumApp:
         else:
             # Log the session
             minutes = self._timer_total // 60
-            session_in = FocusSessionCreate(
+            SessionService(self.conn).log_focus(
                 task_id=self._timer_task_id, duration_minutes=minutes
             )
-            db.log_focus_session(self.conn, session_in)
             self._refresh_status()
             self._nudge_label.configure(
                 text=personalised_nudge(get_nudge(), self._personalisation_profile())
@@ -812,16 +830,21 @@ class MomentumApp:
         appearance_frame.pack(fill=tk.X, padx=12)
         theme_var = tk.StringVar(value=current.theme_mode.value)
 
+        def _reopen_settings() -> None:
+            if win.winfo_exists():
+                win.destroy()
+            self.root.after_idle(self._on_settings)
+
         def _set_theme() -> None:
             cfg.set_theme_mode(theme_var.get())
             self._config = cfg.load_config()
             self._palette = self._theme()
             self._apply_runtime_theme()
-            messagebox.showinfo(
-                "Theme updated",
-                "Theme saved. Reopen dialogs for complete repaint.",
-                parent=win,
-            )
+            self._refresh_banner(force_fetch=True)
+            self._refresh_tasks()
+            self._refresh_status()
+            self._refresh_personalisation()
+            _reopen_settings()
 
         for label, value in (
             ("Dark", ThemeMode.DARK.value),
@@ -862,13 +885,11 @@ class MomentumApp:
             self._config = cfg.load_config()
             self._palette = self._theme()
             self._apply_runtime_theme()
+            self._refresh_tasks()
+            self._refresh_status()
             self._refresh_personalisation()
-            if self._config.accessibility_reduce_visual_load:
-                fallback = Image.new("RGB", (_IMG_WIDTH, _IMG_HEIGHT), (58, 90, 106))
-                self._draw_title(fallback)
-                self._set_image(fallback)
-            elif self._photo_image is None:
-                threading.Thread(target=self._fetch_image, daemon=True).start()
+            self._refresh_banner(force_fetch=True)
+            _reopen_settings()
 
         for label, var in (
             ("Larger text", large_text_var),
@@ -911,7 +932,7 @@ class MomentumApp:
         data_frame.pack(fill=tk.X, padx=12)
 
         def _delete_results() -> None:
-            count = len(db.list_assessments(self.conn, limit=9999))
+            count = self._assessment_service().count_results()
             if count == 0:
                 messagebox.showinfo("No data", "No assessment results.", parent=win)
                 return
@@ -920,13 +941,13 @@ class MomentumApp:
                 f"Delete all {count} assessment result{'s' if count != 1 else ''}?",
                 parent=win,
             ):
-                db.delete_all_assessments(self.conn)
+                self._assessment_service().delete_all_results()
                 messagebox.showinfo(
                     "Deleted", "All assessment results deleted.", parent=win
                 )
 
         def _delete_tasks() -> None:
-            count = len(db.list_tasks(self.conn))
+            count = len(self._task_service().list_tasks())
             if count == 0:
                 messagebox.showinfo("No data", "No tasks.", parent=win)
                 return
@@ -935,7 +956,7 @@ class MomentumApp:
                 f"Delete all {count} task{'s' if count != 1 else ''} and focus sessions?",
                 parent=win,
             ):
-                db.delete_all_tasks(self.conn)
+                self._task_service().delete_all_tasks()
                 self._refresh_tasks()
                 self._refresh_status()
                 messagebox.showinfo(
@@ -985,11 +1006,11 @@ class MomentumApp:
             row_ids.clear()
             tbl = table_var.get()
             if tbl == "tasks":
-                for t in db.list_tasks(self.conn):
+                for t in self._task_service().list_tasks():
                     listbox.insert(tk.END, f"#{t.id}  [{t.status.value}]  {t.title}")
                     row_ids.append(str(t.id))
             elif tbl == "assessments":
-                for r in db.list_assessments(self.conn, limit=100):
+                for r in self._assessment_service().list_results(limit=100):
                     listbox.insert(
                         tk.END,
                         f"#{r.id}  {r.assessment_type.value}  "
@@ -1426,7 +1447,7 @@ class MomentumApp:
         def _submit() -> None:
             answers = {d: [v.get() for v in vs] for d, vs in vars_map.items()}
             create_model = score_bdefs(answers)
-            saved = db.save_assessment(self.conn, create_model)
+            saved = self._assessment_service().save_result(create_model)
             win.destroy()
             self._show_bdefs_result(saved)
 
@@ -1514,7 +1535,7 @@ class MomentumApp:
         def _submit() -> None:
             answers = {d: [v.get() for v in vs] for d, vs in vars_map.items()}
             create_model = score_bisbas(answers)
-            saved = db.save_assessment(self.conn, create_model)
+            saved = self._assessment_service().save_result(create_model)
             self._refresh_personalisation()
             win.destroy()
 
@@ -1651,7 +1672,7 @@ class MomentumApp:
                 per_trial=state["per_trial"],
             )
             create_model = score_stroop(result)
-            saved = db.save_assessment(self.conn, create_model)
+            saved = self._assessment_service().save_result(create_model)
             avg_ms = int(result.avg_time_s * 1000)
             msg = (
                 f"Score: {saved.score}/{saved.max_score}\n"
@@ -1666,10 +1687,10 @@ class MomentumApp:
     # --- shared result display helpers -----------------------------------
 
     def _show_bdefs_result(self, saved: "AssessmentResult") -> None:
-        """Open a results window with radar chart and score breakdown."""
+        """Open a results window with a motivating chart and score breakdown."""
 
-        all_bdefs = db.list_assessments(
-            self.conn, assessment_type=AssessmentType.BDEFS, limit=50
+        all_bdefs = self._assessment_service().list_results(
+            assessment_type=AssessmentType.BDEFS, limit=50
         )
         previous = next((r for r in all_bdefs if r.id != saved.id), None)
 
@@ -1679,12 +1700,15 @@ class MomentumApp:
         rwin.configure(bg=self._palette["bg"])
         rwin.transient(self.root)
 
-        # Radar chart
-        radar_img = bdefs_radar(latest=saved, previous=previous)
-        radar_tk = ImageTk.PhotoImage(radar_img)
-        radar_label = tk.Label(rwin, image=radar_tk, bg=self._palette["bg"])  # type: ignore[arg-type]
-        radar_label.image = radar_tk  # prevent GC
-        radar_label.pack(padx=8, pady=(8, 0))
+        chart_img = bdefs_momentum_glow(
+            latest=saved,
+            previous=previous,
+            title="Momentum Reserve Snapshot",
+        )
+        chart_tk = ImageTk.PhotoImage(chart_img)
+        chart_label = tk.Label(rwin, image=chart_tk, bg=self._palette["bg"])  # type: ignore[arg-type]
+        chart_label.image = chart_tk  # prevent GC
+        chart_label.pack(padx=8, pady=(8, 0))
 
         # Score text
         score_frame = ttk.Frame(rwin)
@@ -1718,7 +1742,7 @@ class MomentumApp:
 
     def _on_view_results(self) -> None:
         """Display past assessment results with charts in a scrollable window."""
-        results = db.list_assessments(self.conn, limit=50)
+        results = self._assessment_service().list_results(limit=50)
 
         win = tk.Toplevel(self.root)
         win.title("Assessment Results")
@@ -1768,28 +1792,19 @@ class MomentumApp:
                 style="Nudge.TLabel",
             ).pack(padx=16, anchor=tk.W)
         else:
-            # --- BDEFS radar chart (latest in blue, previous in grey) ---
+            # --- BDEFS momentum glow chart (latest vs previous) ---
             if bdefs_results:
                 latest_r = bdefs_results[0]  # most recent first
                 prev_r = bdefs_results[1] if len(bdefs_results) > 1 else None
-                radar_img = bdefs_radar(
+                glow_img = bdefs_momentum_glow(
                     latest=latest_r,
                     previous=prev_r,
-                    title="Latest Executive Function Profile",
+                    title="Latest Momentum Reserve Profile",
                 )
-                radar_tk = ImageTk.PhotoImage(radar_img)
-                self._results_images.append(radar_tk)
-                tk.Label(content, image=radar_tk, bg=self._palette["bg"]).pack(
+                glow_tk = ImageTk.PhotoImage(glow_img)
+                self._results_images.append(glow_tk)
+                tk.Label(content, image=glow_tk, bg=self._palette["bg"]).pack(
                     padx=8, pady=(8, 0)
-                )
-
-            # --- BDEFS timeseries (if 2+ results) ---
-            ts_img = bdefs_timeseries(results)
-            if ts_img is not None:
-                ts_tk = ImageTk.PhotoImage(ts_img)
-                self._results_images.append(ts_tk)
-                tk.Label(content, image=ts_tk, bg=self._palette["bg"]).pack(
-                    padx=8, pady=(4, 8)
                 )
 
             # --- Textual list of all results ---

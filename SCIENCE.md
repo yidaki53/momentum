@@ -29,13 +29,25 @@ Momentum's encouragement messages reflect the principles of self-compassion -- t
 - [Ferrari et al. (2019) -- Self-compassion interventions meta-analysis, Mindfulness](https://doi.org/10.1007/s12671-019-01134-6)
 - [Adie et al. (2021) -- Self-compassion, activation and depression, Mindfulness](https://doi.org/10.1007/s12671-021-01637-1)
 
+## ACT Journaling and Psychological Flexibility
+
+Momentum's structured ACT journaling prompts (values focus, difficult thoughts/feelings, defusion/reframe, and committed next action) are designed to support psychological flexibility rather than symptom suppression. This follows core ACT processes: acceptance, cognitive defusion, values clarification, and committed action. These mechanisms are especially relevant when executive dysfunction and depressive inertia make it hard to initiate action despite clear intentions.
+
+Meta-analytic work indicates ACT is effective relative to inactive controls and treatment as usual across anxiety, depression, and related conditions, with outcomes comparable to established CBT approaches in many contexts. The app's journaling flow therefore aims to operationalize ACT in brief, low-friction check-ins.
+
+- [A-Tjak et al. (2015) -- ACT efficacy meta-analysis, Psychotherapy and Psychosomatics](https://doi.org/10.1159/000365764)
+- [Hayes et al. (2012) -- Acceptance and Commitment Therapy: The Process and Practice of Mindful Change](https://www.guilford.com/books/Acceptance-and-Commitment-Therapy/Hayes-Strosahl-Wilson/9781462553282)
+
 ## BIS/BAS Motivational Personalization
 
 Momentum now includes a BIS/BAS profile (Behavioural Inhibition / Behavioural Activation) to personalise support. The BIS/BAS framework captures meaningful individual differences in threat-sensitivity (BIS) and reward/goal responsiveness (BAS). In practice, this helps explain why one user may need lower-pressure initiation cues and shorter focus blocks, while another benefits more from reward-framed nudges and longer persistence blocks.
 
-In Momentum, this is used in a lightweight way: profile-informed defaults adjust focus/break length and encouragement style without changing the underlying task model. The goal is not diagnosis, but reducing activation friction by matching prompts to motivational style.
+In Momentum, this is used in a lightweight way: profile-informed defaults adjust focus/break length and encouragement style, and these signals are further blended with BDEFS and Stroop results for more robust personalization. The goal is not diagnosis, but reducing activation friction by matching prompts to motivational style.
+
+The BIS/BAS bar chart includes dashed reference lines as *guidance anchors* rather than diagnostic thresholds. That design choice reflects evidence that BIS/BAS score patterns vary with age, sex, and measurement-model choices, so fixed universal cutoffs can be misleading.
 
 - [Carver & White (1994) -- BIS/BAS scales, Journal of Personality and Social Psychology](https://doi.org/10.1037/0022-3514.67.2.319)
+- [Pagliaccio et al. (2016) -- BIS/BAS development, invariance, and normative age/sex effects, Psychological Assessment](https://doi.org/10.1037/pas0000186)
 
 ## Accessibility, Reduced Visual Load, and Interface Friction
 

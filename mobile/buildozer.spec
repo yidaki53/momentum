@@ -6,7 +6,7 @@ package.name = momentum
 package.domain = dev.momentum
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,md
-version = 0.1.0
+version = 0.2.0
 
 # Dependencies
 requirements = python3,kivy,pydantic,pydantic-core,pillow,matplotlib,numpy

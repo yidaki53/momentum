@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from momentum.models import AppConfig, ThemeMode
+from momentum.models import AppConfig, ThemeMode, TimerCycleMode
 
 
 def _is_android() -> bool:
@@ -92,6 +92,14 @@ def set_db_path(path: str) -> AppConfig:
     resolved.parent.mkdir(parents=True, exist_ok=True)
     config = load_config()
     config.db_path = str(resolved)
+    save_config(config)
+    return config
+
+
+def set_timer_cycle_mode(mode: str) -> AppConfig:
+    """Persist timer cycle mode preference."""
+    config = load_config()
+    config.timer_cycle_mode = TimerCycleMode(mode)
     save_config(config)
     return config
 

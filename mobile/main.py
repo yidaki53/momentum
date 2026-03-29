@@ -18,6 +18,7 @@ import threading
 import time as _time
 import urllib.request
 from pathlib import Path
+from typing import Callable
 
 # Ensure the parent package is importable when running standalone on desktop
 _project_root = Path(__file__).resolve().parent.parent
@@ -60,6 +61,7 @@ from momentum.assessments import (
     RESULTS_GUIDE,
     STROOP_INSTRUCTIONS,
     StroopResult,
+    bisbas_bespoke_guidance,
     bisbas_domain_advice,
     domain_advice,
     generate_stroop_trials,
@@ -67,19 +69,21 @@ from momentum.assessments import (
     interpret_bisbas,
     interpret_stroop,
     personalised_nudge,
-    profile_from_latest_bisbas,
+    profile_from_latest_assessments,
     score_bdefs,
     score_bisbas,
     score_stroop,
 )
-from momentum.charts import bdefs_radar, bdefs_timeseries
+from momentum.charts import bdefs_radar, bdefs_timeseries, bisbas_profile_bars
 from momentum.encouragement import get_break_message, get_nudge
 from momentum.models import (
+    ActJournalEntryCreate,
     AssessmentType,
     FocusSessionCreate,
     TaskCreate,
     TaskStatus,
     ThemeMode,
+    TimerCycleMode,
 )
 
 log = logging.getLogger(__name__)
@@ -296,6 +300,66 @@ def _render_markdown(container, md_text):
             _add_line_with_links(s)
 
 
+def _show_error_popup(title: str, text: str) -> None:
+    """Display a consistent error popup for recoverable UI callback failures."""
+    app = App.get_running_app()
+    fg = list(app.text_color) if app else list(_TEXT)
+    accent = list(app.accent_color) if app else list(_ACCENT)
+    content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+    content.add_widget(Label(text=text, font_size=sp(13), color=fg))
+    close = Button(
+        text="OK",
+        size_hint_y=None,
+        height=dp(44),
+        background_color=accent,
+        color=fg,
+    )
+    popup = Popup(title=title, content=content, size_hint=(0.86, 0.36))
+    close.bind(on_release=lambda _: popup.dismiss())
+    content.add_widget(close)
+    popup.open()
+
+
+def _show_info_popup(title: str, text: str) -> None:
+    """Display a neutral informational popup for successful actions."""
+    app = App.get_running_app()
+    fg = list(app.text_color) if app else list(_TEXT)
+    accent = list(app.accent_color) if app else list(_ACCENT)
+    content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+    content.add_widget(Label(text=text, font_size=sp(13), color=fg))
+    close = Button(
+        text="OK",
+        size_hint_y=None,
+        height=dp(44),
+        background_color=accent,
+        color=fg,
+    )
+    popup = Popup(title=title, content=content, size_hint=(0.86, 0.36))
+    close.bind(on_release=lambda _: popup.dismiss())
+    content.add_widget(close)
+    popup.open()
+
+
+def _run_ui_action(
+    action: Callable[[], None],
+    *,
+    title: str = "Action failed",
+    prefix: str = "Something went wrong while handling that action.",
+) -> None:
+    """Run a UI callback safely and surface failures without crashing the app."""
+    try:
+        action()
+    except Exception as exc:
+        log.exception("Unhandled mobile UI callback exception")
+        message = f"{prefix}\n\n{exc}"
+        Clock.schedule_once(
+            lambda _dt, popup_title=title, popup_message=message: _show_error_popup(
+                popup_title, popup_message
+            ),
+            0,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Kivy UI definition (KV language)
 # ---------------------------------------------------------------------------
@@ -506,13 +570,26 @@ KV = """
             italic: True
             text_size: self.width - dp(24), None
             halign: 'center'
-        Button:
-            text: 'New encouragement'
+        BoxLayout:
             size_hint_y: None
             height: dp(40)
-            background_color: app.secondary_button_color
-            color: app.text_color
-            on_release: root.refresh_nudge()
+            spacing: dp(8)
+            padding: [dp(8), 0]
+            Button:
+                text: 'New encouragement'
+                background_color: app.secondary_button_color
+                color: app.text_color
+                on_release: root.refresh_nudge()
+            Button:
+                text: 'ACT check-in'
+                background_color: app.success_button_color
+                color: app.text_color
+                on_release: root.open_act_checkin()
+            Button:
+                text: 'ACT history'
+                background_color: app.neutral_button_color
+                color: app.text_color
+                on_release: root.open_act_history()
         Widget:
             size_hint_y: None
             height: dp(4)
@@ -708,9 +785,12 @@ class Toolbar(BoxLayout):
     """Bottom navigation bar present on every screen."""
 
     def go(self, screen_name, direction):
-        sm = App.get_running_app().root
-        sm.transition = NoTransition()
-        sm.current = screen_name
+        def _navigate() -> None:
+            sm = App.get_running_app().root
+            sm.transition = NoTransition()
+            sm.current = screen_name
+
+        _run_ui_action(_navigate, prefix="Navigation failed.")
 
     def on_parent(self, *args):
         """Bind to owning screen's on_enter so we highlight on every visit."""
@@ -806,29 +886,43 @@ class HomeScreen(Screen):
         self._timer_is_break = False
         self._timer_event = None
         self._selected_task_id = None
+        self._auto_cycle_task_id = None
         self._banner_loaded = False
 
     def on_enter(self):
-        if self.conn is None:
-            self.conn = db.get_connection()
-        self._refresh_profile_ui()
-        self.nudge_text = personalised_nudge(get_nudge(), self._profile())
-        Clock.schedule_once(lambda dt: self.refresh_all(), 0)
-        if not self._banner_loaded:
-            self._banner_loaded = True
-            # Show fallback banner immediately so the user always sees it
-            fallback = self._make_fallback_banner()
-            self._set_banner(fallback)
-            # Then try to fetch a real image in the background
-            app = App.get_running_app()
-            if app is None or not app.reduce_visual_load:
-                threading.Thread(target=self._fetch_banner, daemon=True).start()
+        def _load() -> None:
+            if self.conn is None:
+                self.conn = db.get_connection()
+            self._refresh_profile_ui()
+            self.nudge_text = personalised_nudge(get_nudge(), self._profile())
+            Clock.schedule_once(lambda _dt: self.refresh_all(), 0)
+            if not self._banner_loaded:
+                self._banner_loaded = True
+                # Show fallback banner immediately so the user always sees it
+                fallback = self._make_fallback_banner()
+                self._set_banner(fallback)
+                # Then try to fetch a real image in the background
+                app = App.get_running_app()
+                if app is None or not app.reduce_visual_load:
+                    threading.Thread(target=self._fetch_banner, daemon=True).start()
+
+        _run_ui_action(_load, prefix="Could not load the home screen.")
 
     def _profile(self):
-        latest = db.list_assessments(
+        latest_bisbas = db.list_assessments(
             self.conn, assessment_type=AssessmentType.BISBAS, limit=1
         )
-        return profile_from_latest_bisbas(latest[0] if latest else None)
+        latest_bdefs = db.list_assessments(
+            self.conn, assessment_type=AssessmentType.BDEFS, limit=1
+        )
+        latest_stroop = db.list_assessments(
+            self.conn, assessment_type=AssessmentType.STROOP, limit=1
+        )
+        return profile_from_latest_assessments(
+            latest_bisbas=latest_bisbas[0] if latest_bisbas else None,
+            latest_bdefs=latest_bdefs[0] if latest_bdefs else None,
+            latest_stroop=latest_stroop[0] if latest_stroop else None,
+        )
 
     def _refresh_profile_ui(self):
         profile = self._profile()
@@ -1079,24 +1173,37 @@ class HomeScreen(Screen):
     # -- Timer --
 
     def start_focus(self):
-        self._start_timer(self._profile().focus_minutes, is_break=False)
+        _run_ui_action(
+            lambda: self._start_timer(self._profile().focus_minutes, is_break=False),
+            prefix="Could not start focus timer.",
+        )
 
     def start_break(self):
-        self._start_timer(self._profile().break_minutes, is_break=True)
+        _run_ui_action(
+            lambda: self._start_timer(self._profile().break_minutes, is_break=True),
+            prefix="Could not start break timer.",
+        )
 
-    def _start_timer(self, minutes, is_break=False):
+    def _cycle_mode(self) -> TimerCycleMode:
+        return cfg.load_config().timer_cycle_mode
+
+    def _start_timer(self, minutes, is_break=False, task_id=None):
         if self._timer_running:
             return
         self._timer_running = True
         self._timer_is_break = is_break
         self._timer_total = minutes * 60
         self._timer_seconds_left = self._timer_total
-        if not is_break and self._selected_task_id is not None:
-            self._timer_task_id = self._selected_task_id
-            db.set_task_active(self.conn, self._selected_task_id)
+        active_task_id = task_id if task_id is not None else self._selected_task_id
+        if not is_break and active_task_id is not None:
+            self._timer_task_id = active_task_id
+            self._auto_cycle_task_id = active_task_id
+            db.set_task_active(self.conn, active_task_id)
             self.refresh_tasks()
         else:
             self._timer_task_id = None
+            if not is_break:
+                self._auto_cycle_task_id = None
         self._timer_event = Clock.schedule_interval(self._tick, 1)
 
     def _tick(self, dt):
@@ -1117,8 +1224,24 @@ class HomeScreen(Screen):
         self._timer_seconds_left -= 1
 
     def _on_timer_complete(self):
+        cycle_mode = self._cycle_mode()
         if self._timer_is_break:
-            self.nudge_text = get_break_message()
+            if cycle_mode == TimerCycleMode.AUTO:
+                self.nudge_text = "Break complete. Starting the next focus block."
+                Clock.schedule_once(
+                    lambda _dt: self._start_timer(
+                        self._profile().focus_minutes,
+                        is_break=False,
+                        task_id=self._auto_cycle_task_id,
+                    ),
+                    0.2,
+                )
+            else:
+                self.nudge_text = get_break_message()
+                _show_info_popup(
+                    "Break complete",
+                    "Break time is up. Start your next focus block when ready.",
+                )
         else:
             minutes = self._timer_total // 60
             session_in = FocusSessionCreate(
@@ -1126,18 +1249,188 @@ class HomeScreen(Screen):
             )
             db.log_focus_session(self.conn, session_in)
             self.refresh_status()
-            self.nudge_text = personalised_nudge(get_nudge(), self._profile())
             self._refresh_profile_ui()
+            self.nudge_text = personalised_nudge(get_nudge(), self._profile())
+            if cycle_mode == TimerCycleMode.AUTO:
+                self.nudge_text = (
+                    f"{minutes}-minute focus session logged. Starting break now."
+                )
+                Clock.schedule_once(
+                    lambda _dt: self._start_timer(
+                        self._profile().break_minutes,
+                        is_break=True,
+                    ),
+                    0.2,
+                )
+            else:
+                _show_info_popup(
+                    "Focus complete",
+                    f"{minutes}-minute focus session logged.",
+                )
 
     def stop_timer(self):
-        self._timer_running = False
-        if self._timer_event:
-            self._timer_event.cancel()
-        self.timer_display = "00:00"
-        self.timer_progress = 0
+        def _stop() -> None:
+            self._timer_running = False
+            self._auto_cycle_task_id = None
+            if self._timer_event:
+                self._timer_event.cancel()
+            self.timer_display = "00:00"
+            self.timer_progress = 0
+
+        _run_ui_action(_stop, prefix="Could not stop the timer.")
 
     def refresh_nudge(self):
-        self.nudge_text = personalised_nudge(get_nudge(), self._profile())
+        _run_ui_action(
+            lambda: setattr(
+                self,
+                "nudge_text",
+                personalised_nudge(get_nudge(), self._profile()),
+            ),
+            prefix="Could not refresh encouragement.",
+        )
+
+    def open_act_checkin(self) -> None:
+        """Open a structured ACT journaling check-in popup."""
+        def _open() -> None:
+            prompts = (
+                ("values_focus", "Value focus"),
+                ("challenge_context", "Current challenge"),
+                ("thoughts_feelings", "Thoughts & feelings"),
+                ("defusion_reframe", "Defusion / reframe"),
+                ("committed_action", "Committed action"),
+            )
+            content = BoxLayout(orientation="vertical", spacing=8, padding=10)
+            fields: dict[str, TextInput] = {}
+            for key, title in prompts:
+                content.add_widget(_make_label(title, font_size=sp(12), bold=True))
+                ti = TextInput(
+                    multiline=True,
+                    size_hint_y=None,
+                    height=dp(70),
+                    background_color=App.get_running_app().input_bg_color,
+                    foreground_color=App.get_running_app().text_color,
+                )
+                content.add_widget(ti)
+                fields[key] = ti
+            btn_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=8)
+            save_btn = Button(
+                text="Save",
+                background_color=App.get_running_app().accent_color,
+                color=App.get_running_app().text_color,
+            )
+            close_btn = Button(text="Close")
+            popup = Popup(
+                title="ACT Journal Check-In",
+                content=content,
+                size_hint=(0.94, 0.92),
+            )
+
+            def _save(_btn) -> None:
+                values = {k: v.text.strip() for k, v in fields.items()}
+                if any(not val for val in values.values()):
+                    _show_error_popup(
+                        "Incomplete entry",
+                        "Please fill in all ACT check-in fields.",
+                    )
+                    return
+                created = db.add_act_journal_entry(
+                    self.conn,
+                    ActJournalEntryCreate(
+                        values_focus=values["values_focus"],
+                        challenge_context=values["challenge_context"],
+                        thoughts_feelings=values["thoughts_feelings"],
+                        defusion_reframe=values["defusion_reframe"],
+                        committed_action=values["committed_action"],
+                    ),
+                )
+                self.nudge_text = (
+                    f"ACT check-in saved. Next action: {created.committed_action}"
+                )
+                popup.dismiss()
+
+            save_btn.bind(
+                on_release=lambda btn: _run_ui_action(lambda: _save(btn))
+            )
+            close_btn.bind(on_release=lambda _: popup.dismiss())
+            btn_row.add_widget(save_btn)
+            btn_row.add_widget(close_btn)
+            content.add_widget(btn_row)
+            popup.open()
+
+        _run_ui_action(_open, prefix="Could not open ACT check-in.")
+
+    def open_act_history(self) -> None:
+        """Show recent ACT journaling entries."""
+        def _open() -> None:
+            entries = db.list_act_journal_entries(self.conn, limit=20)
+            scroll = ScrollView(do_scroll_x=False)
+            inner = BoxLayout(
+                orientation="vertical",
+                spacing=6,
+                padding=10,
+                size_hint_y=None,
+            )
+            inner.bind(minimum_height=inner.setter("height"))
+            if not entries:
+                inner.add_widget(
+                    _make_label("No ACT journal entries yet.", color=_MUTED)
+                )
+            else:
+                for entry in entries:
+                    inner.add_widget(
+                        _make_label(
+                            f"#{entry.id}  {entry.created_at:%Y-%m-%d %H:%M}",
+                            font_size=sp(13),
+                            bold=True,
+                            color=_ACCENT,
+                        )
+                    )
+                    inner.add_widget(
+                        _make_label(f"Values: {entry.values_focus}", font_size=sp(12))
+                    )
+                    inner.add_widget(
+                        _make_label(
+                            f"Challenge: {entry.challenge_context}",
+                            font_size=sp(12),
+                            color=_MUTED,
+                        )
+                    )
+                    inner.add_widget(
+                        _make_label(
+                            f"Thoughts/feelings: {entry.thoughts_feelings}",
+                            font_size=sp(12),
+                            color=_MUTED,
+                        )
+                    )
+                    inner.add_widget(
+                        _make_label(
+                            f"Defusion/reframe: {entry.defusion_reframe}",
+                            font_size=sp(12),
+                            color=_MUTED,
+                        )
+                    )
+                    inner.add_widget(
+                        _make_label(
+                            f"Committed action: {entry.committed_action}",
+                            font_size=sp(12),
+                            color=_MUTED,
+                        )
+                    )
+                    inner.add_widget(Widget(size_hint_y=None, height=dp(8)))
+            scroll.add_widget(inner)
+            content = BoxLayout(orientation="vertical", padding=10, spacing=8)
+            content.add_widget(scroll)
+            close = Button(text="Close", size_hint_y=None, height=dp(44))
+            popup = Popup(
+                title="ACT Journal History",
+                content=content,
+                size_hint=(0.94, 0.88),
+            )
+            close.bind(on_release=lambda _: popup.dismiss())
+            content.add_widget(close)
+            popup.open()
+
+        _run_ui_action(_open, prefix="Could not open ACT journal history.")
 
 
 # ---------------------------------------------------------------------------
@@ -1245,6 +1538,34 @@ class SettingsScreen(ScrollScreen):
             )
             theme_row.add_widget(tb)
         c.add_widget(theme_row)
+        c.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        c.add_widget(_make_label("Timer cycle mode", font_size=sp(16), bold=True, color=accent))
+        cycle_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        for label, mode, color in (
+            ("Manual", TimerCycleMode.MANUAL.value, neutral),
+            ("Auto focus↔break", TimerCycleMode.AUTO.value, success),
+        ):
+            tb = ToggleButton(
+                text=label,
+                group="timer_cycle_mode",
+                state="down" if current.timer_cycle_mode.value == mode else "normal",
+                background_color=list(color),
+                color=list(text),
+                font_size=sp(11),
+            )
+            tb.bind(
+                on_release=lambda inst, m=mode: (
+                    self._set_timer_cycle_mode(m) if inst.state == "down" else None
+                )
+            )
+            cycle_row.add_widget(tb)
+        c.add_widget(cycle_row)
+        c.add_widget(_make_label(
+            "Manual keeps focus and break separate. Auto chains focus and break "
+            "until you press Stop.",
+            font_size=sp(11),
+            color=muted,
+        ))
 
         # -- Accessibility --
         c.add_widget(Widget(size_hint_y=None, height=dp(8)))
@@ -1395,6 +1716,19 @@ class SettingsScreen(ScrollScreen):
         self._refresh_home_runtime_state()
         Clock.schedule_once(lambda dt: self.on_enter(), 0)
 
+    def _set_timer_cycle_mode(self, mode: str):
+        cfg.set_timer_cycle_mode(mode)
+        home = self.manager.get_screen("home")
+        if mode == TimerCycleMode.AUTO.value:
+            home.nudge_text = (
+                "Auto cycle enabled: focus and break sessions will chain "
+                "until you press Stop."
+            )
+        else:
+            home.nudge_text = (
+                "Manual cycle enabled: start each focus and break session yourself."
+            )
+
     def _set_accessibility(self, *, large_text: bool, high_contrast: bool, reduce_visual_load: bool):
         cfg.set_accessibility_options(
             large_text=large_text,
@@ -1544,7 +1878,7 @@ class AboutScreen(ScrollScreen):
         c.clear_widgets()
         c.add_widget(_make_label("Momentum", font_size=sp(22), bold=True, color=_ACCENT))
         c.add_widget(Widget(size_hint_y=None, height=dp(8)))
-        c.add_widget(_make_label("Version 0.1.0"))
+        c.add_widget(_make_label("Version 0.2.0"))
         c.add_widget(Widget(size_hint_y=None, height=dp(12)))
         c.add_widget(_make_label(
             "A gentle tool to help people with executive dysfunction "
@@ -1587,16 +1921,26 @@ class HelpMenuScreen(Screen):
     """Sub-menu: How to Use, The Science, About."""
 
     def go_howto(self):
-        self.manager.transition = NoTransition()
-        self.manager.current = "howto"
+        _run_ui_action(
+            lambda: self._go("howto"),
+            prefix="Could not open How to Use.",
+        )
 
     def go_science(self):
-        self.manager.transition = NoTransition()
-        self.manager.current = "science"
+        _run_ui_action(
+            lambda: self._go("science"),
+            prefix="Could not open The Science.",
+        )
 
     def go_about(self):
+        _run_ui_action(
+            lambda: self._go("about"),
+            prefix="Could not open About.",
+        )
+
+    def _go(self, target: str) -> None:
         self.manager.transition = NoTransition()
-        self.manager.current = "about"
+        self.manager.current = target
 
 
 # ---------------------------------------------------------------------------
@@ -1608,19 +1952,31 @@ class TestsMenuScreen(Screen):
     """Sub-menu: BDEFS, BIS/BAS, Stroop, View Results."""
 
     def go_bdefs(self):
-        self.manager.transition = NoTransition()
-        self.manager.current = "bdefs"
+        _run_ui_action(
+            lambda: self._go("bdefs"),
+            prefix="Could not open the BDEFS assessment.",
+        )
     def go_bisbas(self):
-        self.manager.transition = NoTransition()
-        self.manager.current = "bisbas"
+        _run_ui_action(
+            lambda: self._go("bisbas"),
+            prefix="Could not open the BIS/BAS profile.",
+        )
 
     def go_stroop(self):
-        self.manager.transition = NoTransition()
-        self.manager.current = "stroop"
+        _run_ui_action(
+            lambda: self._go("stroop"),
+            prefix="Could not open the Stroop test.",
+        )
 
     def go_results(self):
+        _run_ui_action(
+            lambda: self._go("results"),
+            prefix="Could not open test results.",
+        )
+
+    def _go(self, target: str) -> None:
         self.manager.transition = NoTransition()
-        self.manager.current = "results"
+        self.manager.current = target
 
 
 # ---------------------------------------------------------------------------
@@ -1833,7 +2189,6 @@ class BisbasScreen(Screen):
         for d, s in saved.domain_scores.items():
             max_domain = len(BISBAS_QUESTIONS.get(d, [])) * 4
             msg += f"{d}: {s}/{max_domain if max_domain else 1}\n"
-        msg += f"\n{interpret_bisbas(saved.score, saved.max_score, saved.domain_scores)}"
 
         scroll = ScrollView(do_scroll_x=False)
         inner = BoxLayout(orientation="vertical", spacing=6, padding=10, size_hint_y=None)
@@ -1848,9 +2203,40 @@ class BisbasScreen(Screen):
             advice = bisbas_domain_advice(d, s, max_domain if max_domain else 1)
             inner.add_widget(_make_label(d, font_size=sp(13), bold=True, color=_ACCENT))
             inner.add_widget(_make_label(advice, font_size=sp(11), color=_MUTED))
+        inner.add_widget(Widget(size_hint_y=None, height=dp(6)))
+        inner.add_widget(_make_label(
+            "Reference lines in the chart are guidance anchors, not diagnostic cutoffs.",
+            font_size=sp(11),
+            color=_MUTED,
+        ))
+        inner.add_widget(_make_label(
+            bisbas_bespoke_guidance(saved.domain_scores),
+            font_size=sp(12),
+            color=_MUTED,
+        ))
+        inner.add_widget(_make_label(
+            interpret_bisbas(saved.score, saved.max_score, saved.domain_scores),
+            font_size=sp(12),
+            color=_MUTED,
+        ))
         scroll.add_widget(inner)
 
         content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+        try:
+            bisbas_img = bisbas_profile_bars(
+                saved,
+                title="BIS/BAS Motivational Profile",
+            )
+            bisbas_core = _pil_to_kivy_image(bisbas_img)
+            content.add_widget(KivyImage(
+                texture=bisbas_core.texture,
+                size_hint_y=None,
+                height=dp(210),
+                allow_stretch=True,
+                keep_ratio=True,
+            ))
+        except Exception:
+            log.debug("BIS/BAS chart popup render failed", exc_info=True)
         content.add_widget(scroll)
         close = Button(text="Close", size_hint_y=None, height=dp(44))
         popup = Popup(title="BIS/BAS Result", content=content, size_hint=(0.9, 0.75))
@@ -2011,6 +2397,7 @@ class ResultsScreen(ScrollScreen):
 
         # -- Charts --
         bdefs_results = [r for r in results if r.assessment_type == AssessmentType.BDEFS]
+        bisbas_results = [r for r in results if r.assessment_type == AssessmentType.BISBAS]
 
         if bdefs_results:
             try:
@@ -2040,6 +2427,34 @@ class ResultsScreen(ScrollScreen):
                     c.add_widget(ts_widget)
             except Exception:
                 log.debug("Timeseries chart failed", exc_info=True)
+        if bisbas_results:
+            latest_bisbas = bisbas_results[0]
+            try:
+                bisbas_img = bisbas_profile_bars(
+                    latest_bisbas,
+                    title="Latest BIS/BAS Motivational Profile",
+                )
+                bisbas_core = _pil_to_kivy_image(bisbas_img)
+                bisbas_widget = KivyImage(
+                    texture=bisbas_core.texture,
+                    size_hint_y=None,
+                    height=dp(220),
+                    allow_stretch=True,
+                    keep_ratio=True,
+                )
+                c.add_widget(bisbas_widget)
+            except Exception:
+                log.debug("BIS/BAS chart failed", exc_info=True)
+            c.add_widget(_make_label(
+                "BIS/BAS reference lines are guidance anchors, not diagnostic cutoffs.",
+                font_size=sp(11),
+                color=_MUTED,
+            ))
+            c.add_widget(_make_label(
+                bisbas_bespoke_guidance(latest_bisbas.domain_scores),
+                font_size=sp(12),
+                color=_MUTED,
+            ))
 
         # -- Textual results list --
         c.add_widget(_make_label(
@@ -2091,6 +2506,10 @@ class ResultsScreen(ScrollScreen):
                     ))
                 c.add_widget(_make_label(
                     interpret_bisbas(r.score, r.max_score, r.domain_scores),
+                    font_size=sp(12), color=_MUTED,
+                ))
+                c.add_widget(_make_label(
+                    bisbas_bespoke_guidance(r.domain_scores),
                     font_size=sp(12), color=_MUTED,
                 ))
 

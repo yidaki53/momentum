@@ -314,6 +314,128 @@ def profile_from_latest_bisbas(
     return personalise_from_bisbas(latest_bisbas.domain_scores)
 
 
+def profile_from_latest_assessments(
+    *,
+    latest_bisbas: AssessmentResult | None,
+    latest_bdefs: AssessmentResult | None,
+    latest_stroop: AssessmentResult | None,
+) -> PersonalisationProfile:
+    """Build a behavior profile from BIS/BAS plus BDEFS/Stroop context."""
+
+    def _clamp(value: int, lo: int, hi: int) -> int:
+        return max(lo, min(hi, value))
+
+    base = profile_from_latest_bisbas(latest_bisbas)
+    focus_minutes = base.focus_minutes
+    break_minutes = base.break_minutes
+    nudge_style = base.nudge_style
+    suggest_breakdown = base.suggest_breakdown
+    encourage_reward = base.encourage_reward
+    add_reassurance = base.add_reassurance
+
+    if latest_bdefs is not None and latest_bdefs.max_score > 0:
+        bdefs_pct = latest_bdefs.score / latest_bdefs.max_score * 100
+        if bdefs_pct >= 75:
+            focus_minutes -= 3
+            break_minutes += 2
+            suggest_breakdown = True
+            add_reassurance = True
+            nudge_style = "reassuring"
+        elif bdefs_pct >= 50:
+            focus_minutes -= 2
+            break_minutes += 1
+            suggest_breakdown = True
+        elif bdefs_pct <= 30:
+            focus_minutes += 2
+            encourage_reward = True
+
+    if latest_stroop is not None and latest_stroop.max_score > 0:
+        accuracy_pct = latest_stroop.score / latest_stroop.max_score * 100
+        avg_ms = latest_stroop.domain_scores.get("avg_time_ms", 0)
+        if accuracy_pct < 65 or avg_ms >= 2200:
+            focus_minutes = min(focus_minutes, 12)
+            break_minutes = max(break_minutes, 6)
+            add_reassurance = True
+            suggest_breakdown = True
+            if nudge_style != "reward":
+                nudge_style = "reassuring"
+        elif accuracy_pct >= 90 and 0 < avg_ms <= 1200:
+            focus_minutes += 2
+            break_minutes = max(4, break_minutes - 1)
+            encourage_reward = True
+            if nudge_style != "reassuring":
+                nudge_style = "reward"
+
+    return PersonalisationProfile(
+        focus_minutes=_clamp(focus_minutes, 8, 25),
+        break_minutes=_clamp(break_minutes, 4, 12),
+        nudge_style=nudge_style,
+        suggest_breakdown=suggest_breakdown,
+        encourage_reward=encourage_reward,
+        add_reassurance=add_reassurance,
+    )
+
+
+def bisbas_bespoke_guidance(domain_scores: dict[str, int]) -> str:
+    """Return motivationally tailored practical suggestions from BIS/BAS scores."""
+    profile = personalise_from_bisbas(domain_scores)
+    max_domain = len(BISBAS_QUESTIONS["Behavioral Inhibition (BIS)"]) * 4
+    bis_pct = (
+        domain_scores.get("Behavioral Inhibition (BIS)", 0) / max_domain * 100
+        if max_domain
+        else 0
+    )
+    drive_pct = (
+        domain_scores.get("BAS Drive", 0) / max_domain * 100 if max_domain else 0
+    )
+    reward_pct = (
+        domain_scores.get("BAS Reward Responsiveness", 0) / max_domain * 100
+        if max_domain
+        else 0
+    )
+    fun_pct = (
+        domain_scores.get("BAS Fun Seeking", 0) / max_domain * 100 if max_domain else 0
+    )
+
+    tips: list[str] = []
+    if bis_pct >= 75:
+        tips.append(
+            "Start with a low-pressure micro-step and tell yourself completion is optional for the first 2 minutes."
+        )
+    elif bis_pct <= 40:
+        tips.append("Use clear start cues and begin quickly before over-planning.")
+    else:
+        tips.append(
+            "Use a brief start ritual (timer, breath, first sentence) to lower friction."
+        )
+
+    if drive_pct <= 50:
+        tips.append("Pair each focus block with a pre-committed accountability check.")
+    elif drive_pct >= 75:
+        tips.append(
+            "Leverage your persistence by batching one meaningful goal per block."
+        )
+
+    if reward_pct >= 75:
+        tips.append(
+            "Track visible wins and celebrate each completed step to sustain momentum."
+        )
+    else:
+        tips.append(
+            "Rely on consistent routines as much as rewards when motivation dips."
+        )
+
+    if fun_pct >= 75:
+        tips.append("Use shorter, varied blocks to keep engagement high.")
+    else:
+        tips.append("Stable routines may work well—keep the daily flow predictable.")
+
+    tips.append(
+        f"Suggested default cadence right now: {profile.focus_minutes}m focus / {profile.break_minutes}m break."
+    )
+    return " ".join(tips)
+
+
 # ---------------------------------------------------------------------------
 # Stroop colour-word test
 # ---------------------------------------------------------------------------

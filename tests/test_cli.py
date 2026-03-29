@@ -181,14 +181,16 @@ class TestListAll:
 
 
 class TestFocus:
-    @patch("momentum.timer.run_focus", return_value=False)
-    def test_focus_no_task(self, _mock_focus) -> None:
+    @patch("momentum.cli._timer_service")
+    def test_focus_no_task(self, mock_service) -> None:
+        mock_service.return_value.run_focus.return_value.completed = False
         result = runner.invoke(app, ["focus"])
         assert result.exit_code == 0
         assert "Starting" in result.output
 
-    @patch("momentum.timer.run_focus", return_value=False)
-    def test_focus_with_task(self, _mock_focus) -> None:
+    @patch("momentum.cli._timer_service")
+    def test_focus_with_task(self, mock_service) -> None:
+        mock_service.return_value.run_focus.return_value.completed = False
         runner.invoke(app, ["add", "Focus target"])
         result = runner.invoke(app, ["focus", "--task", "1"])
         assert result.exit_code == 0
@@ -198,32 +200,39 @@ class TestFocus:
         result = runner.invoke(app, ["focus", "--task", "999"])
         assert result.exit_code == 1
 
-    @patch("momentum.timer.run_focus", return_value=True)
-    @patch("momentum.timer.run_break")
-    def test_focus_completed_accept_break(self, _mock_break, _mock_focus) -> None:
+    @patch("momentum.cli._timer_service")
+    def test_focus_completed_accept_break(self, mock_service) -> None:
+        service = mock_service.return_value
+        service.run_focus.return_value.completed = True
         result = runner.invoke(app, ["focus"], input="y\n")
         assert result.exit_code == 0
         assert "logged" in result.output.lower()
+        service.run_break.assert_called_once()
 
-    @patch("momentum.timer.run_focus", return_value=True)
-    def test_focus_completed_decline_break(self, _mock_focus) -> None:
+    @patch("momentum.cli._timer_service")
+    def test_focus_completed_decline_break(self, mock_service) -> None:
+        service = mock_service.return_value
+        service.run_focus.return_value.completed = True
         result = runner.invoke(app, ["focus"], input="n\n")
         assert result.exit_code == 0
         assert "logged" in result.output.lower()
+        service.run_break.assert_not_called()
 
 
 class TestTakeBreak:
-    @patch("momentum.timer.run_break")
-    def test_take_break(self, _mock_break) -> None:
+    @patch("momentum.cli._timer_service")
+    def test_take_break(self, mock_service) -> None:
         result = runner.invoke(app, ["take-break"])
         assert result.exit_code == 0
         assert "Break time" in result.output
+        mock_service.return_value.run_break.assert_called_once_with(minutes=5)
 
-    @patch("momentum.timer.run_break")
-    def test_take_break_custom_minutes(self, _mock_break) -> None:
+    @patch("momentum.cli._timer_service")
+    def test_take_break_custom_minutes(self, mock_service) -> None:
         result = runner.invoke(app, ["take-break", "--minutes", "10"])
         assert result.exit_code == 0
         assert "10" in result.output
+        mock_service.return_value.run_break.assert_called_once_with(minutes=10)
 
 
 class TestConfigExtra:
@@ -344,16 +353,18 @@ class TestAutostartExtra:
 
 
 class TestStart:
-    @patch("momentum.timer.run_focus", return_value=False)
-    def test_start_with_active_task_continue(self, _mock_focus) -> None:
+    @patch("momentum.cli._timer_service")
+    def test_start_with_active_task_continue(self, mock_service) -> None:
+        mock_service.return_value.run_focus.return_value.completed = False
         runner.invoke(app, ["add", "Active thing"])
         # Manually set task active via focus
         runner.invoke(app, ["focus", "--task", "1"])
         result = runner.invoke(app, ["start"], input="y\n")
         assert result.exit_code == 0
 
-    @patch("momentum.timer.run_focus", return_value=False)
-    def test_start_with_pending_task_decline(self, _mock_focus) -> None:
+    @patch("momentum.cli._timer_service")
+    def test_start_with_pending_task_decline(self, mock_service) -> None:
+        mock_service.return_value.run_focus.return_value.completed = False
         runner.invoke(app, ["add", "Pending thing"])
         result = runner.invoke(app, ["start"], input="n\n")
         assert result.exit_code == 0
@@ -362,8 +373,9 @@ class TestStart:
         result = runner.invoke(app, ["start"], input="\n\n")
         assert result.exit_code == 0
 
-    @patch("momentum.timer.run_focus", return_value=False)
-    def test_start_no_tasks_add_one(self, _mock_focus) -> None:
+    @patch("momentum.cli._timer_service")
+    def test_start_no_tasks_add_one(self, mock_service) -> None:
+        mock_service.return_value.run_focus.return_value.completed = False
         result = runner.invoke(app, ["start"], input="Do laundry\ny\n")
         assert result.exit_code == 0
         assert "Added" in result.output

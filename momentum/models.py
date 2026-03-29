@@ -134,6 +134,13 @@ class ThemeMode(str, enum.Enum):
     LIGHT = "light"
 
 
+class TimerCycleMode(str, enum.Enum):
+    """How focus and break sessions are started."""
+
+    MANUAL = "manual"
+    AUTO = "auto"
+
+
 class AppConfig(BaseModel):
     """Application configuration (persisted to ~/.config/momentum/config.json)."""
 
@@ -143,3 +150,26 @@ class AppConfig(BaseModel):
     accessibility_large_text: bool = False
     accessibility_high_contrast: bool = False
     accessibility_reduce_visual_load: bool = False
+    timer_cycle_mode: TimerCycleMode = TimerCycleMode.MANUAL
+
+
+class ActJournalEntry(BaseModel):
+    """A structured ACT-style journaling entry."""
+
+    id: int
+    values_focus: str
+    challenge_context: str
+    thoughts_feelings: str
+    defusion_reframe: str
+    committed_action: str
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class ActJournalEntryCreate(BaseModel):
+    """Input model for creating an ACT-style journaling entry."""
+
+    values_focus: str = Field(min_length=1, max_length=1500)
+    challenge_context: str = Field(min_length=1, max_length=2500)
+    thoughts_feelings: str = Field(min_length=1, max_length=2500)
+    defusion_reframe: str = Field(min_length=1, max_length=2500)
+    committed_action: str = Field(min_length=1, max_length=1500)
