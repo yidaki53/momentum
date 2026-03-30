@@ -18,8 +18,18 @@ from matplotlib.figure import Figure
 from matplotlib.patches import FancyBboxPatch
 from PIL import Image
 
-from momentum.assessments import BDEFS_QUESTIONS
+from momentum.domain.assessments import BDEFS_QUESTIONS
 from momentum.models import AssessmentResult, AssessmentType
+from momentum.ui.palette import (
+    CHART_ACCENT,
+    CHART_BG,
+    CHART_BLUE_FILL,
+    CHART_BLUE_LINE,
+    CHART_FG,
+    CHART_GREY_FILL,
+    CHART_GREY_LINE,
+    CHART_GRID,
+)
 
 # Try to import Cython-compiled chart functions; fall back to pure Python
 _CYTHON_AVAILABLE = False
@@ -30,15 +40,7 @@ try:
 except ImportError:
     pass  # Cython not available; use pure Python implementations below
 
-# -- Palette (matches GUI dark theme) ------------------------------------
-_BG = "#2b2b2b"
-_FG = "#e0e0e0"
-_ACCENT = "#6a9fb5"
-_BLUE_FILL = (0.42, 0.62, 0.71, 0.30)  # translucent accent blue
-_BLUE_LINE = "#6a9fb5"
-_GREY_FILL = (0.70, 0.70, 0.70, 0.08)
-_GREY_LINE = "#555555"
-_GRID = "#444444"
+# -- Palette imported from momentum.ui.palette
 
 # Canonical ordered list of BDEFS domain names (short labels for the axes).
 _DOMAIN_ORDER: list[str] = list(BDEFS_QUESTIONS.keys())
@@ -123,24 +125,24 @@ def bdefs_radar(
     latest_closed = latest_vals + latest_vals[:1]
 
     fig_w, fig_h = size[0] / dpi, size[1] / dpi
-    fig = Figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor=_BG)
+    fig = Figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor=CHART_BG)
     ax = fig.add_subplot(111, polar=True)
-    ax.set_facecolor(_BG)
+    ax.set_facecolor(CHART_BG)
 
     # Grid & ticks
     ax.set_ylim(0, _DOMAIN_MAX)
     ax.set_yticks(range(0, _DOMAIN_MAX + 1, 3))
     ax.set_yticklabels(
-        [str(v) for v in range(0, _DOMAIN_MAX + 1, 3)], color=_FG, fontsize=7
+        [str(v) for v in range(0, _DOMAIN_MAX + 1, 3)], color=CHART_FG, fontsize=7
     )
     ax.set_xticks(angles[:-1])
     short_labels = [
         d.replace(" & ", "\n& ").replace("Organisation", "Org.") for d in _DOMAIN_ORDER
     ]
-    ax.set_xticklabels(short_labels, color=_FG, fontsize=8)
+    ax.set_xticklabels(short_labels, color=CHART_FG, fontsize=8)
     ax.tick_params(axis="x", pad=12)
-    ax.spines["polar"].set_color(_GRID)
-    ax.grid(color=_GRID, linewidth=0.5)
+    ax.spines["polar"].set_color(CHART_GRID)
+    ax.grid(color=CHART_GRID, linewidth=0.5)
 
     # Previous result (grey)
     if previous is not None:
@@ -148,26 +150,26 @@ def bdefs_radar(
         ax.plot(
             angles,
             prev_vals,
-            color=_GREY_LINE,
+            color=CHART_GREY_LINE,
             linewidth=1.2,
             alpha=0.6,
             label="Previous",
         )
-        ax.fill(angles, prev_vals, color=_GREY_FILL)
+        ax.fill(angles, prev_vals, color=CHART_GREY_FILL)
 
     # Latest result (blue)
-    ax.plot(angles, latest_closed, color=_BLUE_LINE, linewidth=2, label="Latest")
-    ax.fill(angles, latest_closed, color=_BLUE_FILL)
+    ax.plot(angles, latest_closed, color=CHART_BLUE_LINE, linewidth=2, label="Latest")
+    ax.fill(angles, latest_closed, color=CHART_BLUE_FILL)
 
     ax.legend(
         loc="upper right",
         bbox_to_anchor=(1.3, 1.1),
         fontsize=8,
-        facecolor=_BG,
-        edgecolor=_GRID,
-        labelcolor=_FG,
+        facecolor=CHART_BG,
+        edgecolor=CHART_GRID,
+        labelcolor=CHART_FG,
     )
-    ax.set_title(title, color=_FG, fontsize=11, fontweight="bold", pad=18)
+    ax.set_title(title, color=CHART_FG, fontsize=11, fontweight="bold", pad=18)
 
     return _fig_to_pil(fig, dpi=dpi)
 
@@ -198,22 +200,22 @@ def bdefs_timeseries(
     max_score = bdefs[0].max_score
 
     fig_w, fig_h = size[0] / dpi, size[1] / dpi
-    fig = Figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor=_BG)
+    fig = Figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor=CHART_BG)
     ax = fig.add_subplot(111)
-    ax.set_facecolor(_BG)
+    ax.set_facecolor(CHART_BG)
 
     ax.plot(
         dates,
         scores,
-        color=_BLUE_LINE,
+        color=CHART_BLUE_LINE,
         linewidth=2,
         marker="o",
         markersize=5,
-        markerfacecolor=_ACCENT,
+        markerfacecolor=CHART_ACCENT,
         markeredgecolor="white",
         markeredgewidth=0.5,
     )
-    ax.fill_between(dates, scores, alpha=0.15, color=_ACCENT)
+    ax.fill_between(dates, scores, alpha=0.15, color=CHART_ACCENT)
 
     # Line of best fit (linear regression)
     if len(dates) >= 2:
@@ -234,21 +236,21 @@ def bdefs_timeseries(
         ax.legend(
             loc="upper right",
             fontsize=8,
-            facecolor=_BG,
-            edgecolor=_GRID,
-            labelcolor=_FG,
+            facecolor=CHART_BG,
+            edgecolor=CHART_GRID,
+            labelcolor=CHART_FG,
         )
 
     ax.set_ylim(0, max_score)
-    ax.set_ylabel("Total score", color=_FG, fontsize=9)
-    ax.set_title(title, color=_FG, fontsize=11, fontweight="bold")
+    ax.set_ylabel("Total score", color=CHART_FG, fontsize=9)
+    ax.set_title(title, color=CHART_FG, fontsize=11, fontweight="bold")
 
-    ax.tick_params(colors=_FG, labelsize=8)
-    ax.spines["bottom"].set_color(_GRID)
-    ax.spines["left"].set_color(_GRID)
+    ax.tick_params(colors=CHART_FG, labelsize=8)
+    ax.spines["bottom"].set_color(CHART_GRID)
+    ax.spines["left"].set_color(CHART_GRID)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.yaxis.grid(color=_GRID, linewidth=0.5)
+    ax.yaxis.grid(color=CHART_GRID, linewidth=0.5)
 
     fig.autofmt_xdate(rotation=30, ha="right")
 
@@ -273,9 +275,9 @@ def bdefs_momentum_glow(
     x = np.arange(len(_DOMAIN_ORDER), dtype=float)
 
     fig_w, fig_h = size[0] / dpi, size[1] / dpi
-    fig = Figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor=_BG)
+    fig = Figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor=CHART_BG)
     ax = fig.add_subplot(111)
-    ax.set_facecolor(_BG)
+    ax.set_facecolor(CHART_BG)
 
     gradient = np.linspace(0.0, 1.0, 256).reshape(-1, 1)
     ax.imshow(
@@ -324,7 +326,7 @@ def bdefs_momentum_glow(
             x,
             previous_pct,
             s=96,
-            facecolors=_BG,
+            facecolors=CHART_BG,
             edgecolors="#c0c0c0",
             linewidths=1.4,
             alpha=0.9,
@@ -371,15 +373,17 @@ def bdefs_momentum_glow(
         for d in _DOMAIN_ORDER
     ]
     ax.set_xticks(x)
-    ax.set_xticklabels(short_labels, color=_FG, fontsize=9)
+    ax.set_xticklabels(short_labels, color=CHART_FG, fontsize=9)
     ax.set_ylim(0, 104)
     ax.set_xlim(-0.6, len(_DOMAIN_ORDER) - 0.4)
     ax.set_yticks((15, 45, 75))
-    ax.set_yticklabels(("Needs support", "Building", "Rolling"), color=_FG, fontsize=8)
+    ax.set_yticklabels(
+        ("Needs support", "Building", "Rolling"), color=CHART_FG, fontsize=8
+    )
     ax.tick_params(axis="x", length=0)
     ax.tick_params(axis="y", length=0)
     for y in (15, 45, 75):
-        ax.axhline(y, color=_GRID, linewidth=0.8, alpha=0.45, zorder=0)
+        ax.axhline(y, color=CHART_GRID, linewidth=0.8, alpha=0.45, zorder=0)
 
     for spine in ax.spines.values():
         spine.set_visible(False)
@@ -397,7 +401,7 @@ def bdefs_momentum_glow(
             direction = "up" if delta > 0 else "down"
             subtitle += f"  |  vs previous: {abs(delta):.0f}% {direction}"
 
-    ax.set_title(title, color=_FG, fontsize=13, fontweight="bold", pad=16)
+    ax.set_title(title, color=CHART_FG, fontsize=13, fontweight="bold", pad=16)
     ax.text(
         0.0,
         1.02,

@@ -10,7 +10,7 @@ Workflow:
 2. Core domain first
    - Add/adjust types in `momentum/models.py`.
    - Add/adjust persistence in `momentum/db.py` with typed model inputs/outputs.
-   - Add/adjust logic in `momentum/assessments.py`, `momentum/charts.py`, or `momentum/timer.py` as needed.
+   - Add/adjust logic in domain modules first (`momentum/domain/assessments/*`, `momentum/timer.py`, `momentum/charts.py`) and keep `momentum/assessments.py` as a compatibility shim.
 3. Surface integration
    - Wire feature into `momentum/cli.py`.
    - Wire corresponding UI behavior into `momentum/gui.py` and `mobile/main.py` unless explicitly scoped otherwise.
@@ -31,6 +31,7 @@ Workflow:
    - For version bumps, update all version touchpoints together:
      - `pyproject.toml`
      - `momentum/__init__.py`
+       - `mobile/momentum/__init__.py`
      - `mobile/buildozer.spec`
      - About/version strings in CLI and UIs
    - For release prep, use branch naming `release/MAJOR.MINOR.PATCH`.
@@ -50,6 +51,7 @@ Workflow:
    - Ensure CI fails fast if any signing secret is missing.
    - Ensure release artifact selection prefers release APK outputs.
 8. Validation before handoff
+   - `poetry run python setup.py build_ext --inplace` (when Cython modules or Cython-backed call paths are touched)
    - `poetry run ruff check momentum/ tests/ mobile/main.py`
    - `poetry run mypy momentum/`
    - `poetry run pytest tests/ -v`

@@ -1,0 +1,88 @@
+"""Momentum domain models and business logic.
+
+This package contains core domain logic: assessments (scoring, interpretation,
+personalization), timer cycles, and chart data generation. It is independent
+of UI and persistence layers.
+"""
+
+from momentum.domain.assessments import (
+    BDEFS_INSTRUCTIONS,
+    BDEFS_MAX_PER_ITEM,
+    BDEFS_MIN_PER_ITEM,
+    BDEFS_QUESTIONS,
+    BDEFS_SCALE,
+    BDEFS_SCALE_LABELS,
+    BISBAS_INSTRUCTIONS,
+    BISBAS_MAX_PER_ITEM,
+    BISBAS_MIN_PER_ITEM,
+    BISBAS_QUESTIONS,
+    BISBAS_SCALE,
+    BISBAS_SCALE_LABELS,
+    RESULTS_GUIDE,
+    STROOP_COLOURS,
+    STROOP_DEFAULT_TRIALS,
+    STROOP_INSTRUCTIONS,
+    PersonalisationProfile,
+    StroopResult,
+    StroopTrial,
+    bdefs_max_score,
+    bisbas_bespoke_guidance,
+    bisbas_domain_advice,
+    bisbas_max_score,
+    domain_advice,
+    generate_stroop_trials,
+    interpret_bdefs,
+    interpret_bisbas,
+    interpret_stroop,
+    personalise_from_bisbas,
+    personalised_nudge,
+    profile_from_latest_assessments,
+    profile_from_latest_bisbas,
+    score_bdefs,
+    score_bisbas,
+    score_stroop,
+)
+
+__all__ = [
+    # Assessment constants
+    "BDEFS_QUESTIONS",
+    "BDEFS_SCALE",
+    "BDEFS_SCALE_LABELS",
+    "BDEFS_MIN_PER_ITEM",
+    "BDEFS_MAX_PER_ITEM",
+    "BISBAS_QUESTIONS",
+    "BISBAS_SCALE",
+    "BISBAS_SCALE_LABELS",
+    "BISBAS_MIN_PER_ITEM",
+    "BISBAS_MAX_PER_ITEM",
+    "STROOP_COLOURS",
+    "STROOP_DEFAULT_TRIALS",
+    # Instruction text
+    "BDEFS_INSTRUCTIONS",
+    "BISBAS_INSTRUCTIONS",
+    "STROOP_INSTRUCTIONS",
+    "RESULTS_GUIDE",
+    # Scoring functions
+    "bdefs_max_score",
+    "bisbas_max_score",
+    "score_bdefs",
+    "score_bisbas",
+    "score_stroop",
+    # Interpretation functions
+    "interpret_bdefs",
+    "interpret_bisbas",
+    "interpret_stroop",
+    "domain_advice",
+    "bisbas_domain_advice",
+    "bisbas_bespoke_guidance",
+    # Personalization
+    "PersonalisationProfile",
+    "personalise_from_bisbas",
+    "personalised_nudge",
+    "profile_from_latest_bisbas",
+    "profile_from_latest_assessments",
+    # Stroop models
+    "StroopTrial",
+    "StroopResult",
+    "generate_stroop_trials",
+]

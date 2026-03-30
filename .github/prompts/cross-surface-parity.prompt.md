@@ -6,7 +6,7 @@ Parity checks:
    - Desktop action/menu path in `momentum/gui.py`
    - Mobile action/navigation path in `mobile/main.py`
 2. Shared logic is reused
-   - Pull from shared modules (`models.py`, `db.py`, `assessments.py`, `charts.py`, `timer.py`) instead of duplicating logic per UI.
+   - Pull from shared modules (`models.py`, `db.py`, `domain/assessments/*`, `charts.py`, `timer.py`, `ui/palette.py`) instead of duplicating logic per UI.
 3. Terminology and messaging are consistent
    - Keep labels, setting names, and explanatory text equivalent across surfaces.
    - Keep BIS/BAS reference-line disclaimer and ACT wording consistent if touched.

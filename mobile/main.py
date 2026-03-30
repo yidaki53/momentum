@@ -1878,7 +1878,7 @@ class AboutScreen(ScrollScreen):
         c.clear_widgets()
         c.add_widget(_make_label("Momentum", font_size=sp(22), bold=True, color=_ACCENT))
         c.add_widget(Widget(size_hint_y=None, height=dp(8)))
-        c.add_widget(_make_label("Version 0.2.0"))
+        c.add_widget(_make_label("Version 0.3.0"))
         c.add_widget(Widget(size_hint_y=None, height=dp(12)))
         c.add_widget(_make_label(
             "A gentle tool to help people with executive dysfunction "
