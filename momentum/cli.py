@@ -55,6 +55,13 @@ def _assessment_service(conn: sqlite3.Connection) -> AssessmentService:
     return AssessmentService(conn)
 
 
+def _run_gui() -> None:
+    """Import and run GUI lazily to keep CLI startup and tests lightweight."""
+    from momentum.gui import run_gui
+
+    run_gui()
+
+
 # ---------------------------------------------------------------------------
 # Task management
 # ---------------------------------------------------------------------------
@@ -738,9 +745,7 @@ def delete_entry(
 @app.command()
 def gui() -> None:
     """Open the Momentum GUI dashboard."""
-    from momentum.gui import run_gui
-
-    run_gui()
+    _run_gui()
 
 
 @app.command()

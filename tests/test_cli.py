@@ -382,7 +382,7 @@ class TestStart:
 
 
 class TestGui:
-    @patch("momentum.gui.run_gui")
+    @patch("momentum.cli._run_gui")
     def test_gui_command_invokes_run_gui(self, mock_gui) -> None:
         result = runner.invoke(app, ["gui"])
         assert result.exit_code == 0
