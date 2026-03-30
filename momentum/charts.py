@@ -21,6 +21,15 @@ from PIL import Image
 from momentum.assessments import BDEFS_QUESTIONS
 from momentum.models import AssessmentResult, AssessmentType
 
+# Try to import Cython-compiled chart functions; fall back to pure Python
+_CYTHON_AVAILABLE = False
+try:
+    from momentum._charts_cy import domain_percentages_cy
+
+    _CYTHON_AVAILABLE = True
+except ImportError:
+    pass  # Cython not available; use pure Python implementations below
+
 # -- Palette (matches GUI dark theme) ------------------------------------
 _BG = "#2b2b2b"
 _FG = "#e0e0e0"
@@ -64,6 +73,11 @@ def _domain_values(result: AssessmentResult) -> list[float]:
 
 def _domain_percentages(result: AssessmentResult) -> list[float]:
     """Convert raw BDEFS scores into momentum percentages where higher is better."""
+    # Use Cython-compiled version if available
+    if _CYTHON_AVAILABLE:
+        return domain_percentages_cy(result)
+
+    # Pure Python fallback
     percentages: list[float] = []
     for domain in _DOMAIN_ORDER:
         questions = BDEFS_QUESTIONS[domain]

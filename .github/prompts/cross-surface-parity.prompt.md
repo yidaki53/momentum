@@ -19,6 +19,11 @@ Parity checks:
    - If a test/feature has result views, update all relevant result surfaces (immediate result + historical view).
 7. Regression tests
    - Add/update tests for shared behavior and CLI surface.
+8. Android install/upgrade compatibility (if mobile distribution is touched)
+   - Confirm package identity remains stable (`package.domain` + `package.name`).
+   - Confirm release signing remains stable across builds (same release key lineage).
+   - Confirm Android version code progression is monotonic for upgrade installs.
+   - Treat install conflict errors as potential signer mismatch and verify certificate lineage first.
 
 Final verification:
 - Run ruff, mypy, and pytest suite.

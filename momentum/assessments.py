@@ -24,6 +24,15 @@ from dataclasses import dataclass, field
 
 from momentum.models import AssessmentResult, AssessmentResultCreate, AssessmentType
 
+# Try to import Cython-compiled versions; fall back to pure Python
+_CYTHON_AVAILABLE = False
+try:
+    from momentum._assessments_cy import score_bdefs_cy, score_bisbas_cy
+
+    _CYTHON_AVAILABLE = True
+except ImportError:
+    pass  # Cython not available; use pure Python implementations below
+
 # ---------------------------------------------------------------------------
 # BDEFS-style self-report
 # ---------------------------------------------------------------------------
@@ -82,6 +91,11 @@ def score_bdefs(answers: dict[str, list[int]]) -> AssessmentResultCreate:
     -------
     AssessmentResultCreate ready to be saved to the database.
     """
+    # Use Cython-compiled version if available
+    if _CYTHON_AVAILABLE:
+        return score_bdefs_cy(answers)
+
+    # Pure Python fallback
     domain_scores: dict[str, int] = {}
     total = 0
     for domain, scores in answers.items():
@@ -164,6 +178,11 @@ def bisbas_max_score() -> int:
 
 def score_bisbas(answers: dict[str, list[int]]) -> AssessmentResultCreate:
     """Score a completed BIS/BAS questionnaire."""
+    # Use Cython-compiled version if available
+    if _CYTHON_AVAILABLE:
+        return score_bisbas_cy(answers)
+
+    # Pure Python fallback
     domain_scores: dict[str, int] = {}
     total = 0
     for domain, scores in answers.items():

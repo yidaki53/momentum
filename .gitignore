@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 build/
+*.c  # Cython-generated C files
+*.so  # Cython-compiled shared objects (Linux/macOS)
+*.pyd  # Cython-compiled shared objects (Windows)
 
 # PyInstaller artifacts (but allow dist/momentum via LFS)
 dist/*

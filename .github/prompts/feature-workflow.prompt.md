@@ -21,13 +21,35 @@ Workflow:
 5. Documentation and assets
    - Update `README.md` and `SCIENCE.md` when user-visible behavior or rationale changes.
    - Keep root/mobile markdown copies in sync when both are edited.
-6. Versioning
-   - For user-facing changes, update version in:
+6. Versioning and release branching
+   - Determine bump type using SemVer:
+     - Docs-only (no behavior change): no bump.
+     - Internal-only maintenance (tests/refactors/tooling, no user-visible behavior): no bump unless release is explicitly requested.
+     - Backward-compatible bug fixes/small improvements: PATCH.
+     - Backward-compatible feature additions/substantial improvements: MINOR.
+     - Breaking/incompatible changes: MAJOR.
+   - For version bumps, update all version touchpoints together:
      - `pyproject.toml`
      - `momentum/__init__.py`
      - `mobile/buildozer.spec`
      - About/version strings in CLI and UIs
-7. Validation before handoff
+   - For release prep, use branch naming `release/MAJOR.MINOR.PATCH`.
+   - In this repository, cut release branches from `master` (or `develop` if introduced later).
+   - Keep release branches short-lived and stabilization-only (QA fixes, release docs/changelog, version metadata); no new features on release branches.
+   - Tag shipped releases as `vMAJOR.MINOR.PATCH`.
+   - For hotfixes on older versions, branch from the relevant release tag, patch, retag, and merge/cherry-pick fixes into `master` and active newer release branches.
+   - After release, merge the release branch back into `master` (and `develop` if it exists).
+   - For Android releases, keep package identity stable and ensure version code progression (`android.numeric_version`) is monotonic.
+7. Android release safety (when APK delivery is affected)
+   - Build distributable APKs via `buildozer android release` (not debug).
+   - Ensure stable release signing is configured via repository secrets:
+     - `ANDROID_RELEASE_KEYSTORE_B64`
+     - `ANDROID_RELEASE_KEYSTORE_PASSWD`
+     - `ANDROID_RELEASE_KEYALIAS`
+     - `ANDROID_RELEASE_KEYALIAS_PASSWD`
+   - Ensure CI fails fast if any signing secret is missing.
+   - Ensure release artifact selection prefers release APK outputs.
+8. Validation before handoff
    - `poetry run ruff check momentum/ tests/ mobile/main.py`
    - `poetry run mypy momentum/`
    - `poetry run pytest tests/ -v`
@@ -38,3 +60,4 @@ Output checklist for handoff:
 - Test coverage added/updated
 - Validation command results
 - Version/doc updates (if applicable)
+- Android upgrade safety checks/results (if APK path affected)

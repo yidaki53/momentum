@@ -6,15 +6,22 @@
 ## Command execution
 - Use Poetry-first Python commands (`poetry run ...`) for linting, typing, tests, scripts, and app entry points.
 
-## Versioning policy (lowest to highest impact)
+## Versioning and release-branch policy
 - Use semantic versioning (`MAJOR.MINOR.PATCH`) for releases.
-- Apply version changes by change type in this order:
-  1. Docs-only changes (wording, comments, markdown/assets with no behavior change): no version bump.
-  2. Internal-only maintenance (tests, refactors, tooling with no user-visible behavior change): no version bump unless a release is explicitly requested.
-  3. Bug fixes and small backward-compatible improvements: PATCH bump.
-  4. New backward-compatible features or substantial user-visible improvements: MINOR bump.
-  5. Breaking changes (removed/renamed behavior, incompatible data/config expectations, required user action): MAJOR bump.
-- When a bump is required, update all version touchpoints together:
+- Version bump type by change impact:
+  1. Docs-only changes (no behavior change): no bump.
+  2. Internal-only maintenance (tests/refactors/tooling, no user-visible behavior): no bump unless a release is explicitly requested.
+  3. Backward-compatible bug fixes and small improvements: PATCH bump.
+  4. Backward-compatible features or substantial user-visible improvements: MINOR bump.
+  5. Breaking/incompatible changes: MAJOR bump.
+- Release branch naming convention: `release/MAJOR.MINOR.PATCH` (example: `release/1.2.0`).
+- In this repository, cut release branches from `master` (if a `develop` branch is introduced later, cut from `develop`).
+- Release branches are short-lived stabilization branches; allow only QA fixes, release docs/changelog updates, and version metadata changes.
+- Do not perform new feature development directly on release branches.
+- Tag every shipped release as `vMAJOR.MINOR.PATCH`.
+- For hotfixes on older production versions, branch from the relevant release tag, apply the patch, retag, and merge/cherry-pick the fix into `master` and any active newer release branches.
+- After release, merge the release branch back into `master` (and into `develop` as well if `develop` exists).
+- When a version bump is required, update all version touchpoints together:
   - `pyproject.toml`
   - `momentum/__init__.py`
   - `mobile/buildozer.spec` (`version`)
@@ -27,6 +34,18 @@
 - Never change `package.name` or `package.domain` for an existing app lineage.
 - For persistence/model changes, preserve backward compatibility or add explicit migration handling so existing local data/settings remain readable after upgrade.
 - Before declaring a release ready, validate an upgrade path from the previous APK build and confirm startup, settings, timer flow, and history/results screens still work.
+- Treat `package could not be installed / package conflicts with another package` as a likely signing-certificate mismatch first, then verify package identity/version code.
+
+## Android CI signing and artifact rules
+- CI-distributed Android artifacts must be built with `buildozer android release` (not debug) to avoid signer drift between builds.
+- Use one stable release keystore across all shipped Android builds for this app lineage.
+- Required repository secrets for Android release signing:
+  - `ANDROID_RELEASE_KEYSTORE_B64`
+  - `ANDROID_RELEASE_KEYSTORE_PASSWD`
+  - `ANDROID_RELEASE_KEYALIAS`
+  - `ANDROID_RELEASE_KEYALIAS_PASSWD`
+- Android build jobs should fail fast with a clear error when signing secrets are missing.
+- Keep CI Android version codes monotonic (e.g., deterministic formula using run number) and never decrease them.
 
 ## Architecture constraints
 - `momentum/models.py` is the source of truth for domain models and shared data structures.
@@ -73,3 +92,8 @@
 - Link related RFCs, follow-up issues, and implementation PRs so planning and delivery are traceable.
 - Resolve issues only after acceptance criteria are met, tests/validation pass, and documentation updates are completed when required.
 - When closing an issue, include a concise resolution summary and note any deferred follow-up work.
+
+## GitHub auth and workflow-permission rules
+- For this repository, use the `yidaki53` GitHub account for `gh` and git-authenticated GitHub operations.
+- If a push updates `.github/workflows/*`, ensure the active token has `workflow` scope before pushing.
+- If push is rejected with OAuth workflow-scope errors, refresh token scope before retrying.
