@@ -187,11 +187,34 @@ jobs:
           ln -sfn ../README.md README.md
           ln -sfn ../IMAGES.md IMAGES.md
 
-      - name: Build APK
+      - name: Prepare Android signing keystore
+        env:
+          ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
         run: |
+          if [ -z "${ANDROID_RELEASE_KEYSTORE_B64}" ]; then
+            echo "Missing required secret: ANDROID_RELEASE_KEYSTORE_B64" >&2
+            exit 1
+          fi
+          mkdir -p mobile/.ci
+          printf "%s" "${ANDROID_RELEASE_KEYSTORE_B64}" | base64 --decode > mobile/.ci/release.keystore
+
+      - name: Build APK
+        env:
+          P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
+          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}
+          P4A_RELEASE_KEYALIAS: ${{ secrets.ANDROID_RELEASE_KEYALIAS }}
+          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYALIAS_PASSWD }}
+        run: |
+          if [ -z "${P4A_RELEASE_KEYSTORE_PASSWD}" ] || [ -z "${P4A_RELEASE_KEYALIAS}" ] || [ -z "${P4A_RELEASE_KEYALIAS_PASSWD}" ]; then
+            echo "Missing required Android signing secrets: ANDROID_RELEASE_KEYSTORE_PASSWD, ANDROID_RELEASE_KEYALIAS, ANDROID_RELEASE_KEYALIAS_PASSWD" >&2
+            exit 1
+          fi
           cd mobile
+          ANDROID_NUMERIC_VERSION=$((100000000 + GITHUB_RUN_NUMBER))
           # Override build_dir for CI (no USB stick)
           sed -i 's|^build_dir.*|build_dir = /tmp/buildozer-build|' buildozer.spec
+          sed -i 's|^android.release_artifact.*|android.release_artifact = apk|' buildozer.spec
+          sed -i "s|^android.numeric_version.*|android.numeric_version = ${ANDROID_NUMERIC_VERSION}|" buildozer.spec
 
           # Two-phase build: the first attempt extracts and builds
           # hostpython3 properly, but numpy will fail because p4a sets
@@ -199,18 +222,29 @@ jobs:
           # system-installed Cython invisible.  After that first run
           # creates the real directory tree, we inject Cython into
           # hostpython3's site-packages and retry.
-          buildozer android debug 2>&1 || true
+          buildozer android release 2>&1 || true
 
           HP_SITE="/tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/build/other_builds/hostpython3/desktop/hostpython3/native-build/Lib/site-packages"
           mkdir -p "$HP_SITE"
           pip install --target="$HP_SITE" Cython==0.29.36
 
-          buildozer android debug
+          buildozer android release
 
       - name: Prepare APK artifact
         run: |
           mkdir -p artifacts
-          cp mobile/bin/*.apk artifacts/momentum-android.apk
+          APK_PATH=""
+          for candidate in mobile/bin/*-release.apk mobile/bin/*.apk; do
+            if [ -f "$candidate" ]; then
+              APK_PATH="$candidate"
+              break
+            fi
+          done
+          if [ -z "$APK_PATH" ]; then
+            echo "No APK build artifact found in mobile/bin" >&2
+            exit 1
+          fi
+          cp "$APK_PATH" artifacts/momentum-android.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

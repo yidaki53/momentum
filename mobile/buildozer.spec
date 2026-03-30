@@ -24,6 +24,9 @@ android.api = 33
 android.minapi = 26
 android.ndk = 25b
 android.accept_sdk_license = True
+android.numeric_version = 100000000
+android.release_artifact = apk
+android.debug_artifact = apk
 
 # App appearance
 orientation = portrait
