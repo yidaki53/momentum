@@ -8,15 +8,18 @@ from typing import TYPE_CHECKING, Optional
 
 import typer
 
-from momentum import db, display, encouragement, timer
+from momentum import db, encouragement
+from momentum.domain import timer
 from momentum.models import AssessmentType, TaskStatus
 from momentum.services import (
     AssessmentService,
     PersonalisationService,
     SessionService,
-    StatusService,
-    TaskService,
+    TaskServiceFactory,
+    status_service,
+    task_service,
 )
+from momentum.ui import display
 
 if TYPE_CHECKING:
     from momentum.assessments import PersonalisationProfile
@@ -45,9 +48,9 @@ def _timer_service() -> timer.TimerService:
     return timer.default_timer_service()
 
 
-def _task_service(conn: sqlite3.Connection) -> TaskService:
-    """Build task workflow service for command handlers."""
-    return TaskService(conn)
+def _task_service(conn: sqlite3.Connection) -> TaskServiceFactory:
+    """Build task workflow operations for command handlers."""
+    return task_service(conn)
 
 
 def _assessment_service(conn: sqlite3.Connection) -> AssessmentService:
@@ -97,7 +100,7 @@ def break_down(
         step = typer.prompt("  Sub-step", default="", show_default=False)
         if not step.strip():
             break
-        created = tasks.add_subtask(parent_id=parent.id, title=step.strip())
+        created = tasks.add_subtask(parent.id, step.strip())
         display.print_success(f"  Added #{created.id}: {created.title}")
         count += 1
 
@@ -231,7 +234,7 @@ def take_break(
 def status() -> None:
     """See how your day is going."""
     conn = _conn()
-    summary = StatusService(conn).summary()
+    summary = status_service(conn)()
     display.print_status(summary)
     conn.close()
 

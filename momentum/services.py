@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from momentum import db
+from momentum.domain.timer import TimerService
 from momentum.models import (
     AssessmentResult,
     AssessmentResultCreate,
@@ -20,7 +21,6 @@ from momentum.models import (
     TaskCreate,
     TaskStatus,
 )
-from momentum.timer import TimerService
 
 if TYPE_CHECKING:
     from momentum.assessments import PersonalisationProfile
@@ -91,6 +91,77 @@ class SessionService:
         )
 
 
+@dataclass(frozen=True)
+class TaskServiceFactory:
+    """Callable task operations for thin command handlers."""
+
+    add_task: Callable[[str], Task]
+    add_subtask: Callable[[int, str], Task]
+    get_task: Callable[[int], Task | None]
+    list_tasks: Callable[[TaskStatus | None], list[Task]]
+    complete_task: Callable[[int], Task | None]
+    reopen_task: Callable[[int], Task | None]
+    activate_task: Callable[[int], Task | None]
+    first_active_task: Callable[[], Task | None]
+    first_pending_task: Callable[[], Task | None]
+    delete_all_tasks: Callable[[], int]
+
+
+def task_service(conn: sqlite3.Connection) -> TaskServiceFactory:
+    """Build thin task operations as a factory-backed object."""
+
+    def add_task(title: str) -> Task:
+        return db.add_task(conn, TaskCreate(title=title))
+
+    def add_subtask(parent_id: int, title: str) -> Task:
+        return db.add_task(conn, TaskCreate(title=title, parent_id=parent_id))
+
+    def get_task(task_id: int) -> Task | None:
+        return db.get_task(conn, task_id)
+
+    def list_tasks(status: TaskStatus | None = None) -> list[Task]:
+        return db.list_tasks(conn, status=status)
+
+    def complete_task(task_id: int) -> Task | None:
+        return db.complete_task(conn, task_id)
+
+    def reopen_task(task_id: int) -> Task | None:
+        return db.uncomplete_task(conn, task_id)
+
+    def activate_task(task_id: int) -> Task | None:
+        return db.set_task_active(conn, task_id)
+
+    def first_active_task() -> Task | None:
+        active = db.list_tasks(conn, status=TaskStatus.ACTIVE)
+        return active[0] if active else None
+
+    def first_pending_task() -> Task | None:
+        pending = db.list_tasks(conn, status=TaskStatus.PENDING)
+        return pending[0] if pending else None
+
+    def delete_all_tasks() -> int:
+        return db.delete_all_tasks(conn)
+
+    return TaskServiceFactory(
+        add_task=add_task,
+        add_subtask=add_subtask,
+        get_task=get_task,
+        list_tasks=list_tasks,
+        complete_task=complete_task,
+        reopen_task=reopen_task,
+        activate_task=activate_task,
+        first_active_task=first_active_task,
+        first_pending_task=first_pending_task,
+        delete_all_tasks=delete_all_tasks,
+    )
+
+
+def status_service(conn: sqlite3.Connection) -> Callable[[], StatusSummary]:
+    """Build a thin status summary factory for command handlers."""
+
+    return lambda: db.get_status(conn)
+
+
 class StatusService:
     """Own status summary retrieval for CLI and GUI surfaces."""
 
@@ -99,7 +170,7 @@ class StatusService:
 
     def summary(self) -> StatusSummary:
         """Return the current dashboard summary."""
-        return db.get_status(self._conn)
+        return status_service(self._conn)()
 
 
 class TaskService:
@@ -107,48 +178,47 @@ class TaskService:
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
+        self._factory = task_service(conn)
 
     def add_task(self, title: str) -> Task:
         """Create a top-level task."""
-        return db.add_task(self._conn, TaskCreate(title=title))
+        return self._factory.add_task(title)
 
     def add_subtask(self, *, parent_id: int, title: str) -> Task:
         """Create a subtask under a parent task."""
-        return db.add_task(self._conn, TaskCreate(title=title, parent_id=parent_id))
+        return self._factory.add_subtask(parent_id, title)
 
     def get_task(self, task_id: int) -> Task | None:
         """Load a task by ID."""
-        return db.get_task(self._conn, task_id)
+        return self._factory.get_task(task_id)
 
     def list_tasks(self, *, status: TaskStatus | None = None) -> list[Task]:
         """List tasks with an optional status filter."""
-        return db.list_tasks(self._conn, status=status)
+        return self._factory.list_tasks(status)
 
     def complete_task(self, task_id: int) -> Task | None:
         """Mark a task as completed."""
-        return db.complete_task(self._conn, task_id)
+        return self._factory.complete_task(task_id)
 
     def reopen_task(self, task_id: int) -> Task | None:
         """Mark a completed task as pending again."""
-        return db.uncomplete_task(self._conn, task_id)
+        return self._factory.reopen_task(task_id)
 
     def activate_task(self, task_id: int) -> Task | None:
         """Mark a task as active."""
-        return db.set_task_active(self._conn, task_id)
+        return self._factory.activate_task(task_id)
 
     def first_active_task(self) -> Task | None:
         """Return the first active task if one exists."""
-        active = db.list_tasks(self._conn, status=TaskStatus.ACTIVE)
-        return active[0] if active else None
+        return self._factory.first_active_task()
 
     def first_pending_task(self) -> Task | None:
         """Return the first pending task if one exists."""
-        pending = db.list_tasks(self._conn, status=TaskStatus.PENDING)
-        return pending[0] if pending else None
+        return self._factory.first_pending_task()
 
     def delete_all_tasks(self) -> int:
         """Delete all tasks and focus sessions and return deleted count."""
-        return db.delete_all_tasks(self._conn)
+        return self._factory.delete_all_tasks()
 
 
 class AssessmentService:

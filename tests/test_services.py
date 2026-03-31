@@ -17,6 +17,8 @@ from momentum.services import (
     SessionService,
     StatusService,
     TaskService,
+    status_service,
+    task_service,
 )
 
 
@@ -116,6 +118,18 @@ class TestSessionService:
 
 
 class TestTaskService:
+    def test_factory_add_and_lookup_task(self) -> None:
+        conn = db.get_connection(":memory:")
+        tasks = task_service(conn)
+
+        created = tasks.add_task("Draft outline")
+        loaded = tasks.get_task(created.id)
+
+        assert loaded is not None
+        assert loaded.id == created.id
+        assert loaded.title == "Draft outline"
+        conn.close()
+
     def test_add_and_lookup_task(self) -> None:
         conn = db.get_connection(":memory:")
         tasks = TaskService(conn)
@@ -186,6 +200,16 @@ class TestTaskService:
 
 
 class TestStatusService:
+    def test_status_factory_summary_empty_database(self) -> None:
+        conn = db.get_connection(":memory:")
+
+        summary = status_service(conn)()
+
+        assert summary.today.tasks_completed == 0
+        assert summary.today.focus_minutes == 0
+        assert summary.streak_days == 0
+        conn.close()
+
     def test_summary_empty_database(self) -> None:
         conn = db.get_connection(":memory:")
 

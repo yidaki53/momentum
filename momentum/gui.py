@@ -39,7 +39,6 @@ from momentum.assessments import (
     score_bisbas,
     score_stroop,
 )
-from momentum.charts import bdefs_momentum_glow
 from momentum.encouragement import get_break_message, get_nudge
 from momentum.models import (
     AssessmentResult,
@@ -55,6 +54,7 @@ from momentum.services import (
     StatusService,
     TaskService,
 )
+from momentum.ui.charts import bdefs_momentum_glow
 
 if TYPE_CHECKING:
     from momentum.assessments import PersonalisationProfile

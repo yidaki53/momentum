@@ -201,12 +201,43 @@ jobs:
         env:
           ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
         run: |
+          set -euo pipefail
           if [ -z "${ANDROID_RELEASE_KEYSTORE_B64}" ]; then
             echo "Missing required secret: ANDROID_RELEASE_KEYSTORE_B64" >&2
             exit 1
           fi
           mkdir -p mobile/.ci
           printf "%s" "${ANDROID_RELEASE_KEYSTORE_B64}" | base64 --decode > mobile/.ci/release.keystore
+          if [ ! -s mobile/.ci/release.keystore ]; then
+            echo "Decoded Android keystore is empty or unreadable" >&2
+            exit 1
+          fi
+
+      - name: Validate Android signing configuration
+        env:
+          P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
+          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}
+          P4A_RELEASE_KEYALIAS: ${{ secrets.ANDROID_RELEASE_KEYALIAS }}
+          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYALIAS_PASSWD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${P4A_RELEASE_KEYSTORE_PASSWD}" ] || [ -z "${P4A_RELEASE_KEYALIAS}" ] || [ -z "${P4A_RELEASE_KEYALIAS_PASSWD}" ]; then
+            echo "Missing required Android signing secrets: ANDROID_RELEASE_KEYSTORE_PASSWD, ANDROID_RELEASE_KEYALIAS, ANDROID_RELEASE_KEYALIAS_PASSWD" >&2
+            exit 1
+          fi
+
+          if ! keytool -list \
+            -keystore "${P4A_RELEASE_KEYSTORE}" \
+            -storepass "${P4A_RELEASE_KEYSTORE_PASSWD}" \
+            -alias "${P4A_RELEASE_KEYALIAS}" \
+            -keypass "${P4A_RELEASE_KEYALIAS_PASSWD}" \
+            >/tmp/android-signing-check.log 2>&1; then
+            echo "Android signing preflight failed. Verify the keystore blob, store password, alias, and alias password are all from the same keystore." >&2
+            cat /tmp/android-signing-check.log >&2
+            exit 1
+          fi
+
+          echo "Android signing preflight passed for alias ${P4A_RELEASE_KEYALIAS}."
 
       - name: Build APK
         env:
@@ -215,6 +246,7 @@ jobs:
           P4A_RELEASE_KEYALIAS: ${{ secrets.ANDROID_RELEASE_KEYALIAS }}
           P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYALIAS_PASSWD }}
         run: |
+          set -euo pipefail
           if [ -z "${P4A_RELEASE_KEYSTORE_PASSWD}" ] || [ -z "${P4A_RELEASE_KEYALIAS}" ] || [ -z "${P4A_RELEASE_KEYALIAS_PASSWD}" ]; then
             echo "Missing required Android signing secrets: ANDROID_RELEASE_KEYSTORE_PASSWD, ANDROID_RELEASE_KEYALIAS, ANDROID_RELEASE_KEYALIAS_PASSWD" >&2
             exit 1

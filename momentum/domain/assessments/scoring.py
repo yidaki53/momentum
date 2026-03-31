@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from typing import Callable
 
 from momentum.models import AssessmentResultCreate, AssessmentType
 
 # Try to import Cython-compiled versions; fall back to pure Python
 _CYTHON_AVAILABLE = False
+score_bdefs_cy: Callable[[dict[str, list[int]]], AssessmentResultCreate] | None = None
+score_bisbas_cy: Callable[[dict[str, list[int]]], AssessmentResultCreate] | None = None
 try:
     from momentum._assessments_cy import score_bdefs_cy, score_bisbas_cy
 
@@ -74,7 +77,7 @@ def score_bdefs(answers: dict[str, list[int]]) -> AssessmentResultCreate:
     AssessmentResultCreate ready to be saved to the database.
     """
     # Use Cython-compiled version if available
-    if _CYTHON_AVAILABLE:
+    if score_bdefs_cy is not None:
         return score_bdefs_cy(answers)
 
     # Pure Python fallback
@@ -149,7 +152,7 @@ def bisbas_max_score() -> int:
 def score_bisbas(answers: dict[str, list[int]]) -> AssessmentResultCreate:
     """Score a completed BIS/BAS questionnaire."""
     # Use Cython-compiled version if available
-    if _CYTHON_AVAILABLE:
+    if score_bisbas_cy is not None:
         return score_bisbas_cy(answers)
 
     # Pure Python fallback
