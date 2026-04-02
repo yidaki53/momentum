@@ -74,7 +74,6 @@ from momentum.assessments import (
     score_bisbas,
     score_stroop,
 )
-from momentum.charts import bdefs_radar, bdefs_timeseries, bisbas_profile_bars
 from momentum.encouragement import get_break_message, get_nudge
 from momentum.models import (
     ActJournalEntryCreate,
@@ -87,6 +86,23 @@ from momentum.models import (
 )
 
 log = logging.getLogger(__name__)
+
+_CHART_FUNCS: tuple | None = None
+
+
+def _get_chart_funcs() -> tuple | None:
+    """Import chart rendering lazily to keep Android startup lightweight."""
+    global _CHART_FUNCS
+    if _CHART_FUNCS is not None:
+        return _CHART_FUNCS
+    try:
+        from momentum.charts import bdefs_radar, bdefs_timeseries, bisbas_profile_bars
+
+        _CHART_FUNCS = (bdefs_radar, bdefs_timeseries, bisbas_profile_bars)
+    except Exception:
+        log.debug("Chart module unavailable on this runtime", exc_info=True)
+        _CHART_FUNCS = None
+    return _CHART_FUNCS
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -2398,8 +2414,20 @@ class ResultsScreen(ScrollScreen):
         # -- Charts --
         bdefs_results = [r for r in results if r.assessment_type == AssessmentType.BDEFS]
         bisbas_results = [r for r in results if r.assessment_type == AssessmentType.BISBAS]
+        chart_funcs = _get_chart_funcs()
+        charts_available = chart_funcs is not None
 
-        if bdefs_results:
+        if charts_available:
+            bdefs_radar, bdefs_timeseries, bisbas_profile_bars = chart_funcs
+        else:
+            c.add_widget(_make_label(
+                "Charts are unavailable on this device/runtime; showing text results only.",
+                font_size=sp(11),
+                color=_MUTED,
+            ))
+            c.add_widget(Widget(size_hint_y=None, height=dp(6)))
+
+        if bdefs_results and charts_available:
             try:
                 latest_r = bdefs_results[0]  # most recent first
                 prev_r = bdefs_results[1] if len(bdefs_results) > 1 else None
@@ -2427,7 +2455,7 @@ class ResultsScreen(ScrollScreen):
                     c.add_widget(ts_widget)
             except Exception:
                 log.debug("Timeseries chart failed", exc_info=True)
-        if bisbas_results:
+        if bisbas_results and charts_available:
             latest_bisbas = bisbas_results[0]
             try:
                 bisbas_img = bisbas_profile_bars(
