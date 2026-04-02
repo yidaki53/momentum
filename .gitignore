@@ -29,6 +29,11 @@ htmlcov/
 mobile/.buildozer/
 mobile/bin/
 
+# Local Android signing artifacts
+mobile/.ci/*.keystore
+mobile/.ci/*.jks
+mobile/.ci/*.p12
+
 # SQLite database (user data, not committed)
 *.db
 
