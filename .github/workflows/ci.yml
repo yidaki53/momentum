@@ -211,36 +211,10 @@ jobs:
           # Decode robustly: tolerate wrapped/urlsafe/missing-padding base64 while
           # still validating content before writing the keystore.
           export ANDROID_RELEASE_KEYSTORE_B64
-          python - <<'PY'
-            import base64
-            import os
-            import re
-            import sys
-
-            raw = os.environ.get("ANDROID_RELEASE_KEYSTORE_B64", "")
-            clean = re.sub(r"\s+", "", raw)
-
-            # Accept urlsafe payloads too, then normalize to standard alphabet.
-            clean = clean.replace("-", "+").replace("_", "/")
-
-            # Add required padding when omitted by secret tooling.
-            pad = len(clean) % 4
-            if pad:
-              clean += "=" * (4 - pad)
-
-            try:
-              decoded = base64.b64decode(clean, validate=True)
-            except Exception as exc:
-              print(
-                "ANDROID_RELEASE_KEYSTORE_B64 is not valid base64 after normalization.",
-                file=sys.stderr,
-              )
-              print(f"Decode error: {exc}", file=sys.stderr)
-              sys.exit(1)
-
-            with open("mobile/.ci/release.keystore", "wb") as fp:
-              fp.write(decoded)
-            PY
+          python -c "import base64,os,re; raw=os.environ.get('ANDROID_RELEASE_KEYSTORE_B64',''); clean=re.sub(r'\\s+','',raw).replace('-','+').replace('_','/'); clean += '='*((4-len(clean)%4)%4); open('mobile/.ci/release.keystore','wb').write(base64.b64decode(clean, validate=True))" || {
+            echo "ANDROID_RELEASE_KEYSTORE_B64 is not valid base64 after normalization." >&2
+            exit 1
+          }
 
           if [ ! -s mobile/.ci/release.keystore ]; then
             echo "Decoded Android keystore is empty or unreadable" >&2
