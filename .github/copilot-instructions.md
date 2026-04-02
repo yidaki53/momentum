@@ -12,6 +12,8 @@
 - Release and versioning policy: `.github/instructions/03-release-and-versioning.md`
 - Android release safety: `.github/instructions/04-android-release-safety.md`
 - Validation gates: `.github/instructions/05-validation-gates.md`
+- CI and runtime operations: `.github/instructions/06-ci-and-runtime.md`
+- Runtime diagnostics playbook: `.github/instructions/07-runtime-diagnostics.md`
 
 ## Prompt assets index
 - Feature workflow: `.github/prompts/feature-workflow.prompt.md`

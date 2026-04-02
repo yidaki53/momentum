@@ -82,6 +82,34 @@ def personalised_nudge(message: str, profile: PersonalisationProfile) -> str:
     return message
 
 
+def should_show_act_support(profile: PersonalisationProfile) -> bool:
+    """Return True when ACT journaling prompts are likely to be helpful."""
+    return profile.suggest_breakdown or profile.add_reassurance
+
+
+def personalised_act_guidance(profile: PersonalisationProfile) -> str:
+    """Return profile-aware ACT usage guidance for UI surfaces."""
+    if profile.add_reassurance and profile.suggest_breakdown:
+        return (
+            "Try a short ACT check-in now: name what feels hard, reframe one sticky "
+            "thought, and pick one tiny next action."
+        )
+    if profile.add_reassurance:
+        return (
+            "Use ACT to make room for difficult feelings gently, then choose one kind, "
+            "values-aligned next step."
+        )
+    if profile.suggest_breakdown:
+        return (
+            "Use ACT to break overwhelm into a concrete next action you can finish in "
+            "a few minutes."
+        )
+    return (
+        "ACT check-ins are optional right now. Use them whenever you want extra clarity "
+        "or emotional grounding."
+    )
+
+
 def profile_from_latest_bisbas(
     latest_bisbas: AssessmentResult | None,
 ) -> PersonalisationProfile:

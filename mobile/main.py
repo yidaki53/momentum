@@ -68,11 +68,13 @@ from momentum.assessments import (
     interpret_bdefs,
     interpret_bisbas,
     interpret_stroop,
+    personalised_act_guidance,
     personalised_nudge,
     profile_from_latest_assessments,
     score_bdefs,
     score_bisbas,
     score_stroop,
+    should_show_act_support,
 )
 from momentum.encouragement import get_break_message, get_nudge
 from momentum.models import (
@@ -350,7 +352,12 @@ def _show_info_popup(title: str, text: str) -> None:
         background_color=accent,
         color=fg,
     )
-    popup = Popup(title=title, content=content, size_hint=(0.86, 0.36))
+    popup = Popup(
+        title=title,
+        content=content,
+        size_hint=(0.86, 0.36),
+        auto_dismiss=True,
+    )
     close.bind(on_release=lambda _: popup.dismiss())
     content.add_widget(close)
     popup.open()
@@ -596,6 +603,13 @@ KV = """
                 background_color: app.secondary_button_color
                 color: app.text_color
                 on_release: root.refresh_nudge()
+        BoxLayout:
+            size_hint_y: None
+            height: dp(40) if root.act_controls_visible else dp(0)
+            spacing: dp(8)
+            padding: [dp(8), 0]
+            opacity: 1 if root.act_controls_visible else 0
+            disabled: not root.act_controls_visible
             Button:
                 text: 'ACT check-in'
                 background_color: app.success_button_color
@@ -891,6 +905,7 @@ class HomeScreen(Screen):
     nudge_text = StringProperty("")
     focus_button_text = StringProperty("Focus 15m")
     break_button_text = StringProperty("Break 5m")
+    act_controls_visible = BooleanProperty(False)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -944,6 +959,39 @@ class HomeScreen(Screen):
         profile = self._profile()
         self.focus_button_text = f"Focus {profile.focus_minutes}m"
         self.break_button_text = f"Break {profile.break_minutes}m"
+        self.act_controls_visible = should_show_act_support(profile)
+
+    def _act_guidance(self) -> str:
+        return personalised_act_guidance(self._profile())
+
+    def _act_prompt_details(self) -> dict[str, str]:
+        profile = self._profile()
+        reassurance = profile.add_reassurance
+        breakdown = profile.suggest_breakdown
+        return {
+            "values_focus": (
+                "Write one value to steer this next step (for example: care, stability, "
+                "learning, contribution)."
+            ),
+            "challenge_context": (
+                "Name the situation making momentum hard right now. Keep it concrete and "
+                "specific to today."
+            ),
+            "thoughts_feelings": (
+                "List the thoughts and feelings present without arguing with them."
+                if reassurance
+                else "Name the main thoughts and emotions showing up right now."
+            ),
+            "defusion_reframe": (
+                "Try: 'I am noticing the thought that ...' then write a gentler or more "
+                "workable framing."
+            ),
+            "committed_action": (
+                "Choose one tiny action you can complete in 2-5 minutes."
+                if breakdown
+                else "Choose one values-aligned next action you can realistically do now."
+            ),
+        }
 
     # -- Banner image --
 
@@ -1307,7 +1355,14 @@ class HomeScreen(Screen):
 
     def open_act_checkin(self) -> None:
         """Open a structured ACT journaling check-in popup."""
+
         def _open() -> None:
+            if not self.act_controls_visible:
+                _show_info_popup(
+                    "ACT check-in",
+                    "ACT prompts unlock when recent assessments suggest extra support is useful.",
+                )
+                return
             prompts = (
                 ("values_focus", "Value focus"),
                 ("challenge_context", "Current challenge"),
@@ -1315,30 +1370,47 @@ class HomeScreen(Screen):
                 ("defusion_reframe", "Defusion / reframe"),
                 ("committed_action", "Committed action"),
             )
+            details = self._act_prompt_details()
+            app = App.get_running_app()
             content = BoxLayout(orientation="vertical", spacing=8, padding=10)
+            content.add_widget(_make_label(self._act_guidance(), font_size=sp(12), color=_MUTED))
             fields: dict[str, TextInput] = {}
             for key, title in prompts:
-                content.add_widget(_make_label(title, font_size=sp(12), bold=True))
+                title_row = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(6))
+                title_row.add_widget(_make_label(title, font_size=sp(12), bold=True, size_hint_x=0.88))
+                info_btn = Button(
+                    text="(i)",
+                    size_hint_x=0.12,
+                    background_color=list(app.neutral_button_color),
+                    color=list(app.text_color),
+                    font_size=sp(11),
+                )
+                info_btn.bind(
+                    on_release=lambda _btn, t=title, d=details[key]: _show_info_popup(t, d)
+                )
+                title_row.add_widget(info_btn)
+                content.add_widget(title_row)
                 ti = TextInput(
                     multiline=True,
                     size_hint_y=None,
                     height=dp(70),
-                    background_color=App.get_running_app().input_bg_color,
-                    foreground_color=App.get_running_app().text_color,
+                    background_color=app.input_bg_color,
+                    foreground_color=app.text_color,
                 )
                 content.add_widget(ti)
                 fields[key] = ti
             btn_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=8)
             save_btn = Button(
                 text="Save",
-                background_color=App.get_running_app().accent_color,
-                color=App.get_running_app().text_color,
+                background_color=app.accent_color,
+                color=app.text_color,
             )
             close_btn = Button(text="Close")
             popup = Popup(
                 title="ACT Journal Check-In",
                 content=content,
                 size_hint=(0.94, 0.92),
+                auto_dismiss=False,
             )
 
             def _save(_btn) -> None:
@@ -1364,9 +1436,7 @@ class HomeScreen(Screen):
                 )
                 popup.dismiss()
 
-            save_btn.bind(
-                on_release=lambda btn: _run_ui_action(lambda: _save(btn))
-            )
+            save_btn.bind(on_release=lambda btn: _run_ui_action(lambda: _save(btn)))
             close_btn.bind(on_release=lambda _: popup.dismiss())
             btn_row.add_widget(save_btn)
             btn_row.add_widget(close_btn)
@@ -1377,7 +1447,14 @@ class HomeScreen(Screen):
 
     def open_act_history(self) -> None:
         """Show recent ACT journaling entries."""
+
         def _open() -> None:
+            if not self.act_controls_visible:
+                _show_info_popup(
+                    "ACT history",
+                    "ACT history appears once ACT support is enabled by recent assessment signals.",
+                )
+                return
             entries = db.list_act_journal_entries(self.conn, limit=20)
             scroll = ScrollView(do_scroll_x=False)
             inner = BoxLayout(
@@ -1387,6 +1464,8 @@ class HomeScreen(Screen):
                 size_hint_y=None,
             )
             inner.bind(minimum_height=inner.setter("height"))
+            inner.add_widget(_make_label(self._act_guidance(), font_size=sp(12), color=_MUTED))
+            inner.add_widget(Widget(size_hint_y=None, height=dp(4)))
             if not entries:
                 inner.add_widget(
                     _make_label("No ACT journal entries yet.", color=_MUTED)
@@ -1725,6 +1804,13 @@ class SettingsScreen(ScrollScreen):
         self._reconnect()
 
     def _set_theme(self, mode: str):
+        _run_ui_action(
+            lambda: self._apply_theme(mode),
+            title="Appearance update failed",
+            prefix="Could not apply the selected appearance mode.",
+        )
+
+    def _apply_theme(self, mode: str) -> None:
         cfg.set_theme_mode(mode)
         app = App.get_running_app()
         if app is not None:
@@ -1733,6 +1819,13 @@ class SettingsScreen(ScrollScreen):
         Clock.schedule_once(lambda dt: self.on_enter(), 0)
 
     def _set_timer_cycle_mode(self, mode: str):
+        _run_ui_action(
+            lambda: self._apply_timer_cycle_mode(mode),
+            title="Timer mode update failed",
+            prefix="Could not update timer cycle mode.",
+        )
+
+    def _apply_timer_cycle_mode(self, mode: str) -> None:
         cfg.set_timer_cycle_mode(mode)
         home = self.manager.get_screen("home")
         if mode == TimerCycleMode.AUTO.value:
@@ -1746,6 +1839,23 @@ class SettingsScreen(ScrollScreen):
             )
 
     def _set_accessibility(self, *, large_text: bool, high_contrast: bool, reduce_visual_load: bool):
+        _run_ui_action(
+            lambda: self._apply_accessibility(
+                large_text=large_text,
+                high_contrast=high_contrast,
+                reduce_visual_load=reduce_visual_load,
+            ),
+            title="Accessibility update failed",
+            prefix="Could not apply accessibility settings.",
+        )
+
+    def _apply_accessibility(
+        self,
+        *,
+        large_text: bool,
+        high_contrast: bool,
+        reduce_visual_load: bool,
+    ) -> None:
         cfg.set_accessibility_options(
             large_text=large_text,
             high_contrast=high_contrast,
@@ -1758,6 +1868,8 @@ class SettingsScreen(ScrollScreen):
         Clock.schedule_once(lambda dt: self.on_enter(), 0)
 
     def _refresh_home_runtime_state(self):
+        if self.manager is None:
+            return
         home = self.manager.get_screen("home")
         if home.conn is None:
             home.conn = db.get_connection()
@@ -2238,21 +2350,24 @@ class BisbasScreen(Screen):
         scroll.add_widget(inner)
 
         content = BoxLayout(orientation="vertical", padding=10, spacing=10)
-        try:
-            bisbas_img = bisbas_profile_bars(
-                saved,
-                title="BIS/BAS Motivational Profile",
-            )
-            bisbas_core = _pil_to_kivy_image(bisbas_img)
-            content.add_widget(KivyImage(
-                texture=bisbas_core.texture,
-                size_hint_y=None,
-                height=dp(210),
-                allow_stretch=True,
-                keep_ratio=True,
-            ))
-        except Exception:
-            log.debug("BIS/BAS chart popup render failed", exc_info=True)
+        chart_funcs = _get_chart_funcs()
+        if chart_funcs is not None:
+            try:
+                _bdefs_radar, _bdefs_timeseries, bisbas_profile_bars = chart_funcs
+                bisbas_img = bisbas_profile_bars(
+                    saved,
+                    title="BIS/BAS Motivational Profile",
+                )
+                bisbas_core = _pil_to_kivy_image(bisbas_img)
+                content.add_widget(KivyImage(
+                    texture=bisbas_core.texture,
+                    size_hint_y=None,
+                    height=dp(210),
+                    allow_stretch=True,
+                    keep_ratio=True,
+                ))
+            except Exception:
+                log.debug("BIS/BAS chart popup render failed", exc_info=True)
         content.add_widget(scroll)
         close = Button(text="Close", size_hint_y=None, height=dp(44))
         popup = Popup(title="BIS/BAS Result", content=content, size_hint=(0.9, 0.75))

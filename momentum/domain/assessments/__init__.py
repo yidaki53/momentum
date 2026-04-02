@@ -23,9 +23,11 @@ from momentum.domain.assessments.interpretation import (
 from momentum.domain.assessments.profile import (
     PersonalisationProfile,
     personalise_from_bisbas,
+    personalised_act_guidance,
     personalised_nudge,
     profile_from_latest_assessments,
     profile_from_latest_bisbas,
+    should_show_act_support,
 )
 from momentum.domain.assessments.scoring import (
     BDEFS_MAX_PER_ITEM,
@@ -87,6 +89,8 @@ __all__ = [
     "PersonalisationProfile",
     "personalise_from_bisbas",
     "personalised_nudge",
+    "personalised_act_guidance",
+    "should_show_act_support",
     "profile_from_latest_bisbas",
     "profile_from_latest_assessments",
 ]

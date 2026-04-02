@@ -34,13 +34,17 @@ from momentum.assessments import (
     interpret_bdefs,
     interpret_bisbas,
     interpret_stroop,
+    personalised_act_guidance,
     personalised_nudge,
+    profile_from_latest_assessments,
     score_bdefs,
     score_bisbas,
     score_stroop,
+    should_show_act_support,
 )
 from momentum.encouragement import get_break_message, get_nudge
 from momentum.models import (
+    ActJournalEntryCreate,
     AssessmentResult,
     AssessmentType,
     TaskStatus,
@@ -217,6 +221,23 @@ class MomentumApp:
         """Get personalization defaults from the latest BIS/BAS result."""
         return PersonalisationService(self.conn).profile()
 
+    def _assessment_profile(self) -> PersonalisationProfile:
+        """Build profile signals from latest BIS/BAS, BDEFS, and Stroop results."""
+        latest_bisbas = db.list_assessments(
+            self.conn, assessment_type=AssessmentType.BISBAS, limit=1
+        )
+        latest_bdefs = db.list_assessments(
+            self.conn, assessment_type=AssessmentType.BDEFS, limit=1
+        )
+        latest_stroop = db.list_assessments(
+            self.conn, assessment_type=AssessmentType.STROOP, limit=1
+        )
+        return profile_from_latest_assessments(
+            latest_bisbas=latest_bisbas[0] if latest_bisbas else None,
+            latest_bdefs=latest_bdefs[0] if latest_bdefs else None,
+            latest_stroop=latest_stroop[0] if latest_stroop else None,
+        )
+
     def _task_service(self) -> TaskService:
         """Build the task workflow service for GUI interactions."""
         return TaskService(self.conn)
@@ -234,6 +255,20 @@ class MomentumApp:
             self._focus_button.configure(text=f"Focus {self.FOCUS_DEFAULT_MINUTES} min")
         if hasattr(self, "_break_button"):
             self._break_button.configure(text=f"Break {self.BREAK_DEFAULT_MINUTES} min")
+        self._refresh_act_controls()
+
+    def _refresh_act_controls(self) -> None:
+        """Update ACT controls visibility and guidance from assessment profile."""
+        if not hasattr(self, "_act_frame"):
+            return
+        profile = self._assessment_profile()
+        show_act = should_show_act_support(profile)
+        if show_act:
+            self._act_frame.pack(fill=tk.X, pady=(6, 0))
+            self._act_guidance_var.set(personalised_act_guidance(profile))
+        else:
+            self._act_frame.pack_forget()
+            self._act_guidance_var.set("")
 
     def __init__(self) -> None:
         self.root = tk.Tk()
@@ -423,6 +458,23 @@ class MomentumApp:
         self._nudge_label.pack(pady=(5, 3))
 
         ttk.Button(nudge_frame, text="New encouragement", command=self._on_nudge).pack()
+
+        self._act_guidance_var = tk.StringVar(value="")
+        self._act_frame = ttk.Frame(nudge_frame)
+        ttk.Label(
+            self._act_frame,
+            textvariable=self._act_guidance_var,
+            style="Nudge.TLabel",
+            wraplength=460,
+        ).pack(anchor=tk.W, pady=(4, 2))
+        act_btn_row = ttk.Frame(self._act_frame)
+        act_btn_row.pack(fill=tk.X)
+        ttk.Button(act_btn_row, text="ACT check-in", command=self._on_act_checkin).pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        ttk.Button(act_btn_row, text="ACT history", command=self._on_act_history).pack(
+            side=tk.LEFT
+        )
 
         # --- Status bar ---
         self._status_frame = ttk.Frame(self.root)
@@ -705,6 +757,202 @@ class MomentumApp:
         self._nudge_label.configure(
             text=personalised_nudge(get_nudge(), self._personalisation_profile())
         )
+        self._refresh_act_controls()
+
+    def _show_info_hint(self, title: str, text: str, *, parent: tk.Misc) -> None:
+        """Show a lightweight info popup that closes when focus leaves it."""
+        win = tk.Toplevel(parent)
+        win.title(title)
+        win.transient(parent)
+        win.configure(bg=self._palette["bg"])
+        win.geometry("420x190")
+        win.bind("<FocusOut>", lambda _e: win.destroy())
+
+        ttk.Label(
+            win,
+            text=text,
+            style="Nudge.TLabel",
+            wraplength=380,
+            justify=tk.LEFT,
+        ).pack(fill=tk.BOTH, expand=True, padx=12, pady=(12, 8))
+        ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 10))
+        win.focus_force()
+
+    def _act_prompt_details(self) -> dict[str, str]:
+        profile = self._assessment_profile()
+        reassurance = profile.add_reassurance
+        breakdown = profile.suggest_breakdown
+        return {
+            "values_focus": (
+                "Write one value that should guide this next step (for example: care, "
+                "stability, learning, contribution)."
+            ),
+            "challenge_context": (
+                "Describe today's concrete friction point so your next action can target it."
+            ),
+            "thoughts_feelings": (
+                "Name thoughts and feelings as experiences, not instructions."
+                if reassurance
+                else "Name the dominant thoughts and emotions showing up right now."
+            ),
+            "defusion_reframe": (
+                "Try: 'I am noticing the thought that ...' and write a more workable frame."
+            ),
+            "committed_action": (
+                "Choose one tiny 2-5 minute action to restart momentum."
+                if breakdown
+                else "Choose one realistic, values-aligned next action."
+            ),
+        }
+
+    def _on_act_checkin(self) -> None:
+        profile = self._assessment_profile()
+        if not should_show_act_support(profile):
+            messagebox.showinfo(
+                "ACT check-in",
+                "ACT prompts unlock when assessments indicate extra support would help.",
+                parent=self.root,
+            )
+            return
+
+        details = self._act_prompt_details()
+        prompts = [
+            ("values_focus", "Value focus"),
+            ("challenge_context", "Current challenge"),
+            ("thoughts_feelings", "Thoughts & feelings"),
+            ("defusion_reframe", "Defusion / reframe"),
+            ("committed_action", "Committed action"),
+        ]
+
+        win = tk.Toplevel(self.root)
+        win.title("ACT Journal Check-In")
+        win.geometry("660x720")
+        win.transient(self.root)
+        win.configure(bg=self._palette["bg"])
+        win.grab_set()
+        inputs = self._input_palette()
+
+        canvas = tk.Canvas(win, bg=self._palette["bg"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(win, orient=tk.VERTICAL, command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind(
+            "<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        ttk.Label(
+            inner,
+            text=personalised_act_guidance(profile),
+            style="Nudge.TLabel",
+            wraplength=600,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, padx=12, pady=(10, 6))
+
+        fields: dict[str, tk.Text] = {}
+        for key, title in prompts:
+            row = ttk.Frame(inner)
+            row.pack(fill=tk.X, padx=12, pady=(6, 2))
+            ttk.Label(row, text=title, style="Title.TLabel").pack(side=tk.LEFT)
+            ttk.Button(
+                row,
+                text="(i)",
+                command=lambda t=title, d=details[key]: self._show_info_hint(
+                    t, d, parent=win
+                ),
+            ).pack(side=tk.RIGHT)
+            field = tk.Text(
+                inner,
+                height=3,
+                bg=inputs["input_bg"],
+                fg=inputs["input_fg"],
+                insertbackground=inputs["input_fg"],
+                font=("sans-serif", self._font_size(10)),
+                wrap=tk.WORD,
+                relief=tk.FLAT,
+                borderwidth=0,
+            )
+            field.pack(fill=tk.X, padx=12)
+            fields[key] = field
+
+        def _save() -> None:
+            values = {k: f.get("1.0", tk.END).strip() for k, f in fields.items()}
+            if any(not val for val in values.values()):
+                messagebox.showwarning(
+                    "Incomplete entry",
+                    "Please fill in all ACT check-in fields.",
+                    parent=win,
+                )
+                return
+            created = db.add_act_journal_entry(
+                self.conn,
+                ActJournalEntryCreate(
+                    values_focus=values["values_focus"],
+                    challenge_context=values["challenge_context"],
+                    thoughts_feelings=values["thoughts_feelings"],
+                    defusion_reframe=values["defusion_reframe"],
+                    committed_action=values["committed_action"],
+                ),
+            )
+            self._nudge_label.configure(
+                text=f"ACT check-in saved. Next action: {created.committed_action}"
+            )
+            win.destroy()
+
+        btn_row = ttk.Frame(inner)
+        btn_row.pack(fill=tk.X, padx=12, pady=10)
+        ttk.Button(btn_row, text="Save", command=_save, style="Accent.TButton").pack(
+            side=tk.LEFT
+        )
+        ttk.Button(btn_row, text="Close", command=win.destroy).pack(side=tk.RIGHT)
+
+    def _on_act_history(self) -> None:
+        profile = self._assessment_profile()
+        if not should_show_act_support(profile):
+            messagebox.showinfo(
+                "ACT history",
+                "ACT history appears once assessment signals indicate ACT support is needed.",
+                parent=self.root,
+            )
+            return
+
+        entries = db.list_act_journal_entries(self.conn, limit=40)
+        win = tk.Toplevel(self.root)
+        win.title("ACT Journal History")
+        win.geometry("720x640")
+        win.transient(self.root)
+        win.configure(bg=self._palette["bg"])
+        inputs = self._input_palette()
+
+        text = scrolledtext.ScrolledText(
+            win,
+            wrap=tk.WORD,
+            bg=inputs["input_bg"],
+            fg=inputs["input_fg"],
+            font=("sans-serif", self._font_size(10)),
+            borderwidth=0,
+            highlightthickness=0,
+            padx=16,
+            pady=12,
+        )
+        text.pack(fill=tk.BOTH, expand=True)
+        text.insert(tk.END, personalised_act_guidance(profile) + "\n\n")
+        if not entries:
+            text.insert(tk.END, "No ACT journal entries yet.\n")
+        else:
+            for entry in entries:
+                text.insert(
+                    tk.END,
+                    f"#{entry.id}  {entry.created_at:%Y-%m-%d %H:%M}\n",
+                )
+                text.insert(tk.END, f"Values: {entry.values_focus}\n")
+                text.insert(tk.END, f"Challenge: {entry.challenge_context}\n")
+                text.insert(tk.END, f"Thoughts/feelings: {entry.thoughts_feelings}\n")
+                text.insert(tk.END, f"Defusion/reframe: {entry.defusion_reframe}\n")
+                text.insert(tk.END, f"Committed action: {entry.committed_action}\n\n")
+        text.configure(state=tk.DISABLED)
 
     # ------------------------------------------------------------------
     # Settings

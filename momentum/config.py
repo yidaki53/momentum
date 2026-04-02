@@ -66,8 +66,11 @@ def load_config() -> AppConfig:
 
 def save_config(config: AppConfig) -> Path:
     """Write config to disk. Returns the config file path."""
-    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    _CONFIG_FILE.write_text(config.model_dump_json(indent=2))
+    try:
+        _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        _CONFIG_FILE.write_text(config.model_dump_json(indent=2), encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Could not write config file at {_CONFIG_FILE}") from exc
     return _CONFIG_FILE
 
 
@@ -99,7 +102,13 @@ def set_db_path(path: str) -> AppConfig:
 def set_timer_cycle_mode(mode: str) -> AppConfig:
     """Persist timer cycle mode preference."""
     config = load_config()
-    config.timer_cycle_mode = TimerCycleMode(mode)
+    try:
+        config.timer_cycle_mode = TimerCycleMode(mode)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid timer cycle mode '{mode}'. Expected one of: "
+            f"{', '.join(m.value for m in TimerCycleMode)}"
+        ) from exc
     save_config(config)
     return config
 
@@ -137,7 +146,13 @@ def reset_db_path() -> AppConfig:
 def set_theme_mode(mode: str) -> AppConfig:
     """Persist visual theme mode."""
     config = load_config()
-    config.theme_mode = ThemeMode(mode)
+    try:
+        config.theme_mode = ThemeMode(mode)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid theme mode '{mode}'. Expected one of: "
+            f"{', '.join(m.value for m in ThemeMode)}"
+        ) from exc
     save_config(config)
     return config
 
