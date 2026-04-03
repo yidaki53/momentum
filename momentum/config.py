@@ -68,8 +68,14 @@ def save_config(config: AppConfig) -> Path:
     """Write config to disk. Returns the config file path."""
     try:
         _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        _CONFIG_FILE.write_text(config.model_dump_json(indent=2), encoding="utf-8")
-    except OSError as exc:
+        if hasattr(config, "model_dump_json"):
+            payload = config.model_dump_json(indent=2)
+        elif hasattr(config, "json"):
+            payload = config.json(indent=2)
+        else:
+            payload = json.dumps(config.dict(), indent=2)
+        _CONFIG_FILE.write_text(payload, encoding="utf-8")
+    except Exception as exc:
         raise RuntimeError(f"Could not write config file at {_CONFIG_FILE}") from exc
     return _CONFIG_FILE
 

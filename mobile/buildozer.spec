@@ -20,7 +20,7 @@ presplash.filename = presplash.png
 
 # Android settings
 android.permissions = INTERNET,VIBRATE,WAKE_LOCK
-android.api = 33
+android.api = 34
 android.minapi = 26
 android.ndk = 25b
 android.accept_sdk_license = True
