@@ -151,6 +151,8 @@ class AppConfig(BaseModel):
     accessibility_high_contrast: bool = False
     accessibility_reduce_visual_load: bool = False
     timer_cycle_mode: TimerCycleMode = TimerCycleMode.MANUAL
+    check_updates_at_startup: bool = True
+    last_update_check_unix: int = 0
 
 
 class ActJournalEntry(BaseModel):

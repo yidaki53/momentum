@@ -1221,6 +1221,46 @@ class MomentumApp:
             side=tk.LEFT, padx=2
         )
 
+        # --- Updates ---
+        ttk.Label(win, text="Updates", style="Title.TLabel").pack(
+            anchor=tk.W, padx=12, pady=(10, 4)
+        )
+        updates_frame = ttk.Frame(win)
+        updates_frame.pack(fill=tk.X, padx=12)
+
+        check_startup_var = tk.BooleanVar(value=current.check_updates_at_startup)
+
+        def _set_check_updates():
+            conf = cfg.load_config()
+            conf.check_updates_at_startup = check_startup_var.get()
+            cfg.save_config(conf)
+
+        def _check_updates_now():
+            messagebox.showinfo(
+                "Checking updates",
+                "Checking for updates... (feature coming soon)",
+                parent=win,
+            )
+
+        tk.Checkbutton(
+            updates_frame,
+            text="Check for updates at startup",
+            variable=check_startup_var,
+            command=_set_check_updates,
+            bg=self._palette["bg"],
+            fg=self._palette["fg"],
+            activebackground=self._palette["bg"],
+            activeforeground=self._palette["fg"],
+            selectcolor=inputs["radio_select"],
+            font=("sans-serif", self._font_size(10)),
+        ).pack(anchor=tk.W)
+
+        check_now_frame = ttk.Frame(updates_frame)
+        check_now_frame.pack(anchor=tk.W, pady=(4, 0))
+        ttk.Button(
+            check_now_frame, text="Check for updates now", command=_check_updates_now
+        ).pack(side=tk.LEFT)
+
     def _on_browse_db(self) -> None:
         """Open a database browser window."""
         win = tk.Toplevel(self.root)

@@ -6,6 +6,11 @@
 ## Command execution
 - Use Poetry-first Python commands (`poetry run ...`) for linting, typing, tests, scripts, and app entry points.
 
+## Cross-surface settings parity
+- Desktop UI settings and mobile app settings must stay behaviorally aligned.
+- Any setting added, removed, renamed, or changed on one surface must be reviewed and updated on the other surface in the same change unless the user explicitly asks for a temporary exception.
+- Treat settings parity as applying to both persistence and visible UI behavior: labels, defaults, effects, and runtime application should match across desktop and mobile.
+
 ## Instruction assets index
 - Core rules: `.github/instructions/01-core-rules.md`
 - Architecture and Cython learnings: `.github/instructions/02-architecture-and-performance.md`

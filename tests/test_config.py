@@ -11,10 +11,14 @@ from momentum.config import (
     load_config,
     reset_db_path,
     save_config,
+    set_accessibility_options,
+    set_check_updates_at_startup,
     set_cloud_sync,
     set_db_path,
+    set_theme_mode,
+    set_timer_cycle_mode,
 )
-from momentum.models import AppConfig, WindowPosition
+from momentum.models import AppConfig, ThemeMode, TimerCycleMode, WindowPosition
 
 
 def _patch_config_paths(tmp_path: Path):
@@ -125,3 +129,69 @@ class TestCloudSync:
             patch("momentum.config._CLOUD_PRESETS", {"onedrive": [Path("/no")]}),
         ):
             assert set_cloud_sync("onedrive") is None
+
+
+class TestSettingsPersistence:
+    def test_set_theme_mode_persists(self, tmp_path: Path) -> None:
+        p1, p2 = _patch_config_paths(tmp_path)
+        with p1, p2:
+            cfg = set_theme_mode(ThemeMode.LIGHT.value)
+
+            assert cfg.theme_mode == ThemeMode.LIGHT
+            assert load_config().theme_mode == ThemeMode.LIGHT
+
+    def test_set_theme_mode_rejects_invalid_value(self, tmp_path: Path) -> None:
+        p1, p2 = _patch_config_paths(tmp_path)
+        with p1, p2:
+            try:
+                set_theme_mode("sepia")
+            except ValueError as exc:
+                assert "Invalid theme mode 'sepia'" in str(exc)
+            else:
+                raise AssertionError("Expected invalid theme mode to raise ValueError")
+
+    def test_set_timer_cycle_mode_persists(self, tmp_path: Path) -> None:
+        p1, p2 = _patch_config_paths(tmp_path)
+        with p1, p2:
+            cfg = set_timer_cycle_mode(TimerCycleMode.AUTO.value)
+
+            assert cfg.timer_cycle_mode == TimerCycleMode.AUTO
+            assert load_config().timer_cycle_mode == TimerCycleMode.AUTO
+
+    def test_set_timer_cycle_mode_rejects_invalid_value(self, tmp_path: Path) -> None:
+        p1, p2 = _patch_config_paths(tmp_path)
+        with p1, p2:
+            try:
+                set_timer_cycle_mode("chaos")
+            except ValueError as exc:
+                assert "Invalid timer cycle mode 'chaos'" in str(exc)
+            else:
+                raise AssertionError(
+                    "Expected invalid timer cycle mode to raise ValueError"
+                )
+
+    def test_set_accessibility_options_persists_all_flags(self, tmp_path: Path) -> None:
+        p1, p2 = _patch_config_paths(tmp_path)
+        with p1, p2:
+            cfg = set_accessibility_options(
+                large_text=True,
+                high_contrast=True,
+                reduce_visual_load=True,
+            )
+
+            assert cfg.accessibility_large_text is True
+            assert cfg.accessibility_high_contrast is True
+            assert cfg.accessibility_reduce_visual_load is True
+
+            loaded = load_config()
+            assert loaded.accessibility_large_text is True
+            assert loaded.accessibility_high_contrast is True
+            assert loaded.accessibility_reduce_visual_load is True
+
+    def test_set_check_updates_at_startup_persists(self, tmp_path: Path) -> None:
+        p1, p2 = _patch_config_paths(tmp_path)
+        with p1, p2:
+            cfg = set_check_updates_at_startup(False)
+
+            assert cfg.check_updates_at_startup is False
+            assert load_config().check_updates_at_startup is False

@@ -119,14 +119,15 @@ def _resolve_palette() -> dict[str, list[float]]:
             "panel": get_color_from_hex("#ffffff"),
             "text": get_color_from_hex("#1f2933"),
             "muted": get_color_from_hex("#5f6b76"),
-            "accent": get_color_from_hex("#2f6f8f"),
+            "accent": get_color_from_hex("#225b7a"),
             "toolbar": get_color_from_hex("#dbe3ea"),
             "input_bg": get_color_from_hex("#ffffff"),
-            "timer": get_color_from_hex("#a86f00"),
-            "neutral_button": get_color_from_hex("#d9e1e8"),
-            "success_button": get_color_from_hex("#5a8a5a"),
-            "secondary_button": get_color_from_hex("#7a6a9f"),
-            "danger_button": get_color_from_hex("#9f6a6a"),
+            "timer": get_color_from_hex("#8b5e00"),
+            "neutral_button": get_color_from_hex("#435366"),
+            "success_button": get_color_from_hex("#256043"),
+            "secondary_button": get_color_from_hex("#56417c"),
+            "danger_button": get_color_from_hex("#7f3b3b"),
+            "button_text": get_color_from_hex("#ffffff"),
         }
     else:
         palette = {
@@ -142,16 +143,35 @@ def _resolve_palette() -> dict[str, list[float]]:
             "success_button": get_color_from_hex("#5a8a5a"),
             "secondary_button": get_color_from_hex("#5a5a7a"),
             "danger_button": get_color_from_hex("#9f6a6a"),
+            "button_text": get_color_from_hex("#ffffff"),
         }
     if conf.accessibility_high_contrast:
         if conf.theme_mode == ThemeMode.LIGHT:
+            palette["bg"] = get_color_from_hex("#ffffff")
+            palette["panel"] = get_color_from_hex("#ffffff")
             palette["text"] = get_color_from_hex("#000000")
-            palette["muted"] = get_color_from_hex("#222222")
-            palette["accent"] = get_color_from_hex("#005fcc")
+            palette["muted"] = get_color_from_hex("#111111")
+            palette["accent"] = get_color_from_hex("#0047b3")
+            palette["toolbar"] = get_color_from_hex("#d9dfe7")
+            palette["input_bg"] = get_color_from_hex("#ffffff")
+            palette["neutral_button"] = get_color_from_hex("#111111")
+            palette["success_button"] = get_color_from_hex("#005a2b")
+            palette["secondary_button"] = get_color_from_hex("#143f85")
+            palette["danger_button"] = get_color_from_hex("#7a0000")
+            palette["button_text"] = get_color_from_hex("#ffffff")
         else:
+            palette["bg"] = get_color_from_hex("#000000")
+            palette["panel"] = get_color_from_hex("#0d0d0d")
             palette["text"] = get_color_from_hex("#ffffff")
-            palette["muted"] = get_color_from_hex("#e6e6e6")
-            palette["accent"] = get_color_from_hex("#8cc9ff")
+            palette["muted"] = get_color_from_hex("#f0f0f0")
+            palette["accent"] = get_color_from_hex("#8fd3ff")
+            palette["toolbar"] = get_color_from_hex("#000000")
+            palette["input_bg"] = get_color_from_hex("#141414")
+            palette["neutral_button"] = get_color_from_hex("#1f1f1f")
+            palette["success_button"] = get_color_from_hex("#0f6a34")
+            palette["secondary_button"] = get_color_from_hex("#28538a")
+            palette["danger_button"] = get_color_from_hex("#8a1f1f")
+            palette["button_text"] = get_color_from_hex("#ffffff")
     return palette
 
 
@@ -161,6 +181,7 @@ _ACCENT = _PALETTE["accent"]
 _TEXT = _PALETTE["text"]
 _MUTED = _PALETTE["muted"]
 _BG = _PALETTE["bg"]
+_BUTTON_TEXT = _PALETTE["button_text"]
 
 # Fallback photo IDs if IMAGES.md is missing
 _FALLBACK_PHOTOS = [
@@ -213,11 +234,13 @@ def _make_label(text, **kw):
     """Create a self-sizing Label with text wrapping."""
     app = App.get_running_app()
     default_text = list(app.text_color) if app and hasattr(app, "text_color") else _TEXT
+    font_scale = float(app.font_scale) if app and hasattr(app, "font_scale") else 1.0
     defaults = dict(
         font_size=sp(14), color=default_text,
         size_hint_y=None, text_size=(None, None), halign="left", valign="top",
     )
     defaults.update(kw)
+    defaults["font_size"] = float(defaults["font_size"]) * font_scale
     lbl = Label(text=text, **defaults)
     lbl.bind(width=lambda i, w: setattr(i, "text_size", (w - dp(8), None)))
     lbl.bind(texture_size=lambda i, ts: setattr(i, "height", ts[1] + dp(8)))
@@ -323,16 +346,19 @@ def _show_error_popup(title: str, text: str) -> None:
     app = App.get_running_app()
     fg = list(app.text_color) if app else list(_TEXT)
     accent = list(app.accent_color) if app else list(_ACCENT)
+    button_text = list(app.button_text_color) if app else list(_BUTTON_TEXT)
     content = BoxLayout(orientation="vertical", padding=10, spacing=10)
-    content.add_widget(Label(text=text, font_size=sp(13), color=fg))
+    label = Label(text=text, font_size=sp(13), color=fg, text_size=(dp(240), None), size_hint_y=None)
+    label.bind(texture_size=lambda inst, val: setattr(inst, 'height', val[1]))
+    content.add_widget(label)
     close = Button(
         text="OK",
         size_hint_y=None,
         height=dp(44),
         background_color=accent,
-        color=fg,
+        color=button_text,
     )
-    popup = Popup(title=title, content=content, size_hint=(0.86, 0.36))
+    popup = Popup(title=title, content=content, size_hint=(0.86, None), height=dp(220))
     close.bind(on_release=lambda _: popup.dismiss())
     content.add_widget(close)
     popup.open()
@@ -343,19 +369,23 @@ def _show_info_popup(title: str, text: str) -> None:
     app = App.get_running_app()
     fg = list(app.text_color) if app else list(_TEXT)
     accent = list(app.accent_color) if app else list(_ACCENT)
+    button_text = list(app.button_text_color) if app else list(_BUTTON_TEXT)
     content = BoxLayout(orientation="vertical", padding=10, spacing=10)
-    content.add_widget(Label(text=text, font_size=sp(13), color=fg))
+    label = Label(text=text, font_size=sp(13), color=fg, text_size=(dp(240), None), size_hint_y=None)
+    label.bind(texture_size=lambda inst, val: setattr(inst, 'height', val[1]))
+    content.add_widget(label)
     close = Button(
         text="OK",
         size_hint_y=None,
         height=dp(44),
         background_color=accent,
-        color=fg,
+        color=button_text,
     )
     popup = Popup(
         title=title,
         content=content,
-        size_hint=(0.86, 0.36),
+        size_hint=(0.86, None),
+        height=dp(220),
         auto_dismiss=True,
     )
     close.bind(on_release=lambda _: popup.dismiss())
@@ -402,7 +432,7 @@ KV = """
 
 <DarkButton@Button>:
     background_color: app.accent_color
-    color: app.text_color
+    color: app.button_text_color
     font_size: sp(14) * app.font_scale
     size_hint_y: None
     height: dp(44)
@@ -424,28 +454,28 @@ KV = """
         font_size: sp(12) * app.font_scale
         bold: True
         background_color: app.accent_color
-        color: app.text_color
+        color: app.button_text_color
         size_hint_x: 0.25
         on_release: root.go('home', 'right')
     Button:
         text: 'Settings'
         font_size: sp(11) * app.font_scale
         background_color: app.neutral_button_color
-        color: app.text_color
+        color: app.button_text_color
         size_hint_x: 0.25
         on_release: root.go('settings', 'left')
     Button:
         text: 'Help'
         font_size: sp(12) * app.font_scale
         background_color: app.neutral_button_color
-        color: app.text_color
+        color: app.button_text_color
         size_hint_x: 0.25
         on_release: root.go('help_menu', 'left')
     Button:
         text: 'Tests'
         font_size: sp(12) * app.font_scale
         background_color: app.neutral_button_color
-        color: app.text_color
+        color: app.button_text_color
         size_hint_x: 0.25
         on_release: root.go('tests_menu', 'left')
 
@@ -475,7 +505,7 @@ KV = """
         text: root.btn_text
         size_hint_x: 0.2
         background_color: root.btn_color
-        color: app.text_color
+        color: app.button_text_color
         on_release: root.on_complete()
 
 <HomeScreen>:
@@ -526,17 +556,17 @@ KV = """
             Button:
                 text: 'Add task'
                 background_color: app.accent_color
-                color: app.text_color
+                color: app.button_text_color
                 on_release: root.show_add_dialog()
             Button:
                 text: 'Break down'
                 background_color: app.success_button_color
-                color: app.text_color
+                color: app.button_text_color
                 on_release: root.show_breakdown_dialog()
             Button:
                 text: 'Completed'
                 background_color: app.secondary_button_color
-                color: app.text_color
+                color: app.button_text_color
                 on_release: root.toggle_show_completed()
         Label:
             text: 'Timer'
@@ -568,20 +598,20 @@ KV = """
             Button:
                 text: root.focus_button_text
                 background_color: app.accent_color
-                color: app.text_color
+                color: app.button_text_color
                 font_size: sp(14) * app.font_scale
                 bold: True
                 on_release: root.start_focus()
             Button:
                 text: root.break_button_text
                 background_color: app.secondary_button_color
-                color: app.text_color
+                color: app.button_text_color
                 font_size: sp(14) * app.font_scale
                 on_release: root.start_break()
             Button:
                 text: 'Stop'
                 background_color: app.danger_button_color
-                color: app.text_color
+                color: app.button_text_color
                 font_size: sp(14) * app.font_scale
                 on_release: root.stop_timer()
         Label:
@@ -601,7 +631,7 @@ KV = """
             Button:
                 text: 'New encouragement'
                 background_color: app.secondary_button_color
-                color: app.text_color
+                color: app.button_text_color
                 on_release: root.refresh_nudge()
         BoxLayout:
             size_hint_y: None
@@ -613,12 +643,12 @@ KV = """
             Button:
                 text: 'ACT check-in'
                 background_color: app.success_button_color
-                color: app.text_color
+                color: app.button_text_color
                 on_release: root.open_act_checkin()
             Button:
                 text: 'ACT history'
                 background_color: app.neutral_button_color
-                color: app.text_color
+                color: app.button_text_color
                 on_release: root.open_act_history()
         Widget:
             size_hint_y: None
@@ -1372,6 +1402,7 @@ class HomeScreen(Screen):
             )
             details = self._act_prompt_details()
             app = App.get_running_app()
+            button_text = list(app.button_text_color)
             content = BoxLayout(orientation="vertical", spacing=8, padding=10)
             content.add_widget(_make_label(self._act_guidance(), font_size=sp(12), color=_MUTED))
             fields: dict[str, TextInput] = {}
@@ -1379,11 +1410,11 @@ class HomeScreen(Screen):
                 title_row = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(6))
                 title_row.add_widget(_make_label(title, font_size=sp(12), bold=True, size_hint_x=0.88))
                 info_btn = Button(
-                    text="(i)",
+                    text="ⓘ",
                     size_hint_x=0.12,
                     background_color=list(app.neutral_button_color),
-                    color=list(app.text_color),
-                    font_size=sp(11),
+                    color=button_text,
+                    font_size=sp(14),
                 )
                 info_btn.bind(
                     on_release=lambda _btn, t=title, d=details[key]: _show_info_popup(t, d)
@@ -1403,9 +1434,13 @@ class HomeScreen(Screen):
             save_btn = Button(
                 text="Save",
                 background_color=app.accent_color,
-                color=app.text_color,
+                color=button_text,
             )
-            close_btn = Button(text="Close")
+            close_btn = Button(
+                text="Close",
+                background_color=app.neutral_button_color,
+                color=button_text,
+            )
             popup = Popup(
                 title="ACT Journal Check-In",
                 content=content,
@@ -1553,12 +1588,14 @@ class SettingsScreen(ScrollScreen):
         app = App.get_running_app()
         accent = list(app.accent_color) if app else list(_ACCENT)
         text = list(app.text_color) if app else list(_TEXT)
+        button_text = list(app.button_text_color) if app else list(_BUTTON_TEXT)
         muted = list(app.muted_color) if app else list(_MUTED)
         neutral = list(app.neutral_button_color) if app else [0.25, 0.25, 0.25, 1]
         secondary = list(app.secondary_button_color) if app else [0.35, 0.35, 0.48, 1]
         success = list(app.success_button_color) if app else [0.29, 0.478, 0.29, 1]
         danger = list(app.danger_button_color) if app else [0.55, 0.35, 0.35, 1]
         input_bg = list(app.input_bg_color) if app else [0.2, 0.2, 0.2, 1]
+        font_scale = app.font_scale if app else 1.0
 
         current = cfg.load_config()
         resolved = cfg.get_db_path()
@@ -1579,9 +1616,9 @@ class SettingsScreen(ScrollScreen):
         for provider in ("OneDrive", "Dropbox", "Google Drive"):
             btn = Button(
                 text=provider,
-                font_size=sp(12),
+                font_size=sp(12) * font_scale,
                 background_color=list(neutral),
-                color=list(text),
+                color=list(button_text),
             )
             key = provider.lower().replace(" ", "-")
             btn.bind(on_release=lambda _, p=key: self._sync(p))
@@ -1595,7 +1632,7 @@ class SettingsScreen(ScrollScreen):
         self._path_input = TextInput(
             hint_text="Enter path...",
             multiline=False,
-            font_size=sp(13),
+            font_size=sp(13) * font_scale,
             size_hint_x=0.7,
             background_color=input_bg,
             foreground_color=text,
@@ -1604,9 +1641,9 @@ class SettingsScreen(ScrollScreen):
         set_btn = Button(
             text="Set",
             size_hint_x=0.3,
-            font_size=sp(13),
+            font_size=sp(13) * font_scale,
             background_color=list(accent),
-            color=list(text),
+            color=list(button_text),
         )
         set_btn.bind(on_release=lambda _: self._set_custom())
         path_row.add_widget(set_btn)
@@ -1625,8 +1662,8 @@ class SettingsScreen(ScrollScreen):
                 group="theme_mode",
                 state="down" if current.theme_mode.value == mode else "normal",
                 background_color=list(color),
-                color=list(text),
-                font_size=sp(12),
+                color=list(button_text),
+                font_size=sp(12) * font_scale,
             )
             tb.bind(
                 on_release=lambda inst, m=mode: self._set_theme(m) if inst.state == "down" else None
@@ -1645,8 +1682,8 @@ class SettingsScreen(ScrollScreen):
                 group="timer_cycle_mode",
                 state="down" if current.timer_cycle_mode.value == mode else "normal",
                 background_color=list(color),
-                color=list(text),
-                font_size=sp(11),
+                color=list(button_text),
+                font_size=sp(11) * font_scale,
             )
             tb.bind(
                 on_release=lambda inst, m=mode: (
@@ -1670,22 +1707,22 @@ class SettingsScreen(ScrollScreen):
             text="Larger text",
             state="down" if current.accessibility_large_text else "normal",
             background_color=list(success),
-            color=list(text),
-            font_size=sp(11),
+            color=list(button_text),
+            font_size=sp(11) * font_scale,
         )
         high_contrast_btn = ToggleButton(
             text="High contrast",
             state="down" if current.accessibility_high_contrast else "normal",
             background_color=list(secondary),
-            color=list(text),
-            font_size=sp(11),
+            color=list(button_text),
+            font_size=sp(11) * font_scale,
         )
         reduce_visual_btn = ToggleButton(
             text="Reduce visuals",
             state="down" if current.accessibility_reduce_visual_load else "normal",
             background_color=list(neutral),
-            color=list(text),
-            font_size=sp(11),
+            color=list(button_text),
+            font_size=sp(11) * font_scale,
         )
         access_row.add_widget(large_text_btn)
         access_row.add_widget(high_contrast_btn)
@@ -1702,6 +1739,40 @@ class SettingsScreen(ScrollScreen):
         large_text_btn.bind(on_release=_apply_accessibility)
         high_contrast_btn.bind(on_release=_apply_accessibility)
         reduce_visual_btn.bind(on_release=_apply_accessibility)
+
+        # -- Updates --
+        c.add_widget(Widget(size_hint_y=None, height=dp(12)))
+        c.add_widget(_make_label("Updates", font_size=sp(16), bold=True, color=accent))
+        auto_check_btn = ToggleButton(
+            text="Check at startup",
+            state="down" if current.check_updates_at_startup else "normal",
+            background_color=list(neutral),
+            color=list(button_text),
+            font_size=sp(11) * font_scale,
+        )
+        check_now_btn = Button(
+            text="Check now",
+            background_color=list(secondary),
+            color=list(button_text),
+            font_size=sp(11) * font_scale,
+        )
+        updates_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        updates_row.add_widget(auto_check_btn)
+        updates_row.add_widget(check_now_btn)
+        c.add_widget(updates_row)
+
+        def _set_auto_check_updates(_):
+            conf = cfg.load_config()
+            conf.check_updates_at_startup = auto_check_btn.state == "down"
+            cfg.save_config(conf)
+
+        def _check_updates_now(_):
+            self._show_msg("Checking...", "Checking for updates...")
+            # TODO: Implement actual update checking
+            self._show_msg("Up to date", "You are running the latest version.")
+
+        auto_check_btn.bind(on_release=_set_auto_check_updates)
+        check_now_btn.bind(on_release=_check_updates_now)
 
         # -- Data management --
         c.add_widget(Widget(size_hint_y=None, height=dp(12)))
@@ -1728,17 +1799,17 @@ class SettingsScreen(ScrollScreen):
 
         btn_del_tasks = Button(
             text="Delete all tasks",
-            font_size=sp(11),
+            font_size=sp(11) * font_scale,
             background_color=list(danger),
-            color=list(text),
+            color=list(button_text),
         )
         btn_del_tasks.bind(on_release=_delete_tasks)
         del_row.add_widget(btn_del_tasks)
         btn_del_results = Button(
             text="Delete test results",
-            font_size=sp(11),
+            font_size=sp(11) * font_scale,
             background_color=list(danger),
-            color=list(text),
+            color=list(button_text),
         )
         btn_del_results.bind(on_release=_delete_results)
         del_row.add_widget(btn_del_results)
@@ -1753,9 +1824,9 @@ class SettingsScreen(ScrollScreen):
         for tbl_label, tbl_key in [("Tasks", "tasks"), ("Tests", "assessments")]:
             btn = Button(
                 text=f"Browse {tbl_label}",
-                font_size=sp(11),
+                font_size=sp(11) * font_scale,
                 background_color=list(neutral),
-                color=list(text),
+                color=list(button_text),
             )
             btn.bind(on_release=lambda _, k=tbl_key: self._browse(k))
             browse_row.add_widget(btn)
@@ -1773,8 +1844,8 @@ class SettingsScreen(ScrollScreen):
             size_hint_y=None,
             height=dp(44),
             background_color=list(danger),
-            color=list(text),
-            font_size=sp(14),
+            color=list(button_text),
+            font_size=sp(14) * font_scale,
         )
         reset_btn.bind(on_release=lambda _: self._reset())
         c.add_widget(reset_btn)
@@ -1894,6 +1965,7 @@ class SettingsScreen(ScrollScreen):
         text = list(app.text_color) if app else list(_TEXT)
         muted = list(app.muted_color) if app else list(_MUTED)
         danger = list(app.danger_button_color) if app else [0.55, 0.35, 0.35, 1]
+        button_text = list(app.button_text_color) if app else list(_BUTTON_TEXT)
 
         box = self._browse_box
         box.clear_widgets()
@@ -1911,7 +1983,7 @@ class SettingsScreen(ScrollScreen):
                 ))
                 del_btn = Button(
                     text="Del", size_hint_x=None, width=dp(50),
-                    font_size=sp(10), background_color=danger, color=text,
+                    font_size=sp(10), background_color=danger, color=button_text,
                 )
                 del_btn.bind(
                     on_release=lambda _, tid=t.id: self._delete_entry("tasks", tid)
@@ -1932,7 +2004,7 @@ class SettingsScreen(ScrollScreen):
                 ))
                 del_btn = Button(
                     text="Del", size_hint_x=None, width=dp(50),
-                    font_size=sp(10), background_color=danger, color=text,
+                    font_size=sp(10), background_color=danger, color=button_text,
                 )
                 del_btn.bind(
                     on_release=lambda _, rid=r.id: self._delete_entry("assessments", rid)
@@ -2672,6 +2744,7 @@ class MomentumApp(App):
     text_color = ListProperty(list(_PALETTE["text"]))
     muted_color = ListProperty(list(_PALETTE["muted"]))
     accent_color = ListProperty(list(_PALETTE["accent"]))
+    button_text_color = ListProperty(list(_PALETTE["button_text"]))
     toolbar_color = ListProperty(list(_PALETTE["toolbar"]))
     input_bg_color = ListProperty(list(_PALETTE["input_bg"]))
     timer_color = ListProperty(list(_PALETTE["timer"]))
@@ -2684,18 +2757,20 @@ class MomentumApp(App):
 
     def reload_palette(self):
         """Reload theme/accessibility config and update bound KV properties."""
-        global _PALETTE, _APP_CFG, _ACCENT, _TEXT, _MUTED, _BG
+        global _PALETTE, _APP_CFG, _ACCENT, _TEXT, _MUTED, _BG, _BUTTON_TEXT
         _APP_CFG = cfg.load_config()
         _PALETTE = _resolve_palette()
         _ACCENT = _PALETTE["accent"]
         _TEXT = _PALETTE["text"]
         _MUTED = _PALETTE["muted"]
         _BG = _PALETTE["bg"]
+        _BUTTON_TEXT = _PALETTE["button_text"]
 
         self.bg_color = list(_PALETTE["bg"])
         self.text_color = list(_PALETTE["text"])
         self.muted_color = list(_PALETTE["muted"])
         self.accent_color = list(_PALETTE["accent"])
+        self.button_text_color = list(_PALETTE["button_text"])
         self.toolbar_color = list(_PALETTE["toolbar"])
         self.input_bg_color = list(_PALETTE["input_bg"])
         self.timer_color = list(_PALETTE["timer"])
@@ -2703,7 +2778,7 @@ class MomentumApp(App):
         self.success_button_color = list(_PALETTE["success_button"])
         self.secondary_button_color = list(_PALETTE["secondary_button"])
         self.danger_button_color = list(_PALETTE["danger_button"])
-        self.font_scale = 1.15 if _APP_CFG.accessibility_large_text else 1.0
+        self.font_scale = 1.35 if _APP_CFG.accessibility_large_text else 1.0
         self.reduce_visual_load = _APP_CFG.accessibility_reduce_visual_load
 
     def build(self):

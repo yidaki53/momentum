@@ -179,3 +179,11 @@ def set_accessibility_options(
         config.accessibility_reduce_visual_load = reduce_visual_load
     save_config(config)
     return config
+
+
+def set_check_updates_at_startup(enabled: bool) -> AppConfig:
+    """Persist update check preference."""
+    config = load_config()
+    config.check_updates_at_startup = enabled
+    save_config(config)
+    return config

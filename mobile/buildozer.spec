@@ -12,7 +12,7 @@ version = 0.3.0
 requirements = python3,kivy,pydantic,pydantic-core,pillow,matplotlib,numpy
 
 # Include the core momentum package (via symlink) and data files
-source.include_patterns = main.py,momentum/*.py,ENCOURAGEMENTS.md,SCIENCE.md,README.md,IMAGES.md
+source.include_patterns = main.py,momentum/*.py,momentum/**/*.py,momentum/**/**/*.py,ENCOURAGEMENTS.md,SCIENCE.md,README.md,IMAGES.md
 
 # App icon and presplash
 icon.filename = icon.png
