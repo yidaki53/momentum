@@ -25,6 +25,7 @@ _project_root = Path(__file__).resolve().parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+from kivy.animation import Animation
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.image import Image as CoreImage
@@ -438,6 +439,50 @@ KV = """
     height: dp(44)
     bold: True
 
+<ActiveTimerBanner@BoxLayout>:
+    size_hint_y: None
+    height: dp(52) if app.timer_active else dp(0)
+    opacity: 1 if app.timer_active else 0
+    disabled: not app.timer_active
+    spacing: dp(6)
+    padding: [dp(8), dp(6)]
+    canvas.before:
+        Color:
+            rgba: app.toolbar_color
+        Rectangle:
+            pos: self.pos
+            size: self.size
+    BoxLayout:
+        orientation: 'vertical'
+        spacing: dp(2)
+        Label:
+            text: '{}: {}'.format(app.active_timer_label, app.active_timer_display)
+            color: app.timer_color
+            font_size: sp(13) * app.font_scale
+            bold: True
+            text_size: self.size
+            halign: 'left'
+            valign: 'middle'
+        ProgressBar:
+            value: app.active_timer_progress
+            max: 100
+            size_hint_y: None
+            height: dp(8)
+    Button:
+        text: app.active_timer_control_text
+        size_hint_x: 0.24
+        background_color: app.secondary_button_color
+        color: app.button_text_color
+        font_size: sp(12) * app.font_scale
+        on_release: app.toggle_timer_pause_resume()
+    Button:
+        text: 'Stop'
+        size_hint_x: 0.2
+        background_color: app.danger_button_color
+        color: app.button_text_color
+        font_size: sp(12) * app.font_scale
+        on_release: app.stop_active_timer()
+
 <Toolbar>:
     size_hint_y: None
     height: dp(48)
@@ -522,134 +567,168 @@ KV = """
             size_hint_y: None
             height: dp(100)
             padding: [dp(8), dp(4)]
+        ActiveTimerBanner:
         Label:
             text: root.status_text
             size_hint_y: None
             height: dp(32)
             color: app.accent_color
             font_size: sp(13) * app.font_scale
-        Label:
-            text: 'Tasks'
-            size_hint_y: None
-            height: dp(28)
-            color: app.accent_color
-            font_size: sp(18) * app.font_scale
-            bold: True
-            halign: 'left'
-            text_size: self.size
-            padding: [dp(12), 0]
         ScrollView:
-            size_hint_y: 0.35
             do_scroll_x: False
             BoxLayout:
-                id: task_list
                 orientation: 'vertical'
                 size_hint_y: None
                 height: self.minimum_height
-                spacing: dp(2)
-                padding: [dp(8), 0]
-        BoxLayout:
-            size_hint_y: None
-            height: dp(44)
-            spacing: dp(8)
-            padding: [dp(8), dp(4)]
-            Button:
-                text: 'Add task'
-                background_color: app.accent_color
-                color: app.button_text_color
-                on_release: root.show_add_dialog()
-            Button:
-                text: 'Break down'
-                background_color: app.success_button_color
-                color: app.button_text_color
-                on_release: root.show_breakdown_dialog()
-            Button:
-                text: 'Completed'
-                background_color: app.secondary_button_color
-                color: app.button_text_color
-                on_release: root.toggle_show_completed()
-        Label:
-            text: 'Timer'
-            size_hint_y: None
-            height: dp(28)
-            color: app.accent_color
-            font_size: sp(18) * app.font_scale
-            bold: True
-            halign: 'left'
-            text_size: self.size
-            padding: [dp(12), 0]
-        Label:
-            text: root.timer_display
-            size_hint_y: None
-            height: dp(50)
-            color: app.timer_color
-            font_size: sp(36) * app.font_scale
-            bold: True
-        ProgressBar:
-            value: root.timer_progress
-            max: 100
-            size_hint_y: None
-            height: dp(8)
-        BoxLayout:
-            size_hint_y: None
-            height: dp(48)
-            spacing: dp(8)
-            padding: [dp(8), dp(4)]
-            Button:
-                text: root.focus_button_text
-                background_color: app.accent_color
-                color: app.button_text_color
-                font_size: sp(14) * app.font_scale
-                bold: True
-                on_release: root.start_focus()
-            Button:
-                text: root.break_button_text
-                background_color: app.secondary_button_color
-                color: app.button_text_color
-                font_size: sp(14) * app.font_scale
-                on_release: root.start_break()
-            Button:
-                text: 'Stop'
-                background_color: app.danger_button_color
-                color: app.button_text_color
-                font_size: sp(14) * app.font_scale
-                on_release: root.stop_timer()
-        Label:
-            text: root.nudge_text
-            size_hint_y: None
-            height: dp(56)
-            color: app.muted_color
-            font_size: sp(13) * app.font_scale
-            italic: True
-            text_size: self.width - dp(24), None
-            halign: 'center'
-        BoxLayout:
-            size_hint_y: None
-            height: dp(40)
-            spacing: dp(8)
-            padding: [dp(8), 0]
-            Button:
-                text: 'New encouragement'
-                background_color: app.secondary_button_color
-                color: app.button_text_color
-                on_release: root.refresh_nudge()
-        BoxLayout:
-            size_hint_y: None
-            height: dp(40) if root.act_controls_visible else dp(0)
-            spacing: dp(8)
-            padding: [dp(8), 0]
-            opacity: 1 if root.act_controls_visible else 0
-            disabled: not root.act_controls_visible
-            Button:
-                text: 'ACT check-in'
-                background_color: app.success_button_color
-                color: app.button_text_color
-                on_release: root.open_act_checkin()
-            Button:
-                text: 'ACT history'
-                background_color: app.neutral_button_color
-                color: app.button_text_color
-                on_release: root.open_act_history()
+                spacing: dp(8)
+                padding: [dp(8), dp(4)]
+                Button:
+                    text: ('▼ ' if root.tasks_expanded else '▶ ') + 'Tasks - ' + root.tasks_summary
+                    size_hint_y: None
+                    height: dp(42)
+                    background_color: app.neutral_button_color
+                    color: app.button_text_color
+                    bold: True
+                    on_release: root.toggle_tasks_section()
+                BoxLayout:
+                    id: tasks_section_body
+                    orientation: 'vertical'
+                    size_hint_y: None
+                    height: root.tasks_body_height
+                    opacity: root.tasks_body_opacity
+                    disabled: not root.tasks_expanded
+                    ScrollView:
+                        size_hint_y: None
+                        height: dp(180)
+                        do_scroll_x: False
+                        BoxLayout:
+                            id: task_list
+                            orientation: 'vertical'
+                            size_hint_y: None
+                            height: self.minimum_height
+                            spacing: dp(2)
+                            padding: [dp(2), 0]
+                    BoxLayout:
+                        size_hint_y: None
+                        height: dp(44)
+                        spacing: dp(8)
+                        padding: [dp(0), dp(4)]
+                        Button:
+                            text: 'Add task'
+                            background_color: app.accent_color
+                            color: app.button_text_color
+                            on_release: root.show_add_dialog()
+                        Button:
+                            text: 'Break down'
+                            background_color: app.success_button_color
+                            color: app.button_text_color
+                            on_release: root.show_breakdown_dialog()
+                        Button:
+                            text: 'Completed'
+                            background_color: app.secondary_button_color
+                            color: app.button_text_color
+                            on_release: root.toggle_show_completed()
+                Button:
+                    text: ('▼ ' if root.timer_expanded else '▶ ') + 'Timer - ' + root.timer_summary
+                    size_hint_y: None
+                    height: dp(42)
+                    background_color: app.neutral_button_color
+                    color: app.button_text_color
+                    bold: True
+                    on_release: root.toggle_timer_section()
+                BoxLayout:
+                    id: timer_section_body
+                    orientation: 'vertical'
+                    size_hint_y: None
+                    height: root.timer_body_height
+                    opacity: root.timer_body_opacity
+                    disabled: not root.timer_expanded
+                    Label:
+                        text: root.timer_display
+                        size_hint_y: None
+                        height: dp(50)
+                        color: app.timer_color
+                        font_size: sp(36) * app.font_scale
+                        bold: True
+                    ProgressBar:
+                        value: root.timer_progress
+                        max: 100
+                        size_hint_y: None
+                        height: dp(8)
+                    BoxLayout:
+                        size_hint_y: None
+                        height: dp(48)
+                        spacing: dp(8)
+                        padding: [dp(0), dp(4)]
+                        Button:
+                            text: root.focus_button_text
+                            background_color: app.accent_color
+                            color: app.button_text_color
+                            font_size: sp(14) * app.font_scale
+                            bold: True
+                            on_release: root.start_focus()
+                        Button:
+                            text: root.break_button_text
+                            background_color: app.secondary_button_color
+                            color: app.button_text_color
+                            font_size: sp(14) * app.font_scale
+                            on_release: root.start_break()
+                        Button:
+                            text: 'Stop'
+                            background_color: app.danger_button_color
+                            color: app.button_text_color
+                            font_size: sp(14) * app.font_scale
+                            on_release: root.stop_timer()
+                Button:
+                    text: ('▼ ' if root.journal_expanded else '▶ ') + 'Journal - ' + root.journal_summary
+                    size_hint_y: None
+                    height: dp(42)
+                    background_color: app.neutral_button_color
+                    color: app.button_text_color
+                    bold: True
+                    on_release: root.toggle_journal_section()
+                BoxLayout:
+                    id: journal_section_body
+                    orientation: 'vertical'
+                    size_hint_y: None
+                    height: root.journal_body_height
+                    opacity: root.journal_body_opacity
+                    disabled: not root.journal_expanded
+                    spacing: dp(6)
+                    Label:
+                        text: root.nudge_text
+                        size_hint_y: None
+                        height: dp(56)
+                        color: app.muted_color
+                        font_size: sp(13) * app.font_scale
+                        italic: True
+                        text_size: self.width - dp(12), None
+                        halign: 'center'
+                    BoxLayout:
+                        size_hint_y: None
+                        height: dp(40)
+                        spacing: dp(8)
+                        Button:
+                            text: 'New encouragement'
+                            background_color: app.secondary_button_color
+                            color: app.button_text_color
+                            on_release: root.refresh_nudge()
+                    BoxLayout:
+                        size_hint_y: None
+                        height: dp(40) if root.act_controls_visible else dp(0)
+                        spacing: dp(8)
+                        opacity: 1 if root.act_controls_visible else 0
+                        disabled: not root.act_controls_visible
+                        Button:
+                            text: 'ACT check-in'
+                            background_color: app.success_button_color
+                            color: app.button_text_color
+                            on_release: root.open_act_checkin()
+                        Button:
+                            text: 'ACT history'
+                            background_color: app.neutral_button_color
+                            color: app.button_text_color
+                            on_release: root.open_act_history()
         Widget:
             size_hint_y: None
             height: dp(4)
@@ -664,6 +743,7 @@ KV = """
             Rectangle:
                 pos: self.pos
                 size: self.size
+        ActiveTimerBanner:
         ScrollView:
             do_scroll_x: False
             BoxLayout:
@@ -684,6 +764,7 @@ KV = """
             Rectangle:
                 pos: self.pos
                 size: self.size
+        ActiveTimerBanner:
         BoxLayout:
             orientation: 'vertical'
             padding: [dp(16), dp(24)]
@@ -722,6 +803,7 @@ KV = """
             Rectangle:
                 pos: self.pos
                 size: self.size
+        ActiveTimerBanner:
         BoxLayout:
             orientation: 'vertical'
             padding: [dp(16), dp(24)]
@@ -751,6 +833,7 @@ KV = """
             Rectangle:
                 pos: self.pos
                 size: self.size
+        ActiveTimerBanner:
         ScrollView:
             do_scroll_x: False
             BoxLayout:
@@ -771,6 +854,7 @@ KV = """
             Rectangle:
                 pos: self.pos
                 size: self.size
+        ActiveTimerBanner:
         ScrollView:
             do_scroll_x: False
             BoxLayout:
@@ -791,6 +875,7 @@ KV = """
             Rectangle:
                 pos: self.pos
                 size: self.size
+        ActiveTimerBanner:
         BoxLayout:
             orientation: 'vertical'
             padding: [dp(16), dp(16)]
@@ -936,6 +1021,18 @@ class HomeScreen(Screen):
     focus_button_text = StringProperty("Focus 15m")
     break_button_text = StringProperty("Break 5m")
     act_controls_visible = BooleanProperty(False)
+    tasks_expanded = BooleanProperty(True)
+    timer_expanded = BooleanProperty(False)
+    journal_expanded = BooleanProperty(False)
+    tasks_summary = StringProperty("0 open")
+    timer_summary = StringProperty("idle")
+    journal_summary = StringProperty("encouragement")
+    tasks_body_height = NumericProperty(dp(230))
+    timer_body_height = NumericProperty(0)
+    journal_body_height = NumericProperty(0)
+    tasks_body_opacity = NumericProperty(1)
+    timer_body_opacity = NumericProperty(0)
+    journal_body_opacity = NumericProperty(0)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -945,6 +1042,7 @@ class HomeScreen(Screen):
         self._timer_total = 0
         self._timer_task_id = None
         self._timer_is_break = False
+        self._timer_paused = False
         self._timer_event = None
         self._selected_task_id = None
         self._auto_cycle_task_id = None
@@ -957,6 +1055,8 @@ class HomeScreen(Screen):
             self._refresh_profile_ui()
             self.nudge_text = personalised_nudge(get_nudge(), self._profile())
             Clock.schedule_once(lambda _dt: self.refresh_all(), 0)
+            self._sync_global_timer_state()
+            Clock.schedule_once(lambda _dt: self._animate_sections(immediate=True), 0)
             if not self._banner_loaded:
                 self._banner_loaded = True
                 # Show fallback banner immediately so the user always sees it
@@ -990,6 +1090,13 @@ class HomeScreen(Screen):
         self.focus_button_text = f"Focus {profile.focus_minutes}m"
         self.break_button_text = f"Break {profile.break_minutes}m"
         self.act_controls_visible = should_show_act_support(profile)
+        self.journal_summary = (
+            "encouragement + ACT tools"
+            if self.act_controls_visible
+            else "encouragement"
+        )
+        if hasattr(self, "ids"):
+            self._animate_sections(immediate=True)
 
     def _act_guidance(self) -> str:
         return personalised_act_guidance(self._profile())
@@ -1135,6 +1242,7 @@ class HomeScreen(Screen):
 
         active = db.list_tasks(self.conn, status=TaskStatus.ACTIVE)
         pending = db.list_tasks(self.conn, status=TaskStatus.PENDING)
+        self.tasks_summary = f"{len(active) + len(pending)} open"
         rows: list[TaskRow] = []
         for task in active + pending:
             row = TaskRow()
@@ -1246,6 +1354,69 @@ class HomeScreen(Screen):
         self._show_completed = not getattr(self, "_show_completed", False)
         self.refresh_tasks()
 
+    def toggle_tasks_section(self) -> None:
+        self._toggle_section("tasks")
+
+    def toggle_timer_section(self) -> None:
+        self._toggle_section("timer")
+
+    def toggle_journal_section(self) -> None:
+        self._toggle_section("journal")
+
+    def _toggle_section(self, section: str) -> None:
+        """Mobile accordion behavior keeps only one expanded section at a time."""
+        if section == "tasks":
+            next_state = not self.tasks_expanded
+            self.tasks_expanded = next_state
+            self.timer_expanded = False
+            self.journal_expanded = False
+        elif section == "timer":
+            next_state = not self.timer_expanded
+            self.timer_expanded = next_state
+            self.tasks_expanded = False
+            self.journal_expanded = False
+        elif section == "journal":
+            next_state = not self.journal_expanded
+            self.journal_expanded = next_state
+            self.tasks_expanded = False
+            self.timer_expanded = False
+        self._animate_sections(immediate=False)
+
+    def _section_targets(self) -> dict[str, tuple[float, float]]:
+        journal_height = dp(114) if self.act_controls_visible else dp(74)
+        return {
+            "tasks": (dp(230) if self.tasks_expanded else 0.0, 1.0 if self.tasks_expanded else 0.0),
+            "timer": (dp(112) if self.timer_expanded else 0.0, 1.0 if self.timer_expanded else 0.0),
+            "journal": (journal_height if self.journal_expanded else 0.0, 1.0 if self.journal_expanded else 0.0),
+        }
+
+    def _animate_sections(self, immediate: bool = False) -> None:
+        targets = self._section_targets()
+        widgets = {
+            "tasks": self.ids.get("tasks_section_body"),
+            "timer": self.ids.get("timer_section_body"),
+            "journal": self.ids.get("journal_section_body"),
+        }
+        duration = 0 if immediate else 0.14
+        for key, widget in widgets.items():
+            if widget is None:
+                continue
+            target_height, target_opacity = targets[key]
+            Animation.cancel_all(widget, "height", "opacity")
+            if immediate:
+                widget.height = target_height
+                widget.opacity = target_opacity
+            else:
+                Animation(
+                    height=target_height,
+                    opacity=target_opacity,
+                    d=duration,
+                    t="out_quad",
+                ).start(widget)
+        self.tasks_body_height, self.tasks_body_opacity = targets["tasks"]
+        self.timer_body_height, self.timer_body_opacity = targets["timer"]
+        self.journal_body_height, self.journal_body_opacity = targets["journal"]
+
     def select_task(self, task_id):
         """Highlight a task row as selected (for breakdown, timer, etc.)."""
         self._selected_task_id = task_id
@@ -1286,8 +1457,15 @@ class HomeScreen(Screen):
             return
         self._timer_running = True
         self._timer_is_break = is_break
+        self._timer_paused = False
         self._timer_total = minutes * 60
         self._timer_seconds_left = self._timer_total
+        self.timer_progress = 0
+        self.timer_display = f"{minutes:02d}:00"
+        self.timer_expanded = True
+        self.tasks_expanded = False
+        self.journal_expanded = False
+        self._animate_sections(immediate=False)
         active_task_id = task_id if task_id is not None else self._selected_task_id
         if not is_break and active_task_id is not None:
             self._timer_task_id = active_task_id
@@ -1298,6 +1476,7 @@ class HomeScreen(Screen):
             self._timer_task_id = None
             if not is_break:
                 self._auto_cycle_task_id = None
+        self._sync_global_timer_state()
         self._timer_event = Clock.schedule_interval(self._tick, 1)
 
     def _tick(self, dt):
@@ -1305,10 +1484,14 @@ class HomeScreen(Screen):
             if self._timer_event:
                 self._timer_event.cancel()
             return
+        if self._timer_paused:
+            self._sync_global_timer_state()
+            return
         elapsed = self._timer_total - self._timer_seconds_left
         self.timer_progress = (elapsed / self._timer_total * 100) if self._timer_total else 0
         mins, secs = divmod(self._timer_seconds_left, 60)
         self.timer_display = f"{mins:02d}:{secs:02d}"
+        self._sync_global_timer_state()
         if self._timer_seconds_left <= 0:
             self._timer_running = False
             if self._timer_event:
@@ -1361,17 +1544,46 @@ class HomeScreen(Screen):
                     "Focus complete",
                     f"{minutes}-minute focus session logged.",
                 )
+        self._sync_global_timer_state()
+
+    def toggle_timer_pause_resume(self) -> None:
+        if not self._timer_running:
+            return
+        self._timer_paused = not self._timer_paused
+        self._sync_global_timer_state()
 
     def stop_timer(self):
         def _stop() -> None:
             self._timer_running = False
+            self._timer_paused = False
             self._auto_cycle_task_id = None
             if self._timer_event:
                 self._timer_event.cancel()
+                self._timer_event = None
+            self._timer_task_id = None
             self.timer_display = "00:00"
             self.timer_progress = 0
+            self._sync_global_timer_state()
 
         _run_ui_action(_stop, prefix="Could not stop the timer.")
+
+    def _sync_global_timer_state(self) -> None:
+        app = App.get_running_app()
+        if app is None:
+            return
+        if not self._timer_running:
+            self.timer_summary = "idle"
+            app.clear_active_timer_state()
+            return
+        mode = "break" if self._timer_is_break else "focus"
+        pause_marker = " (paused)" if self._timer_paused else ""
+        self.timer_summary = f"{mode} {self.timer_display}{pause_marker}"
+        app.update_active_timer_state(
+            mode="Break" if self._timer_is_break else "Focus",
+            display=self.timer_display,
+            progress=self.timer_progress,
+            paused=self._timer_paused,
+        )
 
     def refresh_nudge(self):
         _run_ui_action(
@@ -2754,6 +2966,12 @@ class MomentumApp(App):
     danger_button_color = ListProperty(list(_PALETTE["danger_button"]))
     font_scale = NumericProperty(1.0)
     reduce_visual_load = BooleanProperty(False)
+    timer_active = BooleanProperty(False)
+    active_timer_label = StringProperty("Focus")
+    active_timer_display = StringProperty("00:00")
+    active_timer_progress = NumericProperty(0)
+    active_timer_paused = BooleanProperty(False)
+    active_timer_control_text = StringProperty("Pause")
 
     def reload_palette(self):
         """Reload theme/accessibility config and update bound KV properties."""
@@ -2797,6 +3015,46 @@ class MomentumApp(App):
         sm.add_widget(StroopScreen(name="stroop"))
         sm.add_widget(ResultsScreen(name="results"))
         return sm
+
+    def _home_screen(self) -> HomeScreen | None:
+        if self.root is None or not self.root.has_screen("home"):
+            return None
+        return self.root.get_screen("home")
+
+    def update_active_timer_state(
+        self,
+        *,
+        mode: str,
+        display: str,
+        progress: float,
+        paused: bool,
+    ) -> None:
+        self.timer_active = True
+        self.active_timer_label = f"{mode}{' (paused)' if paused else ''}"
+        self.active_timer_display = display
+        self.active_timer_progress = progress
+        self.active_timer_paused = paused
+        self.active_timer_control_text = "Resume" if paused else "Pause"
+
+    def clear_active_timer_state(self) -> None:
+        self.timer_active = False
+        self.active_timer_label = "Focus"
+        self.active_timer_display = "00:00"
+        self.active_timer_progress = 0
+        self.active_timer_paused = False
+        self.active_timer_control_text = "Pause"
+
+    def toggle_timer_pause_resume(self) -> None:
+        home = self._home_screen()
+        if home is None:
+            return
+        home.toggle_timer_pause_resume()
+
+    def stop_active_timer(self) -> None:
+        home = self._home_screen()
+        if home is None:
+            return
+        home.stop_timer()
 
     def on_stop(self):
         home = self.root.get_screen("home")
