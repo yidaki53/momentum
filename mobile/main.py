@@ -25,7 +25,6 @@ _project_root = Path(__file__).resolve().parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from kivy.animation import Animation
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.image import Image as CoreImage
@@ -583,7 +582,7 @@ KV = """
                 spacing: dp(8)
                 padding: [dp(8), dp(4)]
                 Button:
-                    text: ('▼ ' if root.tasks_expanded else '▶ ') + 'Tasks - ' + root.tasks_summary
+                    text: ('- ' if root.tasks_expanded else '+ ') + 'Tasks - ' + root.tasks_summary
                     size_hint_y: None
                     height: dp(42)
                     background_color: app.neutral_button_color
@@ -594,8 +593,8 @@ KV = """
                     id: tasks_section_body
                     orientation: 'vertical'
                     size_hint_y: None
-                    height: root.tasks_body_height
-                    opacity: root.tasks_body_opacity
+                    height: self.minimum_height if root.tasks_expanded else dp(0)
+                    opacity: 1 if root.tasks_expanded else 0
                     disabled: not root.tasks_expanded
                     ScrollView:
                         size_hint_y: None
@@ -629,7 +628,7 @@ KV = """
                             color: app.button_text_color
                             on_release: root.toggle_show_completed()
                 Button:
-                    text: ('▼ ' if root.timer_expanded else '▶ ') + 'Timer - ' + root.timer_summary
+                    text: ('- ' if root.timer_expanded else '+ ') + 'Timer - ' + root.timer_summary
                     size_hint_y: None
                     height: dp(42)
                     background_color: app.neutral_button_color
@@ -640,8 +639,8 @@ KV = """
                     id: timer_section_body
                     orientation: 'vertical'
                     size_hint_y: None
-                    height: root.timer_body_height
-                    opacity: root.timer_body_opacity
+                    height: self.minimum_height if root.timer_expanded else dp(0)
+                    opacity: 1 if root.timer_expanded else 0
                     disabled: not root.timer_expanded
                     Label:
                         text: root.timer_display
@@ -680,7 +679,7 @@ KV = """
                             font_size: sp(14) * app.font_scale
                             on_release: root.stop_timer()
                 Button:
-                    text: ('▼ ' if root.journal_expanded else '▶ ') + 'Journal - ' + root.journal_summary
+                    text: ('- ' if root.journal_expanded else '+ ') + 'Journal - ' + root.journal_summary
                     size_hint_y: None
                     height: dp(42)
                     background_color: app.neutral_button_color
@@ -691,8 +690,8 @@ KV = """
                     id: journal_section_body
                     orientation: 'vertical'
                     size_hint_y: None
-                    height: root.journal_body_height
-                    opacity: root.journal_body_opacity
+                    height: self.minimum_height if root.journal_expanded else dp(0)
+                    opacity: 1 if root.journal_expanded else 0
                     disabled: not root.journal_expanded
                     spacing: dp(6)
                     Label:
@@ -1027,12 +1026,6 @@ class HomeScreen(Screen):
     tasks_summary = StringProperty("0 open")
     timer_summary = StringProperty("idle")
     journal_summary = StringProperty("encouragement")
-    tasks_body_height = NumericProperty(dp(230))
-    timer_body_height = NumericProperty(0)
-    journal_body_height = NumericProperty(0)
-    tasks_body_opacity = NumericProperty(1)
-    timer_body_opacity = NumericProperty(0)
-    journal_body_opacity = NumericProperty(0)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -1056,7 +1049,6 @@ class HomeScreen(Screen):
             self.nudge_text = personalised_nudge(get_nudge(), self._profile())
             Clock.schedule_once(lambda _dt: self.refresh_all(), 0)
             self._sync_global_timer_state()
-            Clock.schedule_once(lambda _dt: self._animate_sections(immediate=True), 0)
             if not self._banner_loaded:
                 self._banner_loaded = True
                 # Show fallback banner immediately so the user always sees it
@@ -1095,8 +1087,6 @@ class HomeScreen(Screen):
             if self.act_controls_visible
             else "encouragement"
         )
-        if hasattr(self, "ids"):
-            self._animate_sections(immediate=True)
 
     def _act_guidance(self) -> str:
         return personalised_act_guidance(self._profile())
@@ -1380,42 +1370,6 @@ class HomeScreen(Screen):
             self.journal_expanded = next_state
             self.tasks_expanded = False
             self.timer_expanded = False
-        self._animate_sections(immediate=False)
-
-    def _section_targets(self) -> dict[str, tuple[float, float]]:
-        journal_height = dp(114) if self.act_controls_visible else dp(74)
-        return {
-            "tasks": (dp(230) if self.tasks_expanded else 0.0, 1.0 if self.tasks_expanded else 0.0),
-            "timer": (dp(112) if self.timer_expanded else 0.0, 1.0 if self.timer_expanded else 0.0),
-            "journal": (journal_height if self.journal_expanded else 0.0, 1.0 if self.journal_expanded else 0.0),
-        }
-
-    def _animate_sections(self, immediate: bool = False) -> None:
-        targets = self._section_targets()
-        widgets = {
-            "tasks": self.ids.get("tasks_section_body"),
-            "timer": self.ids.get("timer_section_body"),
-            "journal": self.ids.get("journal_section_body"),
-        }
-        duration = 0 if immediate else 0.14
-        for key, widget in widgets.items():
-            if widget is None:
-                continue
-            target_height, target_opacity = targets[key]
-            Animation.cancel_all(widget, "height", "opacity")
-            if immediate:
-                widget.height = target_height
-                widget.opacity = target_opacity
-            else:
-                Animation(
-                    height=target_height,
-                    opacity=target_opacity,
-                    d=duration,
-                    t="out_quad",
-                ).start(widget)
-        self.tasks_body_height, self.tasks_body_opacity = targets["tasks"]
-        self.timer_body_height, self.timer_body_opacity = targets["timer"]
-        self.journal_body_height, self.journal_body_opacity = targets["journal"]
 
     def select_task(self, task_id):
         """Highlight a task row as selected (for breakdown, timer, etc.)."""
@@ -1465,7 +1419,6 @@ class HomeScreen(Screen):
         self.timer_expanded = True
         self.tasks_expanded = False
         self.journal_expanded = False
-        self._animate_sections(immediate=False)
         active_task_id = task_id if task_id is not None else self._selected_task_id
         if not is_break and active_task_id is not None:
             self._timer_task_id = active_task_id
