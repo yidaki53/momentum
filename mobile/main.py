@@ -16,6 +16,7 @@ import ssl
 import sys
 import threading
 import time as _time
+import json
 import urllib.request
 from pathlib import Path
 from typing import Callable
@@ -90,6 +91,41 @@ from momentum.models import (
 log = logging.getLogger(__name__)
 
 _CHART_FUNCS: tuple | None = None
+
+
+# ---------------------------------------------------------------------------
+# Debug instrumentation (NDJSON -> .cursor/debug-84d653.log)
+# ---------------------------------------------------------------------------
+
+
+def _agent_debug_log(
+    *,
+    hypothesis_id: str,
+    location: str,
+    message: str,
+    data: dict | None = None,
+    run_id: str = "pre-fix",
+) -> None:
+    # #region agent log
+    try:
+        payload = {
+            "sessionId": "84d653",
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data or {},
+            "timestamp": int(_time.time() * 1000),
+        }
+        with open(
+            "/home/robin/OneDrive/University and such/My Papers/Works in progress/momentum/.cursor/debug-84d653.log",
+            "a",
+            encoding="utf-8",
+        ) as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # #endregion agent log
 
 
 def _get_chart_funcs() -> tuple | None:
@@ -1287,6 +1323,12 @@ class HomeScreen(Screen):
     # -- Task dialogs --
 
     def show_add_dialog(self):
+        _agent_debug_log(
+            hypothesis_id="H3",
+            location="mobile/main.py:HomeScreen.show_add_dialog",
+            message="show_add_dialog called",
+            data={"conn_set": self.conn is not None},
+        )
         content = BoxLayout(orientation="vertical", spacing=10, padding=10)
         ti = TextInput(hint_text="What do you need to do?", multiline=False,
                        size_hint_y=None, height=dp(44))
@@ -1309,8 +1351,19 @@ class HomeScreen(Screen):
         btn_row.add_widget(cancel_btn)
         content.add_widget(btn_row)
         popup.open()
+        _agent_debug_log(
+            hypothesis_id="H3",
+            location="mobile/main.py:HomeScreen.show_add_dialog",
+            message="popup.open called",
+        )
 
     def show_breakdown_dialog(self):
+        _agent_debug_log(
+            hypothesis_id="H3",
+            location="mobile/main.py:HomeScreen.show_breakdown_dialog",
+            message="show_breakdown_dialog called",
+            data={"selected_task_id": self._selected_task_id},
+        )
         if self._selected_task_id is None:
             return
         task = db.get_task(self.conn, self._selected_task_id)
@@ -1339,22 +1392,74 @@ class HomeScreen(Screen):
         btn_row.add_widget(done_btn)
         content.add_widget(btn_row)
         popup.open()
+        _agent_debug_log(
+            hypothesis_id="H3",
+            location="mobile/main.py:HomeScreen.show_breakdown_dialog",
+            message="popup.open called",
+        )
 
     def toggle_show_completed(self):
+        _agent_debug_log(
+            hypothesis_id="H3",
+            location="mobile/main.py:HomeScreen.toggle_show_completed",
+            message="toggle_show_completed called",
+            data={"show_completed_before": bool(getattr(self, "_show_completed", False))},
+        )
         self._show_completed = not getattr(self, "_show_completed", False)
         self.refresh_tasks()
 
     def toggle_tasks_section(self) -> None:
+        _agent_debug_log(
+            hypothesis_id="H1",
+            location="mobile/main.py:HomeScreen.toggle_tasks_section",
+            message="toggle_tasks_section called",
+            data={
+                "tasks_expanded": self.tasks_expanded,
+                "timer_expanded": self.timer_expanded,
+                "journal_expanded": self.journal_expanded,
+            },
+        )
         self._toggle_section("tasks")
 
     def toggle_timer_section(self) -> None:
+        _agent_debug_log(
+            hypothesis_id="H1",
+            location="mobile/main.py:HomeScreen.toggle_timer_section",
+            message="toggle_timer_section called",
+            data={
+                "tasks_expanded": self.tasks_expanded,
+                "timer_expanded": self.timer_expanded,
+                "journal_expanded": self.journal_expanded,
+            },
+        )
         self._toggle_section("timer")
 
     def toggle_journal_section(self) -> None:
+        _agent_debug_log(
+            hypothesis_id="H1",
+            location="mobile/main.py:HomeScreen.toggle_journal_section",
+            message="toggle_journal_section called",
+            data={
+                "tasks_expanded": self.tasks_expanded,
+                "timer_expanded": self.timer_expanded,
+                "journal_expanded": self.journal_expanded,
+            },
+        )
         self._toggle_section("journal")
 
     def _toggle_section(self, section: str) -> None:
         """Mobile accordion behavior keeps only one expanded section at a time."""
+        _agent_debug_log(
+            hypothesis_id="H2",
+            location="mobile/main.py:HomeScreen._toggle_section",
+            message="before toggle",
+            data={
+                "section": section,
+                "tasks_expanded": self.tasks_expanded,
+                "timer_expanded": self.timer_expanded,
+                "journal_expanded": self.journal_expanded,
+            },
+        )
         if section == "tasks":
             next_state = not self.tasks_expanded
             self.tasks_expanded = next_state
@@ -1370,6 +1475,17 @@ class HomeScreen(Screen):
             self.journal_expanded = next_state
             self.tasks_expanded = False
             self.timer_expanded = False
+        _agent_debug_log(
+            hypothesis_id="H2",
+            location="mobile/main.py:HomeScreen._toggle_section",
+            message="after toggle",
+            data={
+                "section": section,
+                "tasks_expanded": self.tasks_expanded,
+                "timer_expanded": self.timer_expanded,
+                "journal_expanded": self.journal_expanded,
+            },
+        )
 
     def select_task(self, task_id):
         """Highlight a task row as selected (for breakdown, timer, etc.)."""
@@ -1392,12 +1508,24 @@ class HomeScreen(Screen):
     # -- Timer --
 
     def start_focus(self):
+        _agent_debug_log(
+            hypothesis_id="H3",
+            location="mobile/main.py:HomeScreen.start_focus",
+            message="start_focus called",
+            data={"timer_running": self._timer_running, "paused": self._timer_paused},
+        )
         _run_ui_action(
             lambda: self._start_timer(self._profile().focus_minutes, is_break=False),
             prefix="Could not start focus timer.",
         )
 
     def start_break(self):
+        _agent_debug_log(
+            hypothesis_id="H3",
+            location="mobile/main.py:HomeScreen.start_break",
+            message="start_break called",
+            data={"timer_running": self._timer_running, "paused": self._timer_paused},
+        )
         _run_ui_action(
             lambda: self._start_timer(self._profile().break_minutes, is_break=True),
             prefix="Could not start break timer.",
@@ -1506,6 +1634,12 @@ class HomeScreen(Screen):
         self._sync_global_timer_state()
 
     def stop_timer(self):
+        _agent_debug_log(
+            hypothesis_id="H3",
+            location="mobile/main.py:HomeScreen.stop_timer",
+            message="stop_timer called",
+            data={"timer_running": self._timer_running, "paused": self._timer_paused},
+        )
         def _stop() -> None:
             self._timer_running = False
             self._timer_paused = False
@@ -1539,6 +1673,11 @@ class HomeScreen(Screen):
         )
 
     def refresh_nudge(self):
+        _agent_debug_log(
+            hypothesis_id="H3",
+            location="mobile/main.py:HomeScreen.refresh_nudge",
+            message="refresh_nudge called",
+        )
         _run_ui_action(
             lambda: setattr(
                 self,
@@ -1550,6 +1689,12 @@ class HomeScreen(Screen):
 
     def open_act_checkin(self) -> None:
         """Open a structured ACT journaling check-in popup."""
+        _agent_debug_log(
+            hypothesis_id="H3",
+            location="mobile/main.py:HomeScreen.open_act_checkin",
+            message="open_act_checkin called",
+            data={"act_controls_visible": self.act_controls_visible},
+        )
 
         def _open() -> None:
             if not self.act_controls_visible:
@@ -1647,6 +1792,12 @@ class HomeScreen(Screen):
 
     def open_act_history(self) -> None:
         """Show recent ACT journaling entries."""
+        _agent_debug_log(
+            hypothesis_id="H3",
+            location="mobile/main.py:HomeScreen.open_act_history",
+            message="open_act_history called",
+            data={"act_controls_visible": self.act_controls_visible},
+        )
 
         def _open() -> None:
             if not self.act_controls_visible:
