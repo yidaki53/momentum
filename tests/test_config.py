@@ -61,6 +61,16 @@ class TestLoadSaveConfig:
             config = load_config()
             assert config.db_path is None  # falls back to default
 
+    def test_load_migrates_legacy_android_config(self, tmp_path: Path) -> None:
+        p1, p2 = _patch_config_paths(tmp_path)
+        legacy_file = tmp_path / "legacy" / "config" / "config.json"
+        legacy_file.parent.mkdir(parents=True, exist_ok=True)
+        legacy_file.write_text('{"check_updates_at_startup": false}', encoding="utf-8")
+        with p1, p2, patch("momentum.config._LEGACY_CONFIG_FILES", [legacy_file]):
+            config = load_config()
+            assert config.check_updates_at_startup is False
+            assert (tmp_path / "config" / "config.json").exists()
+
 
 class TestDbPath:
     def test_default_path(self, tmp_path: Path) -> None:
@@ -92,6 +102,22 @@ class TestDbPath:
             set_db_path(str(tmp_path / "custom.db"))
             cfg = reset_db_path()
             assert cfg.db_path is None
+
+    def test_default_path_migrates_legacy_android_db(self, tmp_path: Path) -> None:
+        p1, p2 = _patch_config_paths(tmp_path)
+        db_dir = tmp_path / "db"
+        legacy_db = tmp_path / "legacy" / "db" / "momentum.db"
+        legacy_db.parent.mkdir(parents=True, exist_ok=True)
+        legacy_db.write_text("legacy-db", encoding="utf-8")
+        with (
+            p1,
+            p2,
+            patch("momentum.config._DB_DIR", db_dir),
+            patch("momentum.config._LEGACY_DB_FILES", [legacy_db]),
+        ):
+            path = get_db_path()
+            assert path == db_dir / "momentum.db"
+            assert path.read_text(encoding="utf-8") == "legacy-db"
 
 
 class TestCloudSync:

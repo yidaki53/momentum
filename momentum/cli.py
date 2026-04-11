@@ -586,7 +586,7 @@ def test_results(
 @app.command()
 def about() -> None:
     """Show information about Momentum."""
-    display.print_info("Momentum v0.1.0")
+    display.print_info("Momentum v0.4.0")
     display.console.print()
     display.print_info(
         "A gentle tool to help people with executive dysfunction "

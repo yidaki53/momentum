@@ -11,6 +11,11 @@
 - Any setting added, removed, renamed, or changed on one surface must be reviewed and updated on the other surface in the same change unless the user explicitly asks for a temporary exception.
 - Treat settings parity as applying to both persistence and visible UI behavior: labels, defaults, effects, and runtime application should match across desktop and mobile.
 
+## Mobile UI learnings
+- On Android/Kivy accordion-style sections, collapsed children must also shrink to zero height and be disabled; hiding only the parent container is not sufficient to keep touch behavior reliable.
+- Keep passive encouragement or status copy in a stable always-visible area near the bottom of the home screen rather than burying it inside a collapsible section.
+- Show ACT-specific controls only when the assessment-derived support threshold says they are needed; otherwise remove the affordance entirely instead of showing a disabled tease.
+
 ## Instruction assets index
 - Core rules: `.github/instructions/01-core-rules.md`
 - Architecture and Cython learnings: `.github/instructions/02-architecture-and-performance.md`

@@ -5,20 +5,14 @@ All figures use a dark theme consistent with the Momentum GUI palette.
 
 from __future__ import annotations
 
+import importlib
 import io
 import math
+import os
+from pathlib import Path
 from typing import Any, Callable, Optional, cast
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-from matplotlib.figure import Figure
-from matplotlib.patches import FancyBboxPatch
-from PIL import Image
-
-from momentum.domain.assessments import BDEFS_QUESTIONS
+from momentum.domain.assessments import BDEFS_QUESTIONS, BISBAS_QUESTIONS
 from momentum.models import AssessmentResult, AssessmentType
 from momentum.ui.palette import (
     CHART_ACCENT,
@@ -31,6 +25,35 @@ from momentum.ui.palette import (
     CHART_GRID,
 )
 
+
+def _configure_matplotlib_runtime() -> None:
+    """Give matplotlib a writable config/cache directory on Android runtimes."""
+    android_private = os.environ.get("ANDROID_PRIVATE")
+    if not android_private:
+        return
+
+    runtime_dir = Path(android_private) / ".matplotlib"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("HOME", android_private)
+    os.environ.setdefault("MPLCONFIGDIR", str(runtime_dir))
+    os.environ.setdefault("XDG_CACHE_HOME", str(runtime_dir))
+
+
+def _initialise_plotting_runtime() -> tuple[Any, Any, Any, Any, Any, Any]:
+    _configure_matplotlib_runtime()
+
+    matplotlib = importlib.import_module("matplotlib")
+    matplotlib.use("Agg")
+    plt = importlib.import_module("matplotlib.pyplot")
+    np = importlib.import_module("numpy")
+    figure = importlib.import_module("matplotlib.figure").Figure
+    fancy_bbox_patch = importlib.import_module("matplotlib.patches").FancyBboxPatch
+    image = importlib.import_module("PIL.Image")
+    return matplotlib, plt, np, figure, fancy_bbox_patch, image
+
+
+matplotlib, plt, np, Figure, FancyBboxPatch, Image = _initialise_plotting_runtime()
+
 _CYTHON_AVAILABLE = False
 domain_percentages_cy: Callable[[AssessmentResult], list[float]] | None = None
 try:
@@ -42,21 +65,24 @@ except ImportError:
 
 _DOMAIN_ORDER: list[str] = list(BDEFS_QUESTIONS.keys())
 _DOMAIN_MAX = max(len(qs) for qs in BDEFS_QUESTIONS.values()) * 4
+_BISBAS_ORDER: list[str] = list(BISBAS_QUESTIONS.keys())
+_BISBAS_MAX = max(len(qs) for qs in BISBAS_QUESTIONS.values()) * 4
 
 
 def _fig_to_pil(fig: Figure, dpi: int = 100) -> Image.Image:
-    buf = io.BytesIO()
-    fig.savefig(
-        buf,
-        format="png",
-        dpi=dpi,
-        bbox_inches="tight",
-        facecolor=fig.get_facecolor(),
-        edgecolor="none",
-    )
-    plt.close(fig)
-    buf.seek(0)
-    return Image.open(buf)
+    with io.BytesIO() as buf:
+        fig.savefig(
+            buf,
+            format="png",
+            dpi=dpi,
+            bbox_inches="tight",
+            facecolor=fig.get_facecolor(),
+            edgecolor="none",
+        )
+        plt.close(fig)
+        buf.seek(0)
+        with Image.open(buf) as image:
+            return image.convert("RGBA").copy()
 
 
 def _domain_values(result: AssessmentResult) -> list[float]:
@@ -372,4 +398,71 @@ def bdefs_momentum_glow(
     return _fig_to_pil(fig, dpi=dpi)
 
 
-__all__ = ["bdefs_momentum_glow", "bdefs_radar", "bdefs_timeseries"]
+def bisbas_profile_bars(
+    result: AssessmentResult,
+    *,
+    title: str = "BIS/BAS Motivational Profile",
+    size: tuple[int, int] = (560, 260),
+    dpi: int = 100,
+) -> Image.Image:
+    scores = [float(result.domain_scores.get(domain, 0)) for domain in _BISBAS_ORDER]
+    labels = ["BIS", "Drive", "Reward", "Fun"]
+    y = np.arange(len(_BISBAS_ORDER), dtype=float)
+
+    fig_w, fig_h = size[0] / dpi, size[1] / dpi
+    fig = Figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor=CHART_BG)
+    ax = fig.add_subplot(111)
+    ax.set_facecolor(CHART_BG)
+
+    colours = ["#d98c8c", CHART_BLUE_LINE, "#86c59d", "#d7ba7d"]
+    ax.barh(y, scores, color=colours, height=0.55, edgecolor="none", alpha=0.92)
+
+    for ref in (5, 10, 15):
+        ax.axvline(ref, color=CHART_GRID, linewidth=0.8, alpha=0.5, linestyle="--")
+
+    for idx, value in enumerate(scores):
+        ax.text(
+            min(value + 0.35, _BISBAS_MAX - 0.2),
+            idx,
+            f"{int(value)}/{_BISBAS_MAX}",
+            va="center",
+            ha="left",
+            fontsize=8.5,
+            color=CHART_FG,
+            fontweight="bold",
+        )
+
+    ax.set_xlim(0, _BISBAS_MAX)
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels, color=CHART_FG, fontsize=9)
+    ax.set_xticks((0, 5, 10, 15, 20))
+    ax.set_xticklabels(("0", "5", "10", "15", "20"), color=CHART_FG, fontsize=8)
+    ax.invert_yaxis()
+    ax.tick_params(axis="y", length=0)
+    ax.tick_params(axis="x", colors=CHART_FG, labelsize=8)
+    ax.xaxis.grid(color=CHART_GRID, linewidth=0.5, alpha=0.35)
+    ax.yaxis.grid(False)
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    ax.set_title(title, color=CHART_FG, fontsize=11, fontweight="bold", pad=12)
+    ax.text(
+        0.0,
+        1.01,
+        "Higher bars indicate stronger endorsement in that domain.",
+        transform=ax.transAxes,
+        color="#d9dde3",
+        fontsize=8,
+        ha="left",
+        va="bottom",
+    )
+    return _fig_to_pil(fig, dpi=dpi)
+
+
+__all__ = [
+    "bdefs_momentum_glow",
+    "bdefs_radar",
+    "bdefs_timeseries",
+    "bisbas_profile_bars",
+]

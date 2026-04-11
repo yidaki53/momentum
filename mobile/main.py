@@ -18,6 +18,7 @@ import threading
 import time as _time
 import json
 import urllib.request
+import webbrowser
 from pathlib import Path
 from typing import Callable
 
@@ -52,6 +53,7 @@ from kivy.utils import get_color_from_hex
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
 
+from momentum import __version__ as APP_VERSION
 from momentum import config as cfg
 from momentum import db
 from momentum.assessments import (
@@ -87,10 +89,14 @@ from momentum.models import (
     ThemeMode,
     TimerCycleMode,
 )
+from momentum.ui.mobile_stroop import shuffled_stroop_options
+from momentum.ui.mobile_sections import next_home_section_state
+from momentum.ui.update_check import compare_versions, fetch_latest_release, is_update_available
 
 log = logging.getLogger(__name__)
 
 _CHART_FUNCS: tuple | None = None
+_UPDATE_CHECK_INTERVAL_S = 12 * 60 * 60
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +435,46 @@ def _show_info_popup(title: str, text: str) -> None:
     popup.open()
 
 
+def _show_update_popup(version: str, url: str) -> None:
+    """Display an update-available popup with a direct download action."""
+    app = App.get_running_app()
+    fg = list(app.text_color) if app else list(_TEXT)
+    accent = list(app.accent_color) if app else list(_ACCENT)
+    neutral = list(app.neutral_button_color) if app else [0.25, 0.25, 0.25, 1]
+    button_text = list(app.button_text_color) if app else list(_BUTTON_TEXT)
+    content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+    label = Label(
+        text=(
+            f"Momentum {version} is available.\n\n"
+            "Open the releases page to download the latest build."
+        ),
+        font_size=sp(13),
+        color=fg,
+        text_size=(dp(240), None),
+        size_hint_y=None,
+    )
+    label.bind(texture_size=lambda inst, val: setattr(inst, "height", val[1]))
+    content.add_widget(label)
+    buttons = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+    open_btn = Button(
+        text="Open download page",
+        background_color=accent,
+        color=button_text,
+    )
+    close_btn = Button(
+        text="Later",
+        background_color=neutral,
+        color=button_text,
+    )
+    popup = Popup(title="Update available", content=content, size_hint=(0.9, None), height=dp(240))
+    open_btn.bind(on_release=lambda _: (webbrowser.open(url), popup.dismiss()))
+    close_btn.bind(on_release=lambda _: popup.dismiss())
+    buttons.add_widget(open_btn)
+    buttons.add_widget(close_btn)
+    content.add_widget(buttons)
+    popup.open()
+
+
 def _run_ui_action(
     action: Callable[[], None],
     *,
@@ -628,13 +674,16 @@ KV = """
                 BoxLayout:
                     id: tasks_section_body
                     orientation: 'vertical'
+                    spacing: dp(8) if root.tasks_expanded else dp(0)
                     size_hint_y: None
                     height: self.minimum_height if root.tasks_expanded else dp(0)
                     opacity: 1 if root.tasks_expanded else 0
                     disabled: not root.tasks_expanded
                     ScrollView:
                         size_hint_y: None
-                        height: dp(180)
+                        height: dp(180) if root.tasks_expanded else dp(0)
+                        opacity: 1 if root.tasks_expanded else 0
+                        disabled: not root.tasks_expanded
                         do_scroll_x: False
                         BoxLayout:
                             id: task_list
@@ -645,9 +694,11 @@ KV = """
                             padding: [dp(2), 0]
                     BoxLayout:
                         size_hint_y: None
-                        height: dp(44)
+                        height: dp(44) if root.tasks_expanded else dp(0)
                         spacing: dp(8)
                         padding: [dp(0), dp(4)]
+                        opacity: 1 if root.tasks_expanded else 0
+                        disabled: not root.tasks_expanded
                         Button:
                             text: 'Add task'
                             background_color: app.accent_color
@@ -674,6 +725,7 @@ KV = """
                 BoxLayout:
                     id: timer_section_body
                     orientation: 'vertical'
+                    spacing: dp(8) if root.timer_expanded else dp(0)
                     size_hint_y: None
                     height: self.minimum_height if root.timer_expanded else dp(0)
                     opacity: 1 if root.timer_expanded else 0
@@ -681,7 +733,8 @@ KV = """
                     Label:
                         text: root.timer_display
                         size_hint_y: None
-                        height: dp(50)
+                        height: dp(50) if root.timer_expanded else dp(0)
+                        opacity: 1 if root.timer_expanded else 0
                         color: app.timer_color
                         font_size: sp(36) * app.font_scale
                         bold: True
@@ -689,12 +742,16 @@ KV = """
                         value: root.timer_progress
                         max: 100
                         size_hint_y: None
-                        height: dp(8)
+                        height: dp(8) if root.timer_expanded else dp(0)
+                        opacity: 1 if root.timer_expanded else 0
+                        disabled: not root.timer_expanded
                     BoxLayout:
                         size_hint_y: None
-                        height: dp(48)
+                        height: dp(48) if root.timer_expanded else dp(0)
                         spacing: dp(8)
                         padding: [dp(0), dp(4)]
+                        opacity: 1 if root.timer_expanded else 0
+                        disabled: not root.timer_expanded
                         Button:
                             text: root.focus_button_text
                             background_color: app.accent_color
@@ -715,9 +772,11 @@ KV = """
                             font_size: sp(14) * app.font_scale
                             on_release: root.stop_timer()
                 Button:
-                    text: ('- ' if root.journal_expanded else '+ ') + 'Journal - ' + root.journal_summary
+                    text: ('- ' if root.journal_expanded else '+ ') + 'ACT - ' + root.journal_summary
                     size_hint_y: None
-                    height: dp(42)
+                    height: dp(42) if root.act_controls_visible else dp(0)
+                    opacity: 1 if root.act_controls_visible else 0
+                    disabled: not root.act_controls_visible
                     background_color: app.neutral_button_color
                     color: app.button_text_color
                     bold: True
@@ -726,34 +785,26 @@ KV = """
                     id: journal_section_body
                     orientation: 'vertical'
                     size_hint_y: None
-                    height: self.minimum_height if root.journal_expanded else dp(0)
-                    opacity: 1 if root.journal_expanded else 0
-                    disabled: not root.journal_expanded
-                    spacing: dp(6)
+                    height: self.minimum_height if root.journal_expanded and root.act_controls_visible else dp(0)
+                    opacity: 1 if root.journal_expanded and root.act_controls_visible else 0
+                    disabled: not (root.journal_expanded and root.act_controls_visible)
+                    spacing: dp(6) if root.journal_expanded and root.act_controls_visible else dp(0)
                     Label:
-                        text: root.nudge_text
+                        text: root.act_intro_text
                         size_hint_y: None
-                        height: dp(56)
+                        height: self.texture_size[1] + dp(12) if root.journal_expanded and root.act_controls_visible else dp(0)
+                        opacity: 1 if root.journal_expanded and root.act_controls_visible else 0
                         color: app.muted_color
-                        font_size: sp(13) * app.font_scale
-                        italic: True
-                        text_size: self.width - dp(12), None
-                        halign: 'center'
+                        font_size: sp(12) * app.font_scale
+                        text_size: self.width - dp(8), None
+                        halign: 'left'
+                        valign: 'middle'
                     BoxLayout:
                         size_hint_y: None
-                        height: dp(40)
+                        height: dp(40) if root.journal_expanded and root.act_controls_visible else dp(0)
                         spacing: dp(8)
-                        Button:
-                            text: 'New encouragement'
-                            background_color: app.secondary_button_color
-                            color: app.button_text_color
-                            on_release: root.refresh_nudge()
-                    BoxLayout:
-                        size_hint_y: None
-                        height: dp(40) if root.act_controls_visible else dp(0)
-                        spacing: dp(8)
-                        opacity: 1 if root.act_controls_visible else 0
-                        disabled: not root.act_controls_visible
+                        opacity: 1 if root.journal_expanded and root.act_controls_visible else 0
+                        disabled: not (root.journal_expanded and root.act_controls_visible)
                         Button:
                             text: 'ACT check-in'
                             background_color: app.success_button_color
@@ -764,6 +815,16 @@ KV = """
                             background_color: app.neutral_button_color
                             color: app.button_text_color
                             on_release: root.open_act_history()
+        Label:
+            text: root.nudge_text
+            size_hint_y: None
+            height: max(dp(56), self.texture_size[1] + dp(16))
+            color: app.muted_color
+            font_size: sp(13) * app.font_scale
+            italic: True
+            text_size: self.width - dp(16), None
+            halign: 'center'
+            valign: 'middle'
         Widget:
             size_hint_y: None
             height: dp(4)
@@ -916,12 +977,12 @@ KV = """
             padding: [dp(16), dp(16)]
             spacing: dp(12)
             Label:
-                text: 'Type the COLOUR of the text, not the word.'
+                text: 'Tap the INK COLOUR of the text, not the word.'
                 color: app.text_color
                 halign: 'center'
                 font_size: sp(15) * app.font_scale
                 size_hint_y: None
-                height: dp(30)
+                height: dp(36)
             Label:
                 text: root.progress_text
                 color: app.muted_color
@@ -935,16 +996,37 @@ KV = """
                 color: root.word_color
                 size_hint_y: None
                 height: dp(80)
-            TextInput:
-                id: stroop_input
-                hint_text: 'Type colour here...'
-                multiline: False
-                font_size: sp(18) * app.font_scale
+            GridLayout:
+                cols: 2
                 size_hint_y: None
-                height: dp(48)
-                background_color: app.input_bg_color
-                foreground_color: app.text_color
-                on_text_validate: root.on_answer(self.text)
+                height: dp(112)
+                row_default_height: dp(52)
+                row_force_default: True
+                spacing: dp(8)
+                Button:
+                    text: root.option_1_text
+                    background_color: app.neutral_button_color
+                    color: app.button_text_color
+                    disabled: not bool(root.option_1_text)
+                    on_release: root.answer_option(self.text)
+                Button:
+                    text: root.option_2_text
+                    background_color: app.secondary_button_color
+                    color: app.button_text_color
+                    disabled: not bool(root.option_2_text)
+                    on_release: root.answer_option(self.text)
+                Button:
+                    text: root.option_3_text
+                    background_color: app.success_button_color
+                    color: app.button_text_color
+                    disabled: not bool(root.option_3_text)
+                    on_release: root.answer_option(self.text)
+                Button:
+                    text: root.option_4_text
+                    background_color: app.accent_color
+                    color: app.button_text_color
+                    disabled: not bool(root.option_4_text)
+                    on_release: root.answer_option(self.text)
             Label:
                 text: root.feedback_text
                 color: app.muted_color
@@ -1047,7 +1129,7 @@ class TaskRow(BoxLayout):
 
 
 class HomeScreen(Screen):
-    """Main screen: tasks, timer, encouragement."""
+    """Main screen: tasks, timer, encouragement, and ACT support."""
 
     status_text = StringProperty("Loading...")
     timer_display = StringProperty("00:00")
@@ -1061,7 +1143,8 @@ class HomeScreen(Screen):
     journal_expanded = BooleanProperty(False)
     tasks_summary = StringProperty("0 open")
     timer_summary = StringProperty("idle")
-    journal_summary = StringProperty("encouragement")
+    journal_summary = StringProperty("guided support")
+    act_intro_text = StringProperty("")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -1118,11 +1201,13 @@ class HomeScreen(Screen):
         self.focus_button_text = f"Focus {profile.focus_minutes}m"
         self.break_button_text = f"Break {profile.break_minutes}m"
         self.act_controls_visible = should_show_act_support(profile)
-        self.journal_summary = (
-            "encouragement + ACT tools"
-            if self.act_controls_visible
-            else "encouragement"
+        self.journal_summary = "2-minute reset"
+        self.act_intro_text = (
+            "ACT = Acceptance and Commitment Therapy. Use it as a short reset: notice what "
+            "is here, loosen one sticky thought, and pick one tiny next move."
         )
+        if not self.act_controls_visible:
+            self.journal_expanded = False
 
     def _act_guidance(self) -> str:
         return personalised_act_guidance(self._profile())
@@ -1154,6 +1239,15 @@ class HomeScreen(Screen):
                 if breakdown
                 else "Choose one values-aligned next action you can realistically do now."
             ),
+        }
+
+    def _act_prompt_hints(self) -> dict[str, str]:
+        return {
+            "values_focus": "e.g. steadiness, care, learning, finishing",
+            "challenge_context": "What is sticky or draining right now?",
+            "thoughts_feelings": "e.g. 'I am behind', anxious, foggy, restless",
+            "defusion_reframe": "I am noticing the thought that ...",
+            "committed_action": "2-minute move: open the file, title the page, wash one plate",
         }
 
     # -- Banner image --
@@ -1206,7 +1300,7 @@ class HomeScreen(Screen):
                 f"?w=500&h=120&fit=crop&crop=center&auto=format&q=80"
             )
             try:
-                req = urllib.request.Request(url, headers={"User-Agent": "Momentum/0.1"})
+                req = urllib.request.Request(url, headers={"User-Agent": f"Momentum/{APP_VERSION}"})
                 # Try with default SSL first, fall back to unverified context
                 # (Android may lack system CA certs for urllib)
                 try:
@@ -1261,8 +1355,14 @@ class HomeScreen(Screen):
         prev_selected = self._selected_task_id
         self._selected_task_id = None
 
-        _NORMAL_BG = [0.2, 0.2, 0.2, 1]
-        _SEL_BG = [0.25, 0.25, 0.38, 1]
+        app = App.get_running_app()
+        conf = cfg.load_config()
+        if app is not None and conf.theme_mode == ThemeMode.LIGHT:
+            _NORMAL_BG = list(app.input_bg_color)
+            _SEL_BG = list(app.toolbar_color)
+        else:
+            _NORMAL_BG = [0.2, 0.2, 0.2, 1]
+            _SEL_BG = [0.25, 0.25, 0.38, 1]
         _GREEN = [0.29, 0.478, 0.29, 1]
         _PURPLE = [0.35, 0.35, 0.48, 1]
 
@@ -1449,49 +1549,28 @@ class HomeScreen(Screen):
 
     def _toggle_section(self, section: str) -> None:
         """Mobile accordion behavior keeps only one expanded section at a time."""
-        _agent_debug_log(
-            hypothesis_id="H2",
-            location="mobile/main.py:HomeScreen._toggle_section",
-            message="before toggle",
-            data={
-                "section": section,
-                "tasks_expanded": self.tasks_expanded,
-                "timer_expanded": self.timer_expanded,
-                "journal_expanded": self.journal_expanded,
-            },
-        )
-        if section == "tasks":
-            next_state = not self.tasks_expanded
-            self.tasks_expanded = next_state
-            self.timer_expanded = False
-            self.journal_expanded = False
-        elif section == "timer":
-            next_state = not self.timer_expanded
-            self.timer_expanded = next_state
-            self.tasks_expanded = False
-            self.journal_expanded = False
-        elif section == "journal":
-            next_state = not self.journal_expanded
-            self.journal_expanded = next_state
-            self.tasks_expanded = False
-            self.timer_expanded = False
-        _agent_debug_log(
-            hypothesis_id="H2",
-            location="mobile/main.py:HomeScreen._toggle_section",
-            message="after toggle",
-            data={
-                "section": section,
-                "tasks_expanded": self.tasks_expanded,
-                "timer_expanded": self.timer_expanded,
-                "journal_expanded": self.journal_expanded,
-            },
+        (
+            self.tasks_expanded,
+            self.timer_expanded,
+            self.journal_expanded,
+        ) = next_home_section_state(
+            section,
+            tasks_expanded=self.tasks_expanded,
+            timer_expanded=self.timer_expanded,
+            journal_expanded=self.journal_expanded,
         )
 
     def select_task(self, task_id):
         """Highlight a task row as selected (for breakdown, timer, etc.)."""
         self._selected_task_id = task_id
-        _SEL_BG = [0.25, 0.25, 0.38, 1]
-        _NORMAL_BG = [0.2, 0.2, 0.2, 1]
+        app = App.get_running_app()
+        conf = cfg.load_config()
+        if app is not None and conf.theme_mode == ThemeMode.LIGHT:
+            _NORMAL_BG = list(app.input_bg_color)
+            _SEL_BG = list(app.toolbar_color)
+        else:
+            _SEL_BG = [0.25, 0.25, 0.38, 1]
+            _NORMAL_BG = [0.2, 0.2, 0.2, 1]
         for child in self.ids.task_list.children:
             if isinstance(child, TaskRow) and not child.is_completed:
                 child.bg_color = _SEL_BG if child.task_id == task_id else _NORMAL_BG
@@ -1545,8 +1624,6 @@ class HomeScreen(Screen):
         self.timer_progress = 0
         self.timer_display = f"{minutes:02d}:00"
         self.timer_expanded = True
-        self.tasks_expanded = False
-        self.journal_expanded = False
         active_task_id = task_id if task_id is not None else self._selected_task_id
         if not is_break and active_task_id is not None:
             self._timer_task_id = active_task_id
@@ -1672,21 +1749,6 @@ class HomeScreen(Screen):
             paused=self._timer_paused,
         )
 
-    def refresh_nudge(self):
-        _agent_debug_log(
-            hypothesis_id="H3",
-            location="mobile/main.py:HomeScreen.refresh_nudge",
-            message="refresh_nudge called",
-        )
-        _run_ui_action(
-            lambda: setattr(
-                self,
-                "nudge_text",
-                personalised_nudge(get_nudge(), self._profile()),
-            ),
-            prefix="Could not refresh encouragement.",
-        )
-
     def open_act_checkin(self) -> None:
         """Open a structured ACT journaling check-in popup."""
         _agent_debug_log(
@@ -1711,20 +1773,32 @@ class HomeScreen(Screen):
                 ("committed_action", "Committed action"),
             )
             details = self._act_prompt_details()
+            hints = self._act_prompt_hints()
             app = App.get_running_app()
             button_text = list(app.button_text_color)
             content = BoxLayout(orientation="vertical", spacing=8, padding=10)
+            content.add_widget(_make_label(
+                "ACT Momentum Reset",
+                font_size=sp(15),
+                bold=True,
+                color=_ACCENT,
+            ))
             content.add_widget(_make_label(self._act_guidance(), font_size=sp(12), color=_MUTED))
+            content.add_widget(_make_label(
+                "Use the prompts in order. Short answers count. The goal is not to feel perfect; it is to leave with one kind, doable next move.",
+                font_size=sp(11),
+                color=_MUTED,
+            ))
             fields: dict[str, TextInput] = {}
             for key, title in prompts:
                 title_row = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(6))
-                title_row.add_widget(_make_label(title, font_size=sp(12), bold=True, size_hint_x=0.88))
+                title_row.add_widget(_make_label(title, font_size=sp(12), bold=True, size_hint_x=0.8))
                 info_btn = Button(
-                    text="ⓘ",
-                    size_hint_x=0.12,
+                    text="Info",
+                    size_hint_x=0.2,
                     background_color=list(app.neutral_button_color),
                     color=button_text,
-                    font_size=sp(14),
+                    font_size=sp(12),
                 )
                 info_btn.bind(
                     on_release=lambda _btn, t=title, d=details[key]: _show_info_popup(t, d)
@@ -1735,6 +1809,7 @@ class HomeScreen(Screen):
                     multiline=True,
                     size_hint_y=None,
                     height=dp(70),
+                    hint_text=hints[key],
                     background_color=app.input_bg_color,
                     foreground_color=app.text_color,
                 )
@@ -1742,17 +1817,17 @@ class HomeScreen(Screen):
                 fields[key] = ti
             btn_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=8)
             save_btn = Button(
-                text="Save",
+                text="Save reset",
                 background_color=app.accent_color,
                 color=button_text,
             )
             close_btn = Button(
-                text="Close",
+                text="Not now",
                 background_color=app.neutral_button_color,
                 color=button_text,
             )
             popup = Popup(
-                title="ACT Journal Check-In",
+                title="ACT Momentum Reset",
                 content=content,
                 size_hint=(0.94, 0.92),
                 auto_dismiss=False,
@@ -1777,7 +1852,7 @@ class HomeScreen(Screen):
                     ),
                 )
                 self.nudge_text = (
-                    f"ACT check-in saved. Next action: {created.committed_action}"
+                    f"ACT reset saved. Next move: {created.committed_action}"
                 )
                 popup.dismiss()
 
@@ -1924,6 +1999,12 @@ class SettingsScreen(ScrollScreen):
         c.add_widget(_make_label("Database Location", font_size=sp(16), bold=True, color=accent))
         self._db_label = _make_label(db_text, font_size=sp(12), color=muted)
         c.add_widget(self._db_label)
+        c.add_widget(_make_label(
+            "App data is kept across upgrades. Android controls uninstall data removal, "
+            "so use Cloud Sync or a custom path if you want a copy outside the app.",
+            font_size=sp(11),
+            color=muted,
+        ))
 
         # -- Cloud sync --
         c.add_widget(Widget(size_hint_y=None, height=dp(8)))
@@ -1991,7 +2072,7 @@ class SettingsScreen(ScrollScreen):
         cycle_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
         for label, mode, color in (
             ("Manual", TimerCycleMode.MANUAL.value, neutral),
-            ("Auto focus↔break", TimerCycleMode.AUTO.value, success),
+            ("Auto focus/break", TimerCycleMode.AUTO.value, success),
         ):
             tb = ToggleButton(
                 text=label,
@@ -2078,14 +2159,12 @@ class SettingsScreen(ScrollScreen):
         c.add_widget(updates_row)
 
         def _set_auto_check_updates(_):
-            conf = cfg.load_config()
-            conf.check_updates_at_startup = auto_check_btn.state == "down"
-            cfg.save_config(conf)
+            cfg.set_check_updates_at_startup(auto_check_btn.state == "down")
 
         def _check_updates_now(_):
-            self._show_msg("Checking...", "Checking for updates...")
-            # TODO: Implement actual update checking
-            self._show_msg("Up to date", "You are running the latest version.")
+            app = App.get_running_app()
+            if app is not None:
+                app.trigger_update_check(manual=True)
 
         auto_check_btn.bind(on_release=_set_auto_check_updates)
         check_now_btn.bind(on_release=_check_updates_now)
@@ -2394,7 +2473,7 @@ class AboutScreen(ScrollScreen):
         c.clear_widgets()
         c.add_widget(_make_label("Momentum", font_size=sp(22), bold=True, color=_ACCENT))
         c.add_widget(Widget(size_hint_y=None, height=dp(8)))
-        c.add_widget(_make_label("Version 0.3.0"))
+        c.add_widget(_make_label("Version 0.4.0"))
         c.add_widget(Widget(size_hint_y=None, height=dp(12)))
         c.add_widget(_make_label(
             "A gentle tool to help people with executive dysfunction "
@@ -2782,6 +2861,10 @@ class StroopScreen(Screen):
     word_color = ListProperty([1, 1, 1, 1])
     progress_text = StringProperty("")
     feedback_text = StringProperty("")
+    option_1_text = StringProperty("")
+    option_2_text = StringProperty("")
+    option_3_text = StringProperty("")
+    option_4_text = StringProperty("")
 
     _colour_map = {
         "red": [0.878, 0.376, 0.376, 1],
@@ -2801,7 +2884,7 @@ class StroopScreen(Screen):
         self.feedback_text = ""
         # Show instruction popup before starting
         content = BoxLayout(orientation="vertical", padding=10, spacing=10)
-        content.add_widget(_make_label(STROOP_INSTRUCTIONS, font_size=sp(12), color=_MUTED))
+        content.add_widget(_make_label(self._instruction_text(), font_size=sp(12), color=_MUTED))
         start_btn = Button(text="Start", size_hint_y=None, height=dp(44),
                            background_color=list(_ACCENT))
         popup = Popup(title="Stroop Colour-Word Test", content=content,
@@ -2815,6 +2898,10 @@ class StroopScreen(Screen):
         content.add_widget(start_btn)
         popup.open()
 
+    @staticmethod
+    def _instruction_text() -> str:
+        return STROOP_INSTRUCTIONS.replace("type the INK COLOUR", "tap the INK COLOUR")
+
     def _show_trial(self):
         idx = self._state["idx"]
         if idx >= len(self._trials):
@@ -2826,11 +2913,15 @@ class StroopScreen(Screen):
         self.progress_text = f"Trial {idx + 1} of {len(self._trials)}"
         self.feedback_text = ""
         self._state["t0"] = _time.time()
-        inp = self.ids.stroop_input
-        inp.text = ""
-        inp.focus = True
+        options = [option.upper() for option in shuffled_stroop_options(trial)]
+        (
+            self.option_1_text,
+            self.option_2_text,
+            self.option_3_text,
+            self.option_4_text,
+        ) = options
 
-    def on_answer(self, text):
+    def answer_option(self, text):
         idx = self._state["idx"]
         if idx >= len(self._trials):
             return
@@ -2846,7 +2937,7 @@ class StroopScreen(Screen):
         self._state["total_time"] += elapsed
         self._state["per_trial"].append((correct, elapsed))
         self._state["idx"] += 1
-        Clock.schedule_once(lambda dt: self._show_trial(), 0.8)
+        Clock.schedule_once(lambda dt: self._show_trial(), 0.5)
 
     def _finish(self):
         result = StroopResult(
@@ -2868,6 +2959,10 @@ class StroopScreen(Screen):
         self.word_text = ""
         self.progress_text = "Complete!"
         self.feedback_text = ""
+        self.option_1_text = ""
+        self.option_2_text = ""
+        self.option_3_text = ""
+        self.option_4_text = ""
 
         content = BoxLayout(orientation="vertical", padding=10, spacing=10)
         content.add_widget(_make_label(msg, font_size=sp(13)))
@@ -3076,6 +3171,7 @@ class MomentumApp(App):
     active_timer_progress = NumericProperty(0)
     active_timer_paused = BooleanProperty(False)
     active_timer_control_text = StringProperty("Pause")
+    update_check_running = BooleanProperty(False)
 
     def reload_palette(self):
         """Reload theme/accessibility config and update bound KV properties."""
@@ -3120,6 +3216,12 @@ class MomentumApp(App):
         sm.add_widget(ResultsScreen(name="results"))
         return sm
 
+    def on_start(self) -> None:
+        conf = cfg.load_config()
+        due = (_time.time() - conf.last_update_check_unix) >= _UPDATE_CHECK_INTERVAL_S
+        if conf.check_updates_at_startup and due:
+            Clock.schedule_once(lambda _dt: self.trigger_update_check(manual=False), 0.75)
+
     def _home_screen(self) -> HomeScreen | None:
         if self.root is None or not self.root.has_screen("home"):
             return None
@@ -3159,6 +3261,68 @@ class MomentumApp(App):
         if home is None:
             return
         home.stop_timer()
+
+    def trigger_update_check(self, *, manual: bool) -> None:
+        if self.update_check_running:
+            if manual:
+                _show_info_popup("Already checking", "Momentum is already checking for updates.")
+            return
+        self.update_check_running = True
+        home = self._home_screen()
+        if manual and home is not None:
+            home.status_text = "Checking for updates..."
+        threading.Thread(
+            target=self._update_check_worker,
+            args=(manual,),
+            daemon=True,
+        ).start()
+
+    def _update_check_worker(self, manual: bool) -> None:
+        payload: dict[str, object] = {"manual": manual}
+        try:
+            latest = fetch_latest_release()
+            payload.update(
+                {
+                    "latest_version": latest.version,
+                    "url": latest.url,
+                    "update_available": is_update_available(APP_VERSION, latest.version),
+                    "newer_than_release": compare_versions(APP_VERSION, latest.version) > 0,
+                }
+            )
+        except Exception as exc:
+            payload["error"] = str(exc)
+
+        Clock.schedule_once(lambda _dt, result=payload: self._finish_update_check(result), 0)
+
+    def _finish_update_check(self, result: dict[str, object]) -> None:
+        self.update_check_running = False
+        conf = cfg.load_config()
+        conf.last_update_check_unix = int(_time.time())
+        cfg.save_config(conf)
+
+        home = self._home_screen()
+        if home is not None and home.conn is not None:
+            home.refresh_status()
+
+        manual = bool(result.get("manual", False))
+        error = result.get("error")
+        if error is not None:
+            if manual:
+                _show_error_popup("Update check failed", f"Could not check for updates.\n\n{error}")
+            return
+
+        if bool(result.get("update_available", False)):
+            _show_update_popup(str(result["latest_version"]), str(result["url"]))
+            return
+
+        if manual:
+            if bool(result.get("newer_than_release", False)):
+                _show_info_popup(
+                    "Ahead of release",
+                    "This build is newer than the latest published release.",
+                )
+            else:
+                _show_info_popup("Up to date", "You are running the latest version.")
 
     def on_stop(self):
         home = self.root.get_screen("home")

@@ -89,24 +89,29 @@ def should_show_act_support(profile: PersonalisationProfile) -> bool:
 
 def personalised_act_guidance(profile: PersonalisationProfile) -> str:
     """Return profile-aware ACT usage guidance for UI surfaces."""
+    intro = (
+        "ACT stands for Acceptance and Commitment Therapy. Here it works like a short "
+        "momentum reset: notice what is here, loosen one sticky thought, and choose "
+        "one tiny next move. Keep each answer brief; one honest sentence is enough."
+    )
     if profile.add_reassurance and profile.suggest_breakdown:
         return (
-            "Try a short ACT check-in now: name what feels hard, reframe one sticky "
-            "thought, and pick one tiny next action."
+            intro
+            + " Start with what matters today, name the friction, then lock in a 2-5 minute next step."
         )
     if profile.add_reassurance:
         return (
-            "Use ACT to make room for difficult feelings gently, then choose one kind, "
-            "values-aligned next step."
+            intro
+            + " Use it to make room for a hard feeling without letting that feeling run the whole plan."
         )
     if profile.suggest_breakdown:
         return (
-            "Use ACT to break overwhelm into a concrete next action you can finish in "
-            "a few minutes."
+            intro
+            + " Treat it like a tiny reset drill: from foggy and stuck to one concrete action you can finish soon."
         )
     return (
-        "ACT check-ins are optional right now. Use them whenever you want extra clarity "
-        "or emotional grounding."
+        intro
+        + " Use it whenever you want extra clarity, grounding, or a gentle restart."
     )
 
 

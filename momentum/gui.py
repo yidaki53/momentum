@@ -1640,7 +1640,7 @@ class MomentumApp:
         """Show a brief about dialog."""
         messagebox.showinfo(
             "About Momentum",
-            "Momentum v0.1.0\n\n"
+            "Momentum v0.4.0\n\n"
             "A gentle tool to help people with executive\n"
             "dysfunction get back on track, one small step\n"
             "at a time.\n\n"

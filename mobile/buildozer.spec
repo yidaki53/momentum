@@ -6,7 +6,7 @@ package.name = momentum
 package.domain = dev.momentum
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,md
-version = 0.3.0
+version = 0.4.0
 
 # Dependencies
 requirements = python3,kivy,pydantic,pydantic-core,pillow,matplotlib,numpy
@@ -24,7 +24,7 @@ android.api = 34
 android.minapi = 26
 android.ndk = 25b
 android.accept_sdk_license = True
-android.numeric_version = 100000001
+android.numeric_version = 100000003
 android.release_artifact = apk
 android.debug_artifact = apk
 

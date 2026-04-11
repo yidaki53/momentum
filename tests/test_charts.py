@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta
 
 from PIL import Image
 
-from momentum.charts import bdefs_momentum_glow, bdefs_radar, bdefs_timeseries
+import momentum.ui.charts as charts
+from momentum.charts import (
+    bdefs_momentum_glow,
+    bdefs_radar,
+    bdefs_timeseries,
+    bisbas_profile_bars,
+)
 from momentum.models import AssessmentResult, AssessmentType
 
 
@@ -28,6 +35,22 @@ def _make_bdefs_result(
             "Emotion Regulation": 6,
         },
         taken_at=taken_at or datetime.now(),
+    )
+
+
+def _make_bisbas_result(score: int = 40) -> AssessmentResult:
+    return AssessmentResult(
+        id=2,
+        assessment_type=AssessmentType.BISBAS,
+        score=score,
+        max_score=80,
+        domain_scores={
+            "Behavioral Inhibition (BIS)": 8,
+            "BAS Drive": 11,
+            "BAS Reward Responsiveness": 12,
+            "BAS Fun Seeking": 9,
+        },
+        taken_at=datetime.now(),
     )
 
 
@@ -97,3 +120,25 @@ class TestBdefsMomentumGlow:
         previous = _make_bdefs_result(score=34)
         img = bdefs_momentum_glow(latest, previous=previous)
         assert isinstance(img, Image.Image)
+
+
+class TestBisbasProfileBars:
+    def test_returns_image_for_bisbas_profile(self) -> None:
+        img = bisbas_profile_bars(_make_bisbas_result())
+        assert isinstance(img, Image.Image)
+        assert img.size[0] > 0 and img.size[1] > 0
+
+
+def test_android_runtime_uses_writable_matplotlib_dirs(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ANDROID_PRIVATE", str(tmp_path))
+    monkeypatch.delenv("MPLCONFIGDIR", raising=False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.delenv("HOME", raising=False)
+
+    charts._configure_matplotlib_runtime()
+
+    runtime_dir = tmp_path / ".matplotlib"
+    assert runtime_dir.is_dir()
+    assert os.environ["HOME"] == str(tmp_path)
+    assert os.environ["MPLCONFIGDIR"] == str(runtime_dir)
+    assert os.environ["XDG_CACHE_HOME"] == str(runtime_dir)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional
@@ -17,8 +18,19 @@ def _is_android() -> bool:
 
 
 def _android_data_dir() -> Path:
-    """Return the writable app-private directory on Android."""
-    # p4a sets ANDROID_PRIVATE / ANDROID_APP_PATH; fall back to cwd
+    """Return the stable writable app-private directory on Android."""
+    try:
+        from jnius import autoclass
+
+        python_activity = autoclass("org.kivy.android.PythonActivity")
+        activity = python_activity.mActivity
+        if activity is not None:
+            files_dir = activity.getFilesDir()
+            if files_dir is not None:
+                return Path(files_dir.getAbsolutePath())
+    except Exception:
+        pass
+
     for var in ("ANDROID_PRIVATE", "ANDROID_APP_PATH"):
         val = os.environ.get(var)
         if val:
@@ -26,15 +38,62 @@ def _android_data_dir() -> Path:
     return Path(".")  # last resort
 
 
+def _android_legacy_data_dirs() -> list[Path]:
+    """Return legacy Android data roots that may contain older config or DB files."""
+    candidates: list[Path] = []
+    for var in ("ANDROID_PRIVATE", "ANDROID_APP_PATH"):
+        val = os.environ.get(var)
+        if val:
+            candidates.append(Path(val) / "data")
+    candidates.append(Path(".") / "data")
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            unique.append(candidate)
+            seen.add(key)
+    return unique
+
+
 if _is_android():
     _DATA_DIR = _android_data_dir() / "data"
     _CONFIG_DIR = _DATA_DIR / "config"
     _DB_DIR = _DATA_DIR / "db"
+    _LEGACY_CONFIG_FILES = [
+        legacy_dir / "config" / "config.json"
+        for legacy_dir in _android_legacy_data_dirs()
+    ]
+    _LEGACY_DB_FILES = [
+        legacy_dir / "db" / "momentum.db" for legacy_dir in _android_legacy_data_dirs()
+    ]
 else:
     _CONFIG_DIR = Path.home() / ".config" / "momentum"
     _DB_DIR = Path.home() / ".local" / "share" / "momentum"
+    _LEGACY_CONFIG_FILES: list[Path] = []
+    _LEGACY_DB_FILES: list[Path] = []
 
 _CONFIG_FILE = _CONFIG_DIR / "config.json"
+
+
+def _migrate_legacy_file(target: Path, legacy_candidates: list[Path]) -> None:
+    """Copy a legacy file forward to the current storage location when needed."""
+    if target.exists():
+        return
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    for candidate in legacy_candidates:
+        if not candidate.exists():
+            continue
+        try:
+            if candidate.resolve() == target.resolve():
+                continue
+        except OSError:
+            pass
+        shutil.copy2(candidate, target)
+        return
+
 
 # Well-known cloud sync directories (checked in order)
 _CLOUD_PRESETS: dict[str, list[Path]] = {
@@ -55,6 +114,7 @@ _CLOUD_PRESETS: dict[str, list[Path]] = {
 
 def load_config() -> AppConfig:
     """Load config from disk, returning defaults if none exists."""
+    _migrate_legacy_file(_CONFIG_FILE, _LEGACY_CONFIG_FILES)
     if _CONFIG_FILE.exists():
         try:
             data = json.loads(_CONFIG_FILE.read_text())
@@ -89,7 +149,9 @@ def get_db_path() -> Path:
         return p
     # Default
     _DB_DIR.mkdir(parents=True, exist_ok=True)
-    return _DB_DIR / "momentum.db"
+    default_path = _DB_DIR / "momentum.db"
+    _migrate_legacy_file(default_path, _LEGACY_DB_FILES)
+    return default_path
 
 
 def set_db_path(path: str) -> AppConfig:
