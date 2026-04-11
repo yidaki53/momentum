@@ -278,8 +278,11 @@ class AssessmentService:
         """Build a formatted history entry for one saved result."""
         from momentum.assessments import (
             BDEFS_QUESTIONS,
-            BISBAS_QUESTIONS,
             bisbas_domain_advice,
+            bisbas_effective_domain_max_score,
+            bisbas_effective_max_score,
+            bisbas_normalized_domain_score,
+            bisbas_normalized_total_score,
             domain_advice,
             interpret_bdefs,
             interpret_bisbas,
@@ -287,7 +290,13 @@ class AssessmentService:
         )
 
         taken = result.taken_at.strftime("%Y-%m-%d %H:%M")
-        lines = [f"  Score: {result.score}/{result.max_score}"]
+        if result.assessment_type == AssessmentType.BISBAS:
+            lines = [
+                "  Endorsement score: "
+                f"{bisbas_normalized_total_score(result.score)}/{bisbas_effective_max_score()}"
+            ]
+        else:
+            lines = [f"  Score: {result.score}/{result.max_score}"]
 
         if result.assessment_type == AssessmentType.BDEFS:
             for domain, score in result.domain_scores.items():
@@ -306,9 +315,11 @@ class AssessmentService:
             )
         elif result.assessment_type == AssessmentType.BISBAS:
             for domain, score in result.domain_scores.items():
-                question_count = len(BISBAS_QUESTIONS.get(domain, []))
-                max_domain = question_count * 4 if question_count else 1
-                lines.append(f"    {domain}: {score}/{max_domain}")
+                max_domain = bisbas_effective_domain_max_score(domain) or 1
+                lines.append(
+                    "    "
+                    f"{domain}: {bisbas_normalized_domain_score(domain, score)}/{max_domain}"
+                )
                 advice = bisbas_domain_advice(domain, score, max_domain)
                 if advice:
                     lines.append(f"      [dim italic]{advice}[/dim italic]")

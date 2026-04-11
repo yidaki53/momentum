@@ -149,6 +149,38 @@ def bisbas_max_score() -> int:
     return n_items * BISBAS_MAX_PER_ITEM
 
 
+def bisbas_total_min_score() -> int:
+    """Minimum possible BIS/BAS total score from the questionnaire floor."""
+    n_items = sum(len(qs) for qs in BISBAS_QUESTIONS.values())
+    return n_items * BISBAS_MIN_PER_ITEM
+
+
+def bisbas_effective_max_score() -> int:
+    """Effective BIS/BAS endorsement range once the minimum floor is removed."""
+    return bisbas_max_score() - bisbas_total_min_score()
+
+
+def bisbas_domain_min_score(domain: str) -> int:
+    """Minimum possible raw score for a BIS/BAS domain."""
+    return len(BISBAS_QUESTIONS.get(domain, [])) * BISBAS_MIN_PER_ITEM
+
+
+def bisbas_effective_domain_max_score(domain: str) -> int:
+    """Effective BIS/BAS domain range once the minimum floor is removed."""
+    question_count = len(BISBAS_QUESTIONS.get(domain, []))
+    return question_count * (BISBAS_MAX_PER_ITEM - BISBAS_MIN_PER_ITEM)
+
+
+def bisbas_normalized_total_score(score: int) -> int:
+    """Normalize a raw BIS/BAS total so the floor maps to zero."""
+    return max(score - bisbas_total_min_score(), 0)
+
+
+def bisbas_normalized_domain_score(domain: str, score: int) -> int:
+    """Normalize a raw BIS/BAS domain score so the floor maps to zero."""
+    return max(score - bisbas_domain_min_score(domain), 0)
+
+
 def score_bisbas(answers: dict[str, list[int]]) -> AssessmentResultCreate:
     """Score a completed BIS/BAS questionnaire."""
     # Use Cython-compiled version if available

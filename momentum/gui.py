@@ -11,7 +11,7 @@ import tkinter as tk
 import urllib.request
 import webbrowser
 from pathlib import Path
-from tkinter import messagebox, scrolledtext, simpledialog, ttk
+from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 from typing import TYPE_CHECKING, Optional
 
 from PIL import Image, ImageDraw, ImageFont, ImageTk
@@ -29,6 +29,10 @@ from momentum.assessments import (
     STROOP_INSTRUCTIONS,
     StroopResult,
     bisbas_domain_advice,
+    bisbas_effective_domain_max_score,
+    bisbas_effective_max_score,
+    bisbas_normalized_domain_score,
+    bisbas_normalized_total_score,
     domain_advice,
     generate_stroop_trials,
     interpret_bdefs,
@@ -58,7 +62,7 @@ from momentum.services import (
     StatusService,
     TaskService,
 )
-from momentum.ui.charts import bdefs_momentum_glow
+from momentum.ui.charts import bdefs_momentum_glow, bdefs_radar
 
 if TYPE_CHECKING:
     from momentum.assessments import PersonalisationProfile
@@ -1026,6 +1030,13 @@ class MomentumApp:
         )
         path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
 
+        def _browse_custom() -> None:
+            initial_dir = path_entry.get().strip() or str(resolved.parent)
+            chosen = filedialog.askdirectory(parent=win, initialdir=initial_dir)
+            if chosen:
+                path_entry.delete(0, tk.END)
+                path_entry.insert(0, chosen)
+
         def _set_custom() -> None:
             p = path_entry.get().strip()
             if p:
@@ -1036,6 +1047,9 @@ class MomentumApp:
                     "Path set", f"Database: {result.db_path}", parent=win
                 )
 
+        ttk.Button(custom_frame, text="Browse", command=_browse_custom).pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
         ttk.Button(custom_frame, text="Set", command=_set_custom).pack(side=tk.LEFT)
 
         # --- Window position ---
@@ -1827,11 +1841,17 @@ class MomentumApp:
             self._refresh_personalisation()
             win.destroy()
 
-            lines: list[str] = [f"Total score: {saved.score}/{saved.max_score}", ""]
+            lines: list[str] = [
+                "Endorsement score: "
+                f"{bisbas_normalized_total_score(saved.score)}/{bisbas_effective_max_score()}",
+                "",
+            ]
             for d, s in saved.domain_scores.items():
-                max_domain = len(BISBAS_QUESTIONS.get(d, [])) * 4
-                lines.append(f"{d}: {s}/{max_domain if max_domain else 1}")
-                advice = bisbas_domain_advice(d, s, max_domain if max_domain else 1)
+                max_domain = bisbas_effective_domain_max_score(d) or 1
+                lines.append(
+                    f"{d}: {bisbas_normalized_domain_score(d, s)}/{max_domain}"
+                )
+                advice = bisbas_domain_advice(d, s, max_domain)
                 if advice:
                     lines.append(f"  - {advice}")
             lines.append("")
@@ -1988,10 +2008,10 @@ class MomentumApp:
         rwin.configure(bg=self._palette["bg"])
         rwin.transient(self.root)
 
-        chart_img = bdefs_momentum_glow(
+        chart_img = bdefs_radar(
             latest=saved,
             previous=previous,
-            title="Momentum Reserve Snapshot",
+            title="Executive Function Profile",
         )
         chart_tk = ImageTk.PhotoImage(chart_img)
         chart_label = tk.Label(rwin, image=chart_tk, bg=self._palette["bg"])  # type: ignore[arg-type]
@@ -2133,7 +2153,15 @@ class MomentumApp:
                     f"{r.assessment_type.value.upper()}  --  {taken}\n",
                     "heading",
                 )
-                text.insert(tk.END, f"  Score: {r.score}/{r.max_score}\n", "body")
+                if r.assessment_type == AssessmentType.BISBAS:
+                    text.insert(
+                        tk.END,
+                        "  Endorsement score: "
+                        f"{bisbas_normalized_total_score(r.score)}/{bisbas_effective_max_score()}\n",
+                        "body",
+                    )
+                else:
+                    text.insert(tk.END, f"  Score: {r.score}/{r.max_score}\n", "body")
                 if r.assessment_type == AssessmentType.BDEFS:
                     for d, s in r.domain_scores.items():
                         text.insert(tk.END, f"    {d}: {s}\n", "body")
@@ -2150,10 +2178,11 @@ class MomentumApp:
                     )
                 elif r.assessment_type == AssessmentType.BISBAS:
                     for d, s in r.domain_scores.items():
-                        max_domain = len(BISBAS_QUESTIONS.get(d, [])) * 4
+                        max_domain = bisbas_effective_domain_max_score(d) or 1
                         text.insert(
                             tk.END,
-                            f"    {d}: {s}/{max_domain if max_domain else 1}\n",
+                            "    "
+                            f"{d}: {bisbas_normalized_domain_score(d, s)}/{max_domain}\n",
                             "body",
                         )
                     text.insert(

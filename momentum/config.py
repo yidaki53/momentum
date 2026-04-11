@@ -111,6 +111,66 @@ _CLOUD_PRESETS: dict[str, list[Path]] = {
     ],
 }
 
+_CLOUD_PROVIDER_ALIASES: dict[str, str] = {
+    "one-drive": "onedrive",
+    "one drive": "onedrive",
+    "google drive": "google-drive",
+    "google_drive": "google-drive",
+    "googledrive": "google-drive",
+    "gdrive": "google-drive",
+    "drop box": "dropbox",
+}
+
+_ANDROID_CLOUD_PRESETS: dict[str, list[Path]] = {
+    "onedrive": [
+        Path("OneDrive"),
+        Path("Android") / "media" / "com.microsoft.skydrive",
+    ],
+    "dropbox": [Path("Dropbox")],
+    "google-drive": [Path("Google Drive"), Path("google-drive")],
+}
+
+
+def _canonical_cloud_provider(provider: str) -> str:
+    normalized = provider.strip().lower().replace("_", "-")
+    return _CLOUD_PROVIDER_ALIASES.get(normalized, normalized)
+
+
+def _cloud_search_roots() -> list[Path]:
+    roots: list[Path] = [Path.home()]
+    if _is_android():
+        for var in ("EXTERNAL_STORAGE", "SECONDARY_STORAGE", "ANDROID_STORAGE"):
+            raw = os.environ.get(var, "")
+            for entry in raw.split(os.pathsep):
+                if entry:
+                    roots.append(Path(entry))
+        roots.extend(
+            [
+                Path("/storage/emulated/0"),
+                Path("/storage/self/primary"),
+                Path("/sdcard"),
+            ]
+        )
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key not in seen:
+            unique.append(root)
+            seen.add(key)
+    return unique
+
+
+def _cloud_candidates(provider: str) -> list[Path]:
+    canonical = _canonical_cloud_provider(provider)
+    candidates = list(_CLOUD_PRESETS.get(canonical, []))
+    if _is_android():
+        for root in _cloud_search_roots():
+            for relative in _ANDROID_CLOUD_PRESETS.get(canonical, []):
+                candidates.append(root / relative)
+    return candidates
+
 
 def load_config() -> AppConfig:
     """Load config from disk, returning defaults if none exists."""
@@ -183,7 +243,7 @@ def set_timer_cycle_mode(mode: str) -> AppConfig:
 
 def detect_cloud_folder(provider: str) -> Optional[Path]:
     """Try to find a cloud sync folder for the given provider."""
-    candidates = _CLOUD_PRESETS.get(provider.lower(), [])
+    candidates = _cloud_candidates(provider)
     for candidate in candidates:
         if candidate.is_dir():
             return candidate

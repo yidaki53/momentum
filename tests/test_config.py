@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -136,6 +137,30 @@ class TestCloudSync:
 
     def test_detect_unknown_provider(self) -> None:
         assert detect_cloud_folder("icloud") is None
+
+    def test_detect_cloud_folder_accepts_alias(self, tmp_path: Path) -> None:
+        od = tmp_path / "OneDrive"
+        od.mkdir()
+        presets = {"onedrive": [od]}
+        with patch("momentum.config._CLOUD_PRESETS", presets):
+            assert detect_cloud_folder("one-drive") == od
+
+    def test_detect_cloud_folder_searches_android_shared_roots(
+        self, tmp_path: Path
+    ) -> None:
+        od = tmp_path / "OneDrive"
+        od.mkdir()
+        with (
+            patch("momentum.config._is_android", return_value=True),
+            patch("momentum.config._CLOUD_PRESETS", {"onedrive": []}),
+            patch(
+                "momentum.config._ANDROID_CLOUD_PRESETS",
+                {"onedrive": [Path("OneDrive")]},
+            ),
+            patch("momentum.config._cloud_search_roots", return_value=[tmp_path]),
+            patch.dict(os.environ, {"EXTERNAL_STORAGE": str(tmp_path)}, clear=False),
+        ):
+            assert detect_cloud_folder("onedrive") == od
 
     def test_set_cloud_sync_success(self, tmp_path: Path) -> None:
         p1, p2 = _patch_config_paths(tmp_path)

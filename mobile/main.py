@@ -8,6 +8,7 @@ menu bar are replicated here.
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import random
@@ -16,7 +17,6 @@ import ssl
 import sys
 import threading
 import time as _time
-import json
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -41,6 +41,7 @@ from kivy.properties import (
 )
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
+from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.image import Image as KivyImage
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
@@ -66,6 +67,10 @@ from momentum.assessments import (
     StroopResult,
     bisbas_bespoke_guidance,
     bisbas_domain_advice,
+    bisbas_effective_domain_max_score,
+    bisbas_effective_max_score,
+    bisbas_normalized_domain_score,
+    bisbas_normalized_total_score,
     domain_advice,
     generate_stroop_trials,
     interpret_bdefs,
@@ -89,9 +94,13 @@ from momentum.models import (
     ThemeMode,
     TimerCycleMode,
 )
-from momentum.ui.mobile_stroop import shuffled_stroop_options
 from momentum.ui.mobile_sections import next_home_section_state
-from momentum.ui.update_check import compare_versions, fetch_latest_release, is_update_available
+from momentum.ui.mobile_stroop import shuffled_stroop_options
+from momentum.ui.update_check import (
+    compare_versions,
+    fetch_latest_release,
+    is_update_available,
+)
 
 log = logging.getLogger(__name__)
 
@@ -2030,14 +2039,23 @@ class SettingsScreen(ScrollScreen):
             hint_text="Enter path...",
             multiline=False,
             font_size=sp(13) * font_scale,
-            size_hint_x=0.7,
+            size_hint_x=0.5,
             background_color=input_bg,
             foreground_color=text,
         )
         path_row.add_widget(self._path_input)
+        browse_btn = Button(
+            text="Browse",
+            size_hint_x=0.25,
+            font_size=sp(12) * font_scale,
+            background_color=list(neutral),
+            color=list(button_text),
+        )
+        browse_btn.bind(on_release=lambda _: self._browse_custom_path())
+        path_row.add_widget(browse_btn)
         set_btn = Button(
             text="Set",
-            size_hint_x=0.3,
+            size_hint_x=0.25,
             font_size=sp(13) * font_scale,
             background_color=list(accent),
             color=list(button_text),
@@ -2249,11 +2267,44 @@ class SettingsScreen(ScrollScreen):
     def _sync(self, provider):
         result = cfg.set_cloud_sync(provider)
         if result is None:
-            self._show_msg("Not Found", f"Could not find {provider} folder.")
+            self._show_msg(
+                "Not Found",
+                f"Could not find a usable {provider} folder. On Android, cloud apps often keep files in app-managed storage, so use Browse to pick a synced folder manually.",
+            )
             return
         self._db_label.text = result.db_path or ""
         self._reconnect()
         self._show_msg("Sync Configured", f"Database: {result.db_path}")
+
+    def _browse_custom_path(self):
+        initial = self._path_input.text.strip()
+        if not initial:
+            shared_root = Path("/storage/emulated/0")
+            initial = str(shared_root if shared_root.exists() else cfg.get_db_path().parent)
+
+        chooser = FileChooserListView(path=initial, dirselect=True, multiselect=False)
+        content = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(8))
+        content.add_widget(chooser)
+        button_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        cancel_btn = Button(text="Cancel")
+        select_btn = Button(text="Use folder", background_color=list(_ACCENT))
+        button_row.add_widget(cancel_btn)
+        button_row.add_widget(select_btn)
+        content.add_widget(button_row)
+        popup = Popup(
+            title="Choose Database Folder",
+            content=content,
+            size_hint=(0.94, 0.82),
+        )
+
+        def _select(_):
+            chosen = chooser.selection[0] if chooser.selection else chooser.path
+            self._path_input.text = chosen
+            popup.dismiss()
+
+        cancel_btn.bind(on_release=lambda _: popup.dismiss())
+        select_btn.bind(on_release=_select)
+        popup.open()
 
     def _set_custom(self):
         p = self._path_input.text.strip()
@@ -2658,6 +2709,14 @@ class BdefsScreen(Screen):
         home = self.manager.get_screen("home")
         create_model = score_bdefs(answers)
         saved = db.save_assessment(home.conn, create_model)
+        previous = next(
+            (
+                result
+                for result in db.list_assessments(home.conn, limit=50)
+                if result.assessment_type == AssessmentType.BDEFS and result.id != saved.id
+            ),
+            None,
+        )
 
         msg = f"Total: {saved.score}/{saved.max_score}\n\n"
         for d, s in saved.domain_scores.items():
@@ -2681,6 +2740,25 @@ class BdefsScreen(Screen):
             inner.add_widget(_make_label(advice, font_size=sp(11), color=_MUTED))
         scroll.add_widget(inner)
         content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+        chart_funcs = _get_chart_funcs()
+        if chart_funcs is not None:
+            try:
+                bdefs_radar, _bdefs_timeseries, _bisbas_profile_bars = chart_funcs
+                radar_img = bdefs_radar(
+                    latest=saved,
+                    previous=previous,
+                    title="Executive Function Profile",
+                )
+                radar_core = _pil_to_kivy_image(radar_img)
+                content.add_widget(KivyImage(
+                    texture=radar_core.texture,
+                    size_hint_y=None,
+                    height=dp(250),
+                    allow_stretch=True,
+                    keep_ratio=True,
+                ))
+            except Exception:
+                log.debug("BDEFS radar popup render failed", exc_info=True)
         content.add_widget(scroll)
         close = Button(text="Close", size_hint_y=None, height=dp(44))
         popup = Popup(title="Assessment Result", content=content, size_hint=(0.9, 0.75))
@@ -2780,10 +2858,13 @@ class BisbasScreen(Screen):
         create_model = score_bisbas(answers)
         saved = db.save_assessment(home.conn, create_model)
 
-        msg = f"Total: {saved.score}/{saved.max_score}\n\n"
+        msg = (
+            "Endorsement: "
+            f"{bisbas_normalized_total_score(saved.score)}/{bisbas_effective_max_score()}\n\n"
+        )
         for d, s in saved.domain_scores.items():
-            max_domain = len(BISBAS_QUESTIONS.get(d, [])) * 4
-            msg += f"{d}: {s}/{max_domain if max_domain else 1}\n"
+            max_domain = bisbas_effective_domain_max_score(d) or 1
+            msg += f"{d}: {bisbas_normalized_domain_score(d, s)}/{max_domain}\n"
 
         scroll = ScrollView(do_scroll_x=False)
         inner = BoxLayout(orientation="vertical", spacing=6, padding=10, size_hint_y=None)
@@ -2794,8 +2875,8 @@ class BisbasScreen(Screen):
             "Domain Advice", font_size=sp(15), bold=True, color=_ACCENT,
         ))
         for d, s in saved.domain_scores.items():
-            max_domain = len(BISBAS_QUESTIONS.get(d, [])) * 4
-            advice = bisbas_domain_advice(d, s, max_domain if max_domain else 1)
+            max_domain = bisbas_effective_domain_max_score(d) or 1
+            advice = bisbas_domain_advice(d, s, max_domain)
             inner.add_widget(_make_label(d, font_size=sp(13), bold=True, color=_ACCENT))
             inner.add_widget(_make_label(advice, font_size=sp(11), color=_MUTED))
         inner.add_widget(Widget(size_hint_y=None, height=dp(6)))
@@ -3121,10 +3202,11 @@ class ResultsScreen(ScrollScreen):
                 ))
             elif r.assessment_type == AssessmentType.BISBAS:
                 for d, s in r.domain_scores.items():
-                    max_domain = len(BISBAS_QUESTIONS.get(d, [])) * 4
-                    max_domain = max_domain if max_domain else 1
+                    max_domain = bisbas_effective_domain_max_score(d) or 1
                     c.add_widget(_make_label(
-                        f"  {d}: {s}/{max_domain}", font_size=sp(12), color=_MUTED,
+                        "  "
+                        f"{d}: {bisbas_normalized_domain_score(d, s)}/{max_domain}",
+                        font_size=sp(12), color=_MUTED,
                     ))
                     advice = bisbas_domain_advice(d, s, max_domain)
                     c.add_widget(_make_label(

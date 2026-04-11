@@ -1,7 +1,10 @@
 """Interpretation functions and domain-specific advice for assessments."""
 
 from momentum.domain.assessments.scoring import (
-    BISBAS_QUESTIONS,
+    bisbas_effective_domain_max_score,
+    bisbas_effective_max_score,
+    bisbas_normalized_domain_score,
+    bisbas_normalized_total_score,
 )
 
 # ---------------------------------------------------------------------------
@@ -76,16 +79,45 @@ def interpret_bdefs(score: int, max_score: int) -> str:
 
 def interpret_bisbas(score: int, max_score: int, domain_scores: dict[str, int]) -> str:
     """Return a plain-English interpretation of BIS/BAS profile data."""
-    pct = score / max_score * 100 if max_score else 0
+    del max_score
+    effective_total = bisbas_effective_max_score()
+    pct = (
+        bisbas_normalized_total_score(score) / effective_total * 100
+        if effective_total
+        else 0
+    )
     bis = domain_scores.get("Behavioral Inhibition (BIS)", 0)
     drive = domain_scores.get("BAS Drive", 0)
     reward = domain_scores.get("BAS Reward Responsiveness", 0)
     fun = domain_scores.get("BAS Fun Seeking", 0)
-    max_domain = len(BISBAS_QUESTIONS["Behavioral Inhibition (BIS)"]) * 4
-    bis_pct = bis / max_domain * 100 if max_domain else 0
-    drive_pct = drive / max_domain * 100 if max_domain else 0
-    reward_pct = reward / max_domain * 100 if max_domain else 0
-    fun_pct = fun / max_domain * 100 if max_domain else 0
+    bis_max = bisbas_effective_domain_max_score("Behavioral Inhibition (BIS)")
+    drive_max = bisbas_effective_domain_max_score("BAS Drive")
+    reward_max = bisbas_effective_domain_max_score("BAS Reward Responsiveness")
+    fun_max = bisbas_effective_domain_max_score("BAS Fun Seeking")
+    bis_pct = (
+        bisbas_normalized_domain_score("Behavioral Inhibition (BIS)", bis)
+        / bis_max
+        * 100
+        if bis_max
+        else 0
+    )
+    drive_pct = (
+        bisbas_normalized_domain_score("BAS Drive", drive) / drive_max * 100
+        if drive_max
+        else 0
+    )
+    reward_pct = (
+        bisbas_normalized_domain_score("BAS Reward Responsiveness", reward)
+        / reward_max
+        * 100
+        if reward_max
+        else 0
+    )
+    fun_pct = (
+        bisbas_normalized_domain_score("BAS Fun Seeking", fun) / fun_max * 100
+        if fun_max
+        else 0
+    )
 
     parts: list[str] = []
     if bis_pct >= 75:
@@ -358,7 +390,13 @@ def bisbas_domain_advice(domain: str, score: int, max_domain_score: int) -> str:
     advice_map = _BISBAS_DOMAIN_ADVICE.get(domain)
     if advice_map is None:
         return ""
-    pct = score / max_domain_score * 100 if max_domain_score else 0
+    del max_domain_score
+    effective_max = bisbas_effective_domain_max_score(domain)
+    pct = (
+        bisbas_normalized_domain_score(domain, score) / effective_max * 100
+        if effective_max
+        else 0
+    )
     if pct <= 50:
         return advice_map["low"]
     if pct <= 75:
@@ -398,22 +436,42 @@ def bisbas_bespoke_guidance(domain_scores: dict[str, int]) -> str:
     from momentum.domain.assessments.profile import personalise_from_bisbas
 
     profile = personalise_from_bisbas(domain_scores)
-    max_domain = len(BISBAS_QUESTIONS["Behavioral Inhibition (BIS)"]) * 4
+    max_domain = bisbas_effective_domain_max_score("Behavioral Inhibition (BIS)")
     bis_pct = (
-        domain_scores.get("Behavioral Inhibition (BIS)", 0) / max_domain * 100
+        bisbas_normalized_domain_score(
+            "Behavioral Inhibition (BIS)",
+            domain_scores.get("Behavioral Inhibition (BIS)", 0),
+        )
+        / max_domain
+        * 100
         if max_domain
         else 0
     )
     drive_pct = (
-        domain_scores.get("BAS Drive", 0) / max_domain * 100 if max_domain else 0
+        bisbas_normalized_domain_score("BAS Drive", domain_scores.get("BAS Drive", 0))
+        / max_domain
+        * 100
+        if max_domain
+        else 0
     )
     reward_pct = (
-        domain_scores.get("BAS Reward Responsiveness", 0) / max_domain * 100
+        bisbas_normalized_domain_score(
+            "BAS Reward Responsiveness",
+            domain_scores.get("BAS Reward Responsiveness", 0),
+        )
+        / max_domain
+        * 100
         if max_domain
         else 0
     )
     fun_pct = (
-        domain_scores.get("BAS Fun Seeking", 0) / max_domain * 100 if max_domain else 0
+        bisbas_normalized_domain_score(
+            "BAS Fun Seeking", domain_scores.get("BAS Fun Seeking", 0)
+        )
+        / max_domain
+        * 100
+        if max_domain
+        else 0
     )
 
     tips: list[str] = []

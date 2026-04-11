@@ -381,6 +381,10 @@ def run_test(
         BISBAS_SCALE_LABELS,
         StroopResult,
         bisbas_domain_advice,
+        bisbas_effective_domain_max_score,
+        bisbas_effective_max_score,
+        bisbas_normalized_domain_score,
+        bisbas_normalized_total_score,
         generate_stroop_trials,
         interpret_bdefs,
         interpret_bisbas,
@@ -431,11 +435,16 @@ def run_test(
 
         create_model = score_bisbas(bisbas_answers)
         saved = assessments.save_result(create_model)
-        display.print_info(f"\nTotal score: {saved.score}/{saved.max_score}")
+        display.print_info(
+            "\nEndorsement score: "
+            f"{bisbas_normalized_total_score(saved.score)}/{bisbas_effective_max_score()}"
+        )
         for domain, score in saved.domain_scores.items():
-            n_qs = len(BISBAS_QUESTIONS.get(domain, []))
-            max_domain = n_qs * 4 if n_qs else 1
-            display.print_info(f"  {domain}: {score}/{max_domain}")
+            max_domain = bisbas_effective_domain_max_score(domain) or 1
+            display.print_info(
+                "  "
+                f"{domain}: {bisbas_normalized_domain_score(domain, score)}/{max_domain}"
+            )
             advice = bisbas_domain_advice(domain, score, max_domain)
             if advice:
                 display.console.print(f"    [dim italic]{advice}[/dim italic]")

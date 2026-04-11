@@ -10,9 +10,14 @@ import io
 import math
 import os
 from pathlib import Path
-from typing import Any, Callable, Optional, cast
+from typing import TYPE_CHECKING, Any, Callable, Optional, cast
 
-from momentum.domain.assessments import BDEFS_QUESTIONS, BISBAS_QUESTIONS
+from momentum.domain.assessments import (
+    BDEFS_QUESTIONS,
+    BISBAS_QUESTIONS,
+    bisbas_effective_domain_max_score,
+    bisbas_normalized_domain_score,
+)
 from momentum.models import AssessmentResult, AssessmentType
 from momentum.ui.palette import (
     CHART_ACCENT,
@@ -24,6 +29,13 @@ from momentum.ui.palette import (
     CHART_GREY_LINE,
     CHART_GRID,
 )
+
+if TYPE_CHECKING:
+    from matplotlib.figure import Figure as MatplotlibFigure
+    from PIL.Image import Image as PILImage
+else:
+    MatplotlibFigure = Any
+    PILImage = Any
 
 
 def _configure_matplotlib_runtime() -> None:
@@ -67,9 +79,10 @@ _DOMAIN_ORDER: list[str] = list(BDEFS_QUESTIONS.keys())
 _DOMAIN_MAX = max(len(qs) for qs in BDEFS_QUESTIONS.values()) * 4
 _BISBAS_ORDER: list[str] = list(BISBAS_QUESTIONS.keys())
 _BISBAS_MAX = max(len(qs) for qs in BISBAS_QUESTIONS.values()) * 4
+_BISBAS_EFFECTIVE_MAX = max(bisbas_effective_domain_max_score(d) for d in _BISBAS_ORDER)
 
 
-def _fig_to_pil(fig: Figure, dpi: int = 100) -> Image.Image:
+def _fig_to_pil(fig: MatplotlibFigure, dpi: int = 100) -> PILImage:
     with io.BytesIO() as buf:
         fig.savefig(
             buf,
@@ -82,7 +95,7 @@ def _fig_to_pil(fig: Figure, dpi: int = 100) -> Image.Image:
         plt.close(fig)
         buf.seek(0)
         with Image.open(buf) as image:
-            return image.convert("RGBA").copy()
+            return cast(PILImage, image.convert("RGBA").copy())
 
 
 def _domain_values(result: AssessmentResult) -> list[float]:
@@ -112,7 +125,7 @@ def bdefs_radar(
     title: str = "Executive Function Profile",
     size: tuple[int, int] = (540, 440),
     dpi: int = 100,
-) -> Image.Image:
+) -> PILImage:
     latest_vals = _domain_values(latest) if latest else [0.0] * len(_DOMAIN_ORDER)
 
     n_axes = len(_DOMAIN_ORDER)
@@ -173,7 +186,7 @@ def bdefs_timeseries(
     title: str = "Score Over Time",
     size: tuple[int, int] = (560, 240),
     dpi: int = 100,
-) -> Optional[Image.Image]:
+) -> Optional[PILImage]:
     bdefs = [r for r in results if r.assessment_type == AssessmentType.BDEFS]
     bdefs.sort(key=lambda r: r.taken_at)
     if len(bdefs) < 2:
@@ -248,7 +261,7 @@ def bdefs_momentum_glow(
     title: str = "Momentum Reserve by Domain",
     size: tuple[int, int] = (620, 360),
     dpi: int = 100,
-) -> Image.Image:
+) -> PILImage:
     latest_pct = _domain_percentages(latest)
     previous_pct = _domain_percentages(previous) if previous is not None else None
     x = np.arange(len(_DOMAIN_ORDER), dtype=float)
@@ -404,8 +417,13 @@ def bisbas_profile_bars(
     title: str = "BIS/BAS Motivational Profile",
     size: tuple[int, int] = (560, 260),
     dpi: int = 100,
-) -> Image.Image:
-    scores = [float(result.domain_scores.get(domain, 0)) for domain in _BISBAS_ORDER]
+) -> PILImage:
+    scores = [
+        float(
+            bisbas_normalized_domain_score(domain, result.domain_scores.get(domain, 0))
+        )
+        for domain in _BISBAS_ORDER
+    ]
     labels = ["BIS", "Drive", "Reward", "Fun"]
     y = np.arange(len(_BISBAS_ORDER), dtype=float)
 
@@ -422,9 +440,9 @@ def bisbas_profile_bars(
 
     for idx, value in enumerate(scores):
         ax.text(
-            min(value + 0.35, _BISBAS_MAX - 0.2),
+            min(value + 0.35, _BISBAS_EFFECTIVE_MAX - 0.2),
             idx,
-            f"{int(value)}/{_BISBAS_MAX}",
+            f"{int(value)}/{_BISBAS_EFFECTIVE_MAX}",
             va="center",
             ha="left",
             fontsize=8.5,
@@ -432,11 +450,11 @@ def bisbas_profile_bars(
             fontweight="bold",
         )
 
-    ax.set_xlim(0, _BISBAS_MAX)
+    ax.set_xlim(0, _BISBAS_EFFECTIVE_MAX)
     ax.set_yticks(y)
     ax.set_yticklabels(labels, color=CHART_FG, fontsize=9)
-    ax.set_xticks((0, 5, 10, 15, 20))
-    ax.set_xticklabels(("0", "5", "10", "15", "20"), color=CHART_FG, fontsize=8)
+    ax.set_xticks((0, 5, 10, 15))
+    ax.set_xticklabels(("0", "5", "10", "15"), color=CHART_FG, fontsize=8)
     ax.invert_yaxis()
     ax.tick_params(axis="y", length=0)
     ax.tick_params(axis="x", colors=CHART_FG, labelsize=8)
@@ -450,7 +468,7 @@ def bisbas_profile_bars(
     ax.text(
         0.0,
         1.01,
-        "Higher bars indicate stronger endorsement in that domain.",
+        "Higher bars indicate stronger endorsement above the minimum baseline.",
         transform=ax.transAxes,
         color="#d9dde3",
         fontsize=8,

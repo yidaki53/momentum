@@ -5,11 +5,15 @@ from __future__ import annotations
 from momentum.assessments import (
     BDEFS_QUESTIONS,
     BDEFS_SCALE,
+    BISBAS_QUESTIONS,
     StroopResult,
     StroopTrial,
     bdefs_max_score,
+    bisbas_effective_domain_max_score,
+    bisbas_normalized_domain_score,
     generate_stroop_trials,
     interpret_bdefs,
+    interpret_bisbas,
     interpret_stroop,
     score_bdefs,
     score_stroop,
@@ -64,6 +68,30 @@ class TestInterpretBDEFS:
     def test_significant(self) -> None:
         text = interpret_bdefs(55, 60)  # ~92%
         assert "Significant" in text
+
+
+class TestBisbasNormalisation:
+    def test_normalized_domain_score_removes_minimum_floor(self) -> None:
+        domain = "BAS Drive"
+
+        assert bisbas_normalized_domain_score(domain, 5) == 0
+        assert bisbas_normalized_domain_score(domain, 20) == 15
+        assert bisbas_effective_domain_max_score(domain) == 15
+
+    def test_interpret_bisbas_uses_normalized_domain_ranges(self) -> None:
+        text = interpret_bisbas(
+            26,
+            80,
+            {
+                "Behavioral Inhibition (BIS)": 5,
+                "BAS Drive": 11,
+                "BAS Reward Responsiveness": 5,
+                "BAS Fun Seeking": 5,
+            },
+        )
+
+        assert len(BISBAS_QUESTIONS["BAS Drive"]) == 5
+        assert "lower side" in text
 
 
 class TestStroop:
