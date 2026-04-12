@@ -20,7 +20,7 @@ def _is_android() -> bool:
 def _android_data_dir() -> Path:
     """Return the stable writable app-private directory on Android."""
     try:
-        from jnius import autoclass
+        from jnius import autoclass  # type: ignore[import-not-found]
 
         python_activity = autoclass("org.kivy.android.PythonActivity")
         activity = python_activity.mActivity
@@ -57,6 +57,9 @@ def _android_legacy_data_dirs() -> list[Path]:
     return unique
 
 
+_LEGACY_CONFIG_FILES: list[Path]
+_LEGACY_DB_FILES: list[Path]
+
 if _is_android():
     _DATA_DIR = _android_data_dir() / "data"
     _CONFIG_DIR = _DATA_DIR / "config"
@@ -71,8 +74,8 @@ if _is_android():
 else:
     _CONFIG_DIR = Path.home() / ".config" / "momentum"
     _DB_DIR = Path.home() / ".local" / "share" / "momentum"
-    _LEGACY_CONFIG_FILES: list[Path] = []
-    _LEGACY_DB_FILES: list[Path] = []
+    _LEGACY_CONFIG_FILES = []
+    _LEGACY_DB_FILES = []
 
 _CONFIG_FILE = _CONFIG_DIR / "config.json"
 

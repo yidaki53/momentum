@@ -1,0 +1,207 @@
+name: Play Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: "Git ref to build and publish"
+        required: true
+        default: "master"
+      release_status:
+        description: "Play release status"
+        required: true
+        type: choice
+        options:
+          - draft
+          - completed
+        default: draft
+      dry_run:
+        description: "Build and validate only (skip Play upload)"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build-aab:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.git_ref }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libffi-dev libssl-dev \
+            autoconf automake libtool libltdl-dev pkg-config zlib1g-dev \
+            unzip zip
+
+      - name: Install buildozer and Cython
+        run: |
+          pip install buildozer cython==0.29.36
+
+      - name: Create mobile symlinks
+        run: |
+          cd mobile
+          ln -sfn ../momentum momentum
+          ln -sfn ../ENCOURAGEMENTS.md ENCOURAGEMENTS.md
+          ln -sfn ../SCIENCE.md SCIENCE.md
+          ln -sfn ../README.md README.md
+          ln -sfn ../IMAGES.md IMAGES.md
+
+      - name: Prepare Android signing keystore
+        env:
+          ANDROID_UPLOAD_KEYSTORE_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_B64 }}
+          ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          KEYSTORE_B64="${ANDROID_UPLOAD_KEYSTORE_B64:-${ANDROID_RELEASE_KEYSTORE_B64:-}}"
+          if [ -z "${KEYSTORE_B64}" ]; then
+            echo "Missing required secret: ANDROID_UPLOAD_KEYSTORE_B64 (preferred) or ANDROID_RELEASE_KEYSTORE_B64 (legacy)." >&2
+            exit 1
+          fi
+          mkdir -p mobile/.ci
+          export KEYSTORE_B64
+          python -c "import base64,os,re; raw=os.environ.get('KEYSTORE_B64',''); clean=re.sub(r'\\s+','',raw).replace('-','+').replace('_','/'); clean += '='*((4-len(clean)%4)%4); open('mobile/.ci/release.keystore','wb').write(base64.b64decode(clean, validate=True))" || {
+            echo "Android upload/release keystore secret is not valid base64 after normalization." >&2
+            exit 1
+          }
+          if [ ! -s mobile/.ci/release.keystore ]; then
+            echo "Decoded Android keystore is empty or unreadable" >&2
+            exit 1
+          fi
+
+      - name: Validate Android signing configuration
+        env:
+          P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
+          ANDROID_UPLOAD_KEYSTORE_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWD }}
+          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}
+          ANDROID_UPLOAD_KEYALIAS: ${{ secrets.ANDROID_UPLOAD_KEYALIAS }}
+          P4A_RELEASE_KEYALIAS: ${{ secrets.ANDROID_RELEASE_KEYALIAS }}
+          ANDROID_UPLOAD_KEYALIAS_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYALIAS_PASSWD }}
+          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYALIAS_PASSWD }}
+        run: |
+          set -euo pipefail
+
+          P4A_RELEASE_KEYSTORE_PASSWD="${ANDROID_UPLOAD_KEYSTORE_PASSWD:-${P4A_RELEASE_KEYSTORE_PASSWD:-}}"
+          P4A_RELEASE_KEYALIAS="${ANDROID_UPLOAD_KEYALIAS:-${P4A_RELEASE_KEYALIAS:-}}"
+          P4A_RELEASE_KEYALIAS_PASSWD="${ANDROID_UPLOAD_KEYALIAS_PASSWD:-${P4A_RELEASE_KEYALIAS_PASSWD:-}}"
+
+          if [ -z "${P4A_RELEASE_KEYSTORE_PASSWD}" ] || [ -z "${P4A_RELEASE_KEYALIAS}" ] || [ -z "${P4A_RELEASE_KEYALIAS_PASSWD}" ]; then
+            echo "Missing required Android signing secrets: ANDROID_UPLOAD_KEYSTORE_PASSWD, ANDROID_UPLOAD_KEYALIAS, ANDROID_UPLOAD_KEYALIAS_PASSWD (preferred) or ANDROID_RELEASE_* (legacy)." >&2
+            exit 1
+          fi
+
+          if ! keytool -list \
+            -keystore "${P4A_RELEASE_KEYSTORE}" \
+            -storepass "${P4A_RELEASE_KEYSTORE_PASSWD}" \
+            >/tmp/android-signing-check.log 2>&1; then
+            echo "Android signing preflight failed: cannot open keystore with provided store password." >&2
+            cat /tmp/android-signing-check.log >&2
+            exit 1
+          fi
+
+          if ! grep -q "${P4A_RELEASE_KEYALIAS}" /tmp/android-signing-check.log; then
+            echo "Android signing preflight failed: alias '${P4A_RELEASE_KEYALIAS}' not found in keystore." >&2
+            cat /tmp/android-signing-check.log >&2
+            exit 1
+          fi
+
+          if ! keytool -importkeystore \
+            -srckeystore "${P4A_RELEASE_KEYSTORE}" \
+            -srcstorepass "${P4A_RELEASE_KEYSTORE_PASSWD}" \
+            -srcalias "${P4A_RELEASE_KEYALIAS}" \
+            -srckeypass "${P4A_RELEASE_KEYALIAS_PASSWD}" \
+            -destkeystore /tmp/android-signing-verify.p12 \
+            -deststorepass "ci_verify_tmp" \
+            -destkeypass "ci_verify_tmp" \
+            -deststoretype pkcs12 \
+            -noprompt \
+            >/tmp/android-keypass-check.log 2>&1; then
+            echo "Android signing preflight failed: cannot decrypt key entry with provided key password." >&2
+            cat /tmp/android-keypass-check.log >&2
+            exit 1
+          fi
+          rm -f /tmp/android-signing-verify.p12
+
+      - name: Build AAB
+        env:
+          P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
+          ANDROID_UPLOAD_KEYSTORE_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWD }}
+          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}
+          ANDROID_UPLOAD_KEYALIAS: ${{ secrets.ANDROID_UPLOAD_KEYALIAS }}
+          P4A_RELEASE_KEYALIAS: ${{ secrets.ANDROID_RELEASE_KEYALIAS }}
+          ANDROID_UPLOAD_KEYALIAS_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYALIAS_PASSWD }}
+          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYALIAS_PASSWD }}
+        run: |
+          set -euo pipefail
+
+          P4A_RELEASE_KEYSTORE_PASSWD="${ANDROID_UPLOAD_KEYSTORE_PASSWD:-${P4A_RELEASE_KEYSTORE_PASSWD:-}}"
+          P4A_RELEASE_KEYALIAS="${ANDROID_UPLOAD_KEYALIAS:-${P4A_RELEASE_KEYALIAS:-}}"
+          P4A_RELEASE_KEYALIAS_PASSWD="${ANDROID_UPLOAD_KEYALIAS_PASSWD:-${P4A_RELEASE_KEYALIAS_PASSWD:-}}"
+
+          if [ -z "${P4A_RELEASE_KEYSTORE_PASSWD}" ] || [ -z "${P4A_RELEASE_KEYALIAS}" ] || [ -z "${P4A_RELEASE_KEYALIAS_PASSWD}" ]; then
+            echo "Missing required Android signing secrets: ANDROID_UPLOAD_KEYSTORE_PASSWD, ANDROID_UPLOAD_KEYALIAS, ANDROID_UPLOAD_KEYALIAS_PASSWD (preferred) or ANDROID_RELEASE_* (legacy)." >&2
+            exit 1
+          fi
+
+          cd mobile
+          sed -i 's|^android.release_artifact.*|android.release_artifact = aab|' buildozer.spec
+          buildozer android release
+
+      - name: Prepare AAB artifact
+        run: |
+          mkdir -p artifacts
+          AAB_PATH=""
+          for candidate in mobile/bin/*-release.aab mobile/bin/*.aab; do
+            if [ -f "$candidate" ]; then
+              AAB_PATH="$candidate"
+              break
+            fi
+          done
+          if [ -z "$AAB_PATH" ]; then
+            echo "No AAB build artifact found in mobile/bin" >&2
+            exit 1
+          fi
+          cp "$AAB_PATH" artifacts/momentum-android.aab
+
+      - name: Upload AAB workflow artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: momentum-android-play
+          path: artifacts/momentum-android.aab
+
+  publish-internal:
+    needs: build-aab
+    if: ${{ inputs.dry_run == false }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download AAB artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: momentum-android-play
+          path: artifacts
+
+      - name: Upload to Google Play internal track
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: dev.momentum.momentum
+          releaseFiles: artifacts/momentum-android.aab
+          track: internal
+          status: ${{ inputs.release_status }}

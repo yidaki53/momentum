@@ -20,3 +20,23 @@ Release branch policy:
 - Cut from `master` (or `develop` if introduced later)
 - Release branch is stabilization-only
 - Tag shipped releases as `vMAJOR.MINOR.PATCH`
+
+## Paid launch checklist (Play rollout/rollback gates)
+
+### Pre-rollout gates
+1. Semver/version touchpoints are aligned (`pyproject.toml`, desktop/mobile `__init__`, and `mobile/buildozer.spec`).
+2. CI is green for tests plus Android artifact build.
+3. Internal-track upload succeeds from the dedicated Play publish workflow.
+4. Smoke checks pass on at least one clean-install and one upgrade-install Android device.
+5. Release notes, privacy copy, and support contact path are ready.
+
+### Staged rollout gates
+1. Start with internal track verification, then production staged rollout at a low fraction.
+2. Promote only after crash-free session trend, startup success, and core home/settings/timer flows remain healthy.
+3. Hold rollout if any severe regression appears in onboarding, timer continuity, settings persistence, or assessment rendering.
+
+### Rollback gates
+1. Immediate halt criteria: startup crash spike, data-loss signal, timer/session corruption, or signing/install failures.
+2. If halt criteria trigger, stop rollout in Play Console and keep current release status non-completed.
+3. Ship a patched build with incremented semver and monotonic `android.numeric_version` before resuming rollout.
+4. Record incident, trigger condition, and mitigation in release notes/history for future launches.

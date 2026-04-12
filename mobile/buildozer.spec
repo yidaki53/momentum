@@ -9,7 +9,7 @@ source.include_exts = py,png,jpg,kv,atlas,md
 version = 0.4.0
 
 # Dependencies
-requirements = python3,kivy,pydantic,pydantic-core,pillow,matplotlib,numpy
+requirements = python3,kivy,pydantic,pydantic-core,pillow,matplotlib,numpy,certifi
 
 # Include the core momentum package (via symlink) and data files
 source.include_patterns = main.py,momentum/*.py,momentum/**/*.py,momentum/**/**/*.py,ENCOURAGEMENTS.md,SCIENCE.md,README.md,IMAGES.md
