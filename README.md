@@ -178,16 +178,20 @@ A full-featured Kivy-based Android app is in `mobile/`. It mirrors desktop capab
 - Light/dark theme and accessibility options (larger text, higher contrast, reduced visual load)
 - Shared local data model with CLI and desktop GUI
 
-Pre-built APKs are attached to [GitHub releases](../../releases). To install, download `momentum-android.apk` and sideload it.
+Pre-built Android artifacts are attached to [GitHub releases](../../releases):
+
+- `momentum-android.apk` for direct sideload installs.
+- `momentum-android.aab` for Google Play Console uploads.
 
 To build locally:
 
 ```bash
 make mobile-deps    # install buildozer + kivy
 make mobile-apk     # compile APK (requires Android SDK/NDK + Java 17)
+make mobile-aab     # compile signed AAB for Play upload
 ```
 
-The APK is also built automatically by GitHub Actions CI on every push to master.
+Both APK and AAB artifacts are built automatically by GitHub Actions CI on every push to master.
 
 See the [Buildozer docs](https://buildozer.readthedocs.io/en/latest/installation.html) for SDK/NDK setup.
 
@@ -201,6 +205,7 @@ make test           # run tests
 make lint           # run ruff linter
 make typecheck      # run mypy
 make gui            # launch the GUI
+make mobile-aab     # build Android AAB release artifact
 make clean          # remove caches and build artefacts
 ```
 

@@ -91,13 +91,13 @@ def personalised_act_guidance(profile: PersonalisationProfile) -> str:
     """Return profile-aware ACT usage guidance for UI surfaces."""
     intro = (
         "ACT stands for Acceptance and Commitment Therapy. Here it works like a short "
-        "momentum reset: notice what is here, loosen one sticky thought, and choose "
+        "ACT check-in: notice what is here, loosen one sticky thought, and choose "
         "one tiny next move. Keep each answer brief; one honest sentence is enough."
     )
     if profile.add_reassurance and profile.suggest_breakdown:
         return (
             intro
-            + " Start with what matters today, name the friction, then lock in a 2-5 minute next step."
+            + " Start with what matters today, name the friction, then lock in one tiny next action you can finish in 2-5 minutes."
         )
     if profile.add_reassurance:
         return (

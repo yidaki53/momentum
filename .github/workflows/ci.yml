@@ -202,20 +202,22 @@ jobs:
 
       - name: Prepare Android signing keystore
         env:
+          ANDROID_UPLOAD_KEYSTORE_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_B64 }}
           ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
         run: |
           set -euo pipefail
-          if [ -z "${ANDROID_RELEASE_KEYSTORE_B64}" ]; then
-            echo "Missing required secret: ANDROID_RELEASE_KEYSTORE_B64" >&2
+          KEYSTORE_B64="${ANDROID_UPLOAD_KEYSTORE_B64:-${ANDROID_RELEASE_KEYSTORE_B64:-}}"
+          if [ -z "${KEYSTORE_B64}" ]; then
+            echo "Missing required secret: ANDROID_UPLOAD_KEYSTORE_B64 (preferred) or ANDROID_RELEASE_KEYSTORE_B64 (legacy)." >&2
             exit 1
           fi
           mkdir -p mobile/.ci
 
           # Decode robustly: tolerate wrapped/urlsafe/missing-padding base64 while
           # still validating content before writing the keystore.
-          export ANDROID_RELEASE_KEYSTORE_B64
-          python -c "import base64,os,re; raw=os.environ.get('ANDROID_RELEASE_KEYSTORE_B64',''); clean=re.sub(r'\\s+','',raw).replace('-','+').replace('_','/'); clean += '='*((4-len(clean)%4)%4); open('mobile/.ci/release.keystore','wb').write(base64.b64decode(clean, validate=True))" || {
-            echo "ANDROID_RELEASE_KEYSTORE_B64 is not valid base64 after normalization." >&2
+          export KEYSTORE_B64
+          python -c "import base64,os,re; raw=os.environ.get('KEYSTORE_B64',''); clean=re.sub(r'\\s+','',raw).replace('-','+').replace('_','/'); clean += '='*((4-len(clean)%4)%4); open('mobile/.ci/release.keystore','wb').write(base64.b64decode(clean, validate=True))" || {
+            echo "Android upload/release keystore secret is not valid base64 after normalization." >&2
             exit 1
           }
 
@@ -227,13 +229,21 @@ jobs:
       - name: Validate Android signing configuration
         env:
           P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
+          ANDROID_UPLOAD_KEYSTORE_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWD }}
           P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}
+          ANDROID_UPLOAD_KEYALIAS: ${{ secrets.ANDROID_UPLOAD_KEYALIAS }}
           P4A_RELEASE_KEYALIAS: ${{ secrets.ANDROID_RELEASE_KEYALIAS }}
+          ANDROID_UPLOAD_KEYALIAS_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYALIAS_PASSWD }}
           P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYALIAS_PASSWD }}
         run: |
           set -euo pipefail
+
+          P4A_RELEASE_KEYSTORE_PASSWD="${ANDROID_UPLOAD_KEYSTORE_PASSWD:-${P4A_RELEASE_KEYSTORE_PASSWD:-}}"
+          P4A_RELEASE_KEYALIAS="${ANDROID_UPLOAD_KEYALIAS:-${P4A_RELEASE_KEYALIAS:-}}"
+          P4A_RELEASE_KEYALIAS_PASSWD="${ANDROID_UPLOAD_KEYALIAS_PASSWD:-${P4A_RELEASE_KEYALIAS_PASSWD:-}}"
+
           if [ -z "${P4A_RELEASE_KEYSTORE_PASSWD}" ] || [ -z "${P4A_RELEASE_KEYALIAS}" ] || [ -z "${P4A_RELEASE_KEYALIAS_PASSWD}" ]; then
-            echo "Missing required Android signing secrets: ANDROID_RELEASE_KEYSTORE_PASSWD, ANDROID_RELEASE_KEYALIAS, ANDROID_RELEASE_KEYALIAS_PASSWD" >&2
+            echo "Missing required Android signing secrets: ANDROID_UPLOAD_KEYSTORE_PASSWD, ANDROID_UPLOAD_KEYALIAS, ANDROID_UPLOAD_KEYALIAS_PASSWD (preferred) or ANDROID_RELEASE_* (legacy)." >&2
             exit 1
           fi
 
@@ -242,14 +252,14 @@ jobs:
             -keystore "${P4A_RELEASE_KEYSTORE}" \
             -storepass "${P4A_RELEASE_KEYSTORE_PASSWD}" \
             >/tmp/android-signing-check.log 2>&1; then
-            echo "Android signing preflight failed: cannot open keystore with ANDROID_RELEASE_KEYSTORE_PASSWD." >&2
+            echo "Android signing preflight failed: cannot open keystore with ANDROID_UPLOAD_KEYSTORE_PASSWD (or legacy ANDROID_RELEASE_KEYSTORE_PASSWD)." >&2
             cat /tmp/android-signing-check.log >&2
             exit 1
           fi
 
           # Step 2: verify the alias exists in the keystore
           if ! grep -q "${P4A_RELEASE_KEYALIAS}" /tmp/android-signing-check.log; then
-            echo "Android signing preflight failed: alias '${P4A_RELEASE_KEYALIAS}' not found in keystore. Check ANDROID_RELEASE_KEYALIAS." >&2
+            echo "Android signing preflight failed: alias '${P4A_RELEASE_KEYALIAS}' not found in keystore. Check ANDROID_UPLOAD_KEYALIAS (or legacy ANDROID_RELEASE_KEYALIAS)." >&2
             cat /tmp/android-signing-check.log >&2
             exit 1
           fi
@@ -268,9 +278,9 @@ jobs:
             -deststoretype pkcs12 \
             -noprompt \
             >/tmp/android-keypass-check.log 2>&1; then
-            echo "Android signing preflight failed: cannot decrypt key entry with ANDROID_RELEASE_KEYALIAS_PASSWD." >&2
+            echo "Android signing preflight failed: cannot decrypt key entry with ANDROID_UPLOAD_KEYALIAS_PASSWD (or legacy ANDROID_RELEASE_KEYALIAS_PASSWD)." >&2
             echo "This is the root cause of 'Given final block not properly padded' during Gradle packageRelease." >&2
-            echo "Fix: update ANDROID_RELEASE_KEYALIAS_PASSWD in GitHub secrets to the key entry password used when the keystore was created." >&2
+            echo "Fix: update ANDROID_UPLOAD_KEYALIAS_PASSWD in GitHub secrets (or legacy ANDROID_RELEASE_KEYALIAS_PASSWD) to the key entry password used when the keystore was created." >&2
             echo "Note: many Android keystores use the same password for both the store and the key entry." >&2
             cat /tmp/android-keypass-check.log >&2
             exit 1
@@ -282,13 +292,21 @@ jobs:
       - name: Build APK
         env:
           P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
+          ANDROID_UPLOAD_KEYSTORE_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWD }}
           P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}
+          ANDROID_UPLOAD_KEYALIAS: ${{ secrets.ANDROID_UPLOAD_KEYALIAS }}
           P4A_RELEASE_KEYALIAS: ${{ secrets.ANDROID_RELEASE_KEYALIAS }}
+          ANDROID_UPLOAD_KEYALIAS_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYALIAS_PASSWD }}
           P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYALIAS_PASSWD }}
         run: |
           set -euo pipefail
+
+          P4A_RELEASE_KEYSTORE_PASSWD="${ANDROID_UPLOAD_KEYSTORE_PASSWD:-${P4A_RELEASE_KEYSTORE_PASSWD:-}}"
+          P4A_RELEASE_KEYALIAS="${ANDROID_UPLOAD_KEYALIAS:-${P4A_RELEASE_KEYALIAS:-}}"
+          P4A_RELEASE_KEYALIAS_PASSWD="${ANDROID_UPLOAD_KEYALIAS_PASSWD:-${P4A_RELEASE_KEYALIAS_PASSWD:-}}"
+
           if [ -z "${P4A_RELEASE_KEYSTORE_PASSWD}" ] || [ -z "${P4A_RELEASE_KEYALIAS}" ] || [ -z "${P4A_RELEASE_KEYALIAS_PASSWD}" ]; then
-            echo "Missing required Android signing secrets: ANDROID_RELEASE_KEYSTORE_PASSWD, ANDROID_RELEASE_KEYALIAS, ANDROID_RELEASE_KEYALIAS_PASSWD" >&2
+            echo "Missing required Android signing secrets: ANDROID_UPLOAD_KEYSTORE_PASSWD, ANDROID_UPLOAD_KEYALIAS, ANDROID_UPLOAD_KEYALIAS_PASSWD (preferred) or ANDROID_RELEASE_* (legacy)." >&2
             exit 1
           fi
           cd mobile
@@ -312,6 +330,30 @@ jobs:
 
           buildozer android release
 
+      - name: Build AAB
+        env:
+          P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
+          ANDROID_UPLOAD_KEYSTORE_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWD }}
+          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}
+          ANDROID_UPLOAD_KEYALIAS: ${{ secrets.ANDROID_UPLOAD_KEYALIAS }}
+          P4A_RELEASE_KEYALIAS: ${{ secrets.ANDROID_RELEASE_KEYALIAS }}
+          ANDROID_UPLOAD_KEYALIAS_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYALIAS_PASSWD }}
+          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYALIAS_PASSWD }}
+        run: |
+          set -euo pipefail
+
+          P4A_RELEASE_KEYSTORE_PASSWD="${ANDROID_UPLOAD_KEYSTORE_PASSWD:-${P4A_RELEASE_KEYSTORE_PASSWD:-}}"
+          P4A_RELEASE_KEYALIAS="${ANDROID_UPLOAD_KEYALIAS:-${P4A_RELEASE_KEYALIAS:-}}"
+          P4A_RELEASE_KEYALIAS_PASSWD="${ANDROID_UPLOAD_KEYALIAS_PASSWD:-${P4A_RELEASE_KEYALIAS_PASSWD:-}}"
+
+          if [ -z "${P4A_RELEASE_KEYSTORE_PASSWD}" ] || [ -z "${P4A_RELEASE_KEYALIAS}" ] || [ -z "${P4A_RELEASE_KEYALIAS_PASSWD}" ]; then
+            echo "Missing required Android signing secrets: ANDROID_UPLOAD_KEYSTORE_PASSWD, ANDROID_UPLOAD_KEYALIAS, ANDROID_UPLOAD_KEYALIAS_PASSWD (preferred) or ANDROID_RELEASE_* (legacy)." >&2
+            exit 1
+          fi
+          cd mobile
+          sed -i 's|^android.release_artifact.*|android.release_artifact = aab|' buildozer.spec
+          buildozer android release
+
       - name: Prepare APK artifact
         run: |
           mkdir -p artifacts
@@ -328,11 +370,29 @@ jobs:
           fi
           cp "$APK_PATH" artifacts/momentum-android.apk
 
-      - name: Upload APK artifact
+      - name: Prepare AAB artifact
+        run: |
+          mkdir -p artifacts
+          AAB_PATH=""
+          for candidate in mobile/bin/*-release.aab mobile/bin/*.aab; do
+            if [ -f "$candidate" ]; then
+              AAB_PATH="$candidate"
+              break
+            fi
+          done
+          if [ -z "$AAB_PATH" ]; then
+            echo "No AAB build artifact found in mobile/bin" >&2
+            exit 1
+          fi
+          cp "$AAB_PATH" artifacts/momentum-android.aab
+
+      - name: Upload Android artifacts
         uses: actions/upload-artifact@v5
         with:
           name: momentum-android
-          path: artifacts/momentum-android.apk
+          path: |
+            artifacts/momentum-android.apk
+            artifacts/momentum-android.aab
 
   release:
     needs: [build, build-apk]
@@ -371,7 +431,8 @@ jobs:
             - **Linux**: `momentum-linux` (standalone binary) or `momentum_<version>_amd64.deb` (Debian/Ubuntu package)
             - **macOS**: `momentum-macos`
             - **Windows**: `momentum-windows.exe`
-            - **Android**: `momentum-android.apk`
+            - **Android sideload**: `momentum-android.apk`
+            - **Android Play upload**: `momentum-android.aab`
           files: release-assets/*
           draft: false
           prerelease: false

@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint typecheck gui dist build mobile-deps mobile-apk clean help
+.PHONY: install install-dev test lint typecheck gui dist build mobile-deps mobile-apk mobile-aab clean help
 
 PYTHON := python3
 POETRY := poetry
@@ -55,7 +55,7 @@ build: dist ## Alias for dist
 # Mobile (Kivy + Buildozer)
 # ---------------------------------------------------------------------------
 
-mobile-deps: ## Install Buildozer and Kivy dependencies for APK builds
+mobile-deps: ## Install Buildozer and Kivy dependencies for Android builds
 	$(PIP) install buildozer kivy cython
 	@echo ""
 	@echo "You also need Android SDK/NDK build tools."
@@ -63,6 +63,14 @@ mobile-deps: ## Install Buildozer and Kivy dependencies for APK builds
 
 mobile-apk: ## Build Android APK (requires buildozer + SDK)
 	cd mobile && buildozer android debug
+
+mobile-aab: ## Build Android AAB release artifact for Play upload
+	cd mobile && cp buildozer.spec buildozer.spec.bak && \
+		sed -i 's|^android.release_artifact.*|android.release_artifact = aab|' buildozer.spec && \
+		buildozer android release; \
+	status=$$?; \
+	mv buildozer.spec.bak buildozer.spec; \
+	exit $$status
 
 # ---------------------------------------------------------------------------
 # Housekeeping
