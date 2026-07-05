@@ -191,6 +191,13 @@ jobs:
         run: |
           pip install buildozer cython==0.29.36
 
+      - name: Install Android NDK 25b
+        run: |
+          mkdir -p $ANDROID_HOME/cmdline-tools/latest/bin
+          yes | sdkmanager --sdk_root=$ANDROID_HOME "ndk;25b" || true
+          echo "NDK_HOME=$ANDROID_HOME/ndk/25b" >> $GITHUB_ENV
+          echo "$ANDROID_HOME/ndk/25b" >> $GITHUB_PATH
+
       - name: Create mobile symlinks
         run: |
           cd mobile

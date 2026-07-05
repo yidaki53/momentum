@@ -8,8 +8,13 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,md
 version = 0.4.0
 
+# Note: AI Coach / LLM features are opt-in on mobile because llm/engine.py
+# tries to import llama-cpp-python, which is not available via buildozer by default.
+# Users who manually enable it will need to install the runtime dependency separately.
+
 # Dependencies
-requirements = python3,kivy,pydantic,pydantic-core,pillow,matplotlib,numpy,certifi
+# Pin numpy to <2 for Android NDK compatibility (newer numpy C++17 code breaks on r25b)
+requirements = python3,kivy,pydantic,pydantic-core,pillow,matplotlib,numpy<2,certifi
 
 # Include the core momentum package (via symlink) and data files
 source.include_patterns = main.py,momentum/*.py,momentum/**/*.py,momentum/**/**/*.py,ENCOURAGEMENTS.md,SCIENCE.md,README.md,IMAGES.md

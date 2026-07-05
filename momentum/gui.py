@@ -47,11 +47,20 @@ from momentum.assessments import (
     should_show_act_support,
 )
 from momentum.encouragement import get_break_message, get_nudge
-from momentum.llm import DISCLAIMER, SHORT_DISCLAIMER
-from momentum.llm.context import build_chat_history, build_user_context
-from momentum.llm.downloader import ensure_model, is_model_downloaded, model_size_mb
-from momentum.llm.engine import get_engine
-from momentum.llm.prompts import build_chat_prompt, build_encouragement_prompt
+
+# LLM is optional on mobile; desktop always has it via pyproject.toml
+try:
+    from momentum.llm import DISCLAIMER, SHORT_DISCLAIMER
+    from momentum.llm.context import build_chat_history, build_user_context
+    from momentum.llm.downloader import ensure_model, is_model_downloaded, model_size_mb
+    from momentum.llm.engine import get_engine
+    from momentum.llm.prompts import build_chat_prompt, build_encouragement_prompt
+    _LLM_AVAILABLE = True
+except ImportError:
+    _LLM_AVAILABLE = False
+    DISCLAIMER = "AI Coach provides general support strategies — not professional medical advice. Consult your GP if needed."
+    SHORT_DISCLAIMER = DISCLAIMER
+
 from momentum.models import (
     ActJournalEntryCreate,
     AssessmentResult,
@@ -448,18 +457,19 @@ class MomentumApp:
         tests_menu.add_command(label="View Results", command=self._on_view_results)
         menubar.add_cascade(label="Tests", menu=tests_menu)
 
-        # --- AI Coach menu ---
-        coach_menu = tk.Menu(
-            menubar,
-            tearoff=0,
-            bg=panel_bg,
-            fg=fg,
-            activebackground=accent,
-            activeforeground=fg,
-        )
-        coach_menu.add_command(label="Open AI Coach", command=self._on_ai_coach)
-        coach_menu.add_command(label="Download Model", command=self._on_download_model)
-        menubar.add_cascade(label="AI Coach", menu=coach_menu)
+        # --- AI Coach menu (opt-in; hidden if LLM unavailable) ---
+        if _LLM_AVAILABLE:
+            coach_menu = tk.Menu(
+                menubar,
+                tearoff=0,
+                bg=panel_bg,
+                fg=fg,
+                activebackground=accent,
+                activeforeground=fg,
+            )
+            coach_menu.add_command(label="Open AI Coach", command=self._on_ai_coach)
+            coach_menu.add_command(label="Download Model", command=self._on_download_model)
+            menubar.add_cascade(label="AI Coach", menu=coach_menu)
 
         # --- Peaceful image banner ---
         self._image_label = tk.Label(
