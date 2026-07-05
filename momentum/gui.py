@@ -2592,7 +2592,7 @@ class MomentumApp:
                 ensure_model(model_name, progress_callback=_update_progress)
                 self.root.after(0, lambda: _done())
             except Exception as exc:
-                self.root.after(0, lambda: _error(exc))
+                self.root.after(0, lambda e=exc: _error(e))
 
         def _done() -> None:
             win.destroy()
