@@ -188,7 +188,6 @@ To build locally:
 ```bash
 make mobile-deps    # install buildozer + kivy
 make mobile-apk     # compile APK (requires Android SDK/NDK + Java 17)
-make mobile-aab     # compile signed AAB for Play upload
 ```
 
 Both APK and AAB artifacts are built automatically by GitHub Actions CI on every push to master.
@@ -205,7 +204,6 @@ make test           # run tests
 make lint           # run ruff linter
 make typecheck      # run mypy
 make gui            # launch the GUI
-make mobile-aab     # build Android AAB release artifact
 make clean          # remove caches and build artefacts
 ```
 

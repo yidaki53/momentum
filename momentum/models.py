@@ -153,6 +153,8 @@ class AppConfig(BaseModel):
     timer_cycle_mode: TimerCycleMode = TimerCycleMode.MANUAL
     check_updates_at_startup: bool = True
     last_update_check_unix: int = 0
+    show_llm_welcome: bool = True
+    llm_model: str = "tinyllama"
 
 
 class ActJournalEntry(BaseModel):
@@ -175,3 +177,19 @@ class ActJournalEntryCreate(BaseModel):
     thoughts_feelings: str = Field(min_length=1, max_length=2500)
     defusion_reframe: str = Field(min_length=1, max_length=2500)
     committed_action: str = Field(min_length=1, max_length=1500)
+
+
+class LlmChatMessage(BaseModel):
+    """A single message in the AI Coach chat history."""
+
+    id: int
+    role: str  # 'user' or 'assistant'
+    content: str
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class LlmChatMessageCreate(BaseModel):
+    """Input model for saving a chat message."""
+
+    role: str = Field(pattern=r"^(user|assistant)$")
+    content: str = Field(min_length=1, max_length=10000)

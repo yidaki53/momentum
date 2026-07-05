@@ -17,6 +17,8 @@ from momentum.models import (
     DailyLog,
     FocusSession,
     FocusSessionCreate,
+    LlmChatMessage,
+    LlmChatMessageCreate,
     StatusSummary,
     Task,
     TaskCreate,
@@ -63,6 +65,13 @@ CREATE TABLE IF NOT EXISTS act_journal_entries (
     defusion_reframe  TEXT    NOT NULL,
     committed_action  TEXT    NOT NULL,
     created_at        TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS llm_chat_messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    role        TEXT    NOT NULL,
+    content     TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL
 );
 """
 
@@ -452,6 +461,61 @@ def delete_daily_log(conn: sqlite3.Connection, log_date: str) -> bool:
     cur = conn.execute("DELETE FROM daily_log WHERE date = ?", (log_date,))
     conn.commit()
     return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# LLM Chat messages
+# ---------------------------------------------------------------------------
+
+
+def _row_to_llm_chat_message(row: sqlite3.Row) -> LlmChatMessage:
+    """Convert a database row to an LlmChatMessage model."""
+    return LlmChatMessage(
+        id=row["id"],
+        role=row["role"],
+        content=row["content"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def add_llm_chat_message(
+    conn: sqlite3.Connection, msg_in: LlmChatMessageCreate
+) -> LlmChatMessage:
+    """Save a chat message to the database."""
+    now = datetime.now().isoformat()
+    cur = conn.execute(
+        "INSERT INTO llm_chat_messages (role, content, created_at) VALUES (?, ?, ?)",
+        (msg_in.role, msg_in.content, now),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM llm_chat_messages WHERE id = ?", (cur.lastrowid,)
+    ).fetchone()
+    return _row_to_llm_chat_message(row)
+
+
+def list_llm_chat_messages(
+    conn: sqlite3.Connection,
+    limit: int = 20,
+) -> list[LlmChatMessage]:
+    """List recent chat messages, oldest first (for conversation context)."""
+    rows = conn.execute(
+        "SELECT * FROM llm_chat_messages ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [_row_to_llm_chat_message(r) for r in rows]
+
+
+def delete_all_llm_chat_messages(conn: sqlite3.Connection) -> int:
+    """Delete all chat messages. Returns the number of rows deleted."""
+    cur = conn.execute("DELETE FROM llm_chat_messages")
+    conn.commit()
+    return cur.rowcount
+
+
+# ---------------------------------------------------------------------------
+# Status
+# ---------------------------------------------------------------------------
 
 
 def get_status(conn: sqlite3.Connection) -> StatusSummary:

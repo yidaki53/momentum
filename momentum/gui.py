@@ -47,10 +47,16 @@ from momentum.assessments import (
     should_show_act_support,
 )
 from momentum.encouragement import get_break_message, get_nudge
+from momentum.llm import DISCLAIMER, SHORT_DISCLAIMER
+from momentum.llm.context import build_chat_history, build_user_context
+from momentum.llm.downloader import ensure_model, is_model_downloaded, model_size_mb
+from momentum.llm.engine import get_engine, reset_engine
+from momentum.llm.prompts import build_chat_prompt, build_encouragement_prompt
 from momentum.models import (
     ActJournalEntryCreate,
     AssessmentResult,
     AssessmentType,
+    LlmChatMessageCreate,
     TaskStatus,
     ThemeMode,
     WindowPosition,
@@ -441,6 +447,19 @@ class MomentumApp:
         tests_menu.add_separator()
         tests_menu.add_command(label="View Results", command=self._on_view_results)
         menubar.add_cascade(label="Tests", menu=tests_menu)
+
+        # --- AI Coach menu ---
+        coach_menu = tk.Menu(
+            menubar,
+            tearoff=0,
+            bg=panel_bg,
+            fg=fg,
+            activebackground=accent,
+            activeforeground=fg,
+        )
+        coach_menu.add_command(label="Open AI Coach", command=self._on_ai_coach)
+        coach_menu.add_command(label="Download Model", command=self._on_download_model)
+        menubar.add_cascade(label="AI Coach", menu=coach_menu)
 
         # --- Peaceful image banner ---
         self._image_label = tk.Label(
@@ -1234,6 +1253,49 @@ class MomentumApp:
         ttk.Button(data_frame, text="Browse database", command=self._on_browse_db).pack(
             side=tk.LEFT, padx=2
         )
+
+        # --- AI Coach ---
+        ttk.Label(win, text="AI Coach", style="Title.TLabel").pack(
+            anchor=tk.W, padx=12, pady=(10, 4)
+        )
+        coach_frame = ttk.Frame(win)
+        coach_frame.pack(fill=tk.X, padx=12)
+
+        show_welcome_var = tk.BooleanVar(value=current.show_llm_welcome)
+
+        def _set_show_welcome():
+            conf = cfg.load_config()
+            conf.show_llm_welcome = show_welcome_var.get()
+            cfg.save_config(conf)
+            self._config.show_llm_welcome = show_welcome_var.get()
+
+        tk.Checkbutton(
+            coach_frame,
+            text="Show AI Coach welcome message on startup",
+            variable=show_welcome_var,
+            command=_set_show_welcome,
+            bg=self._palette["bg"],
+            fg=self._palette["fg"],
+            activebackground=self._palette["bg"],
+            activeforeground=self._palette["fg"],
+            selectcolor=inputs["radio_select"],
+            font=("sans-serif", self._font_size(10)),
+        ).pack(anchor=tk.W)
+
+        model_status = "Downloaded" if is_model_downloaded(current.llm_model) else "Not downloaded"
+        ttk.Label(
+            coach_frame,
+            text=f"Model: {current.llm_model} ({model_status})",
+            style="Nudge.TLabel",
+        ).pack(anchor=tk.W, pady=(2, 0))
+
+        ttk.Label(
+            coach_frame,
+            text=SHORT_DISCLAIMER,
+            style="Nudge.TLabel",
+            wraplength=460,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(4, 0))
 
         # --- Updates ---
         ttk.Label(win, text="Updates", style="Title.TLabel").pack(
@@ -2259,11 +2321,367 @@ class MomentumApp:
         self._image_label.configure(image=self._photo_image, height=_IMG_HEIGHT)
 
     # ------------------------------------------------------------------
+    # AI Coach
+    # ------------------------------------------------------------------
+
+    def _on_ai_coach(self) -> None:
+        """Open the AI Coach chat window."""
+        # Check if model is downloaded
+        if not is_model_downloaded(self._config.llm_model):
+            answer = messagebox.askyesno(
+                "Model not found",
+                f"The AI Coach model ({self._config.llm_model}, ~{model_size_mb(self._config.llm_model)} MB) "
+                f"has not been downloaded yet.\n\n"
+                f"Download it now? This will happen once and may take a few minutes.",
+                parent=self.root,
+            )
+            if answer:
+                self._on_download_model()
+            return
+
+        # Show disclaimer on first use
+        if not hasattr(self, "_coach_disclaimer_shown"):
+            self._coach_disclaimer_shown = True
+            messagebox.showinfo(
+                "AI Coach",
+                DISCLAIMER + "\n\n"
+                "Your conversations are stored locally and never leave your device.",
+                parent=self.root,
+            )
+
+        win = tk.Toplevel(self.root)
+        win.title("AI Coach")
+        win.geometry("600x540")
+        win.configure(bg=self._palette["bg"])
+        win.transient(self.root)
+        inputs = self._input_palette()
+
+        # --- Chat display ---
+        chat_frame = ttk.Frame(win)
+        chat_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 4))
+
+        chat_text = scrolledtext.ScrolledText(
+            chat_frame,
+            wrap=tk.WORD,
+            bg=inputs["input_bg"],
+            fg=inputs["input_fg"],
+            font=("sans-serif", self._font_size(10)),
+            borderwidth=0,
+            highlightthickness=0,
+            padx=12,
+            pady=8,
+            state=tk.DISABLED,
+        )
+        chat_text.pack(fill=tk.BOTH, expand=True)
+
+        # Configure tags for user/assistant messages
+        chat_text.tag_configure(
+            "user",
+            font=("sans-serif", self._font_size(10), "bold"),
+            foreground=self._palette["accent"],
+            spacing1=6,
+            spacing3=2,
+        )
+        chat_text.tag_configure(
+            "assistant",
+            font=("sans-serif", self._font_size(10)),
+            foreground=self._palette["fg"],
+            spacing1=4,
+            spacing3=2,
+        )
+        chat_text.tag_configure(
+            "typing",
+            font=("sans-serif", self._font_size(10), "italic"),
+            foreground=self._palette["muted"],
+        )
+
+        # --- Input area ---
+        input_frame = ttk.Frame(win)
+        input_frame.pack(fill=tk.X, padx=8, pady=(0, 4))
+
+        msg_var = tk.StringVar()
+        msg_entry = tk.Entry(
+            input_frame,
+            textvariable=msg_var,
+            bg=inputs["input_bg"],
+            fg=inputs["input_fg"],
+            insertbackground=inputs["input_fg"],
+            font=("sans-serif", self._font_size(10)),
+        )
+        msg_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        msg_entry.focus_set()
+
+        def _add_message(role: str, content: str) -> None:
+            """Add a message to the chat display."""
+            chat_text.configure(state=tk.NORMAL)
+            label = "You" if role == "user" else "AI Coach"
+            chat_text.insert(tk.END, f"{label}:\n", role)
+            chat_text.insert(tk.END, f"{content}\n\n", role)
+            chat_text.see(tk.END)
+            chat_text.configure(state=tk.DISABLED)
+
+        def _show_typing() -> None:
+            """Show a typing indicator."""
+            chat_text.configure(state=tk.NORMAL)
+            chat_text.insert(tk.END, "AI Coach is thinking...\n", "typing")
+            chat_text.see(tk.END)
+            chat_text.configure(state=tk.DISABLED)
+
+        def _hide_typing() -> None:
+            """Remove the typing indicator."""
+            chat_text.configure(state=tk.NORMAL)
+            # Remove last line if it's the typing indicator
+            content = chat_text.get("1.0", tk.END)
+            if content.rstrip().endswith("AI Coach is thinking..."):
+                chat_text.delete("end-2l", "end-1l")
+            chat_text.configure(state=tk.DISABLED)
+
+        def _on_token(token: str) -> None:
+            """Called for each token during streaming."""
+            chat_text.configure(state=tk.NORMAL)
+            chat_text.insert(tk.END, token, "assistant")
+            chat_text.see(tk.END)
+            chat_text.configure(state=tk.DISABLED)
+
+        def _on_done(full_text: str) -> None:
+            """Called when generation is complete."""
+            _hide_typing()
+            if full_text:
+                # Save assistant message
+                db.add_llm_chat_message(
+                    self.conn,
+                    LlmChatMessageCreate(role="assistant", content=full_text),
+                )
+
+        def _on_error(exc: Exception) -> None:
+            """Called when generation fails."""
+            _hide_typing()
+            _add_message("assistant", f"I'm sorry, I encountered an error: {exc}")
+            log.exception("AI Coach generation failed")
+
+        def _send_message() -> None:
+            user_msg = msg_var.get().strip()
+            if not user_msg:
+                return
+            msg_var.set("")
+
+            # Save user message
+            db.add_llm_chat_message(
+                self.conn,
+                LlmChatMessageCreate(role="user", content=user_msg),
+            )
+            _add_message("user", user_msg)
+
+            # Build context and prompt
+            try:
+                user_context = build_user_context(self.conn)
+                chat_history = build_chat_history(self.conn, limit=6)
+                messages = build_chat_prompt(user_msg, user_context, chat_history)
+
+                _show_typing()
+
+                # Run inference in background thread
+                engine = get_engine(self._config.llm_model)
+                engine.generate_async(
+                    messages=messages,
+                    on_token=_on_token,
+                    on_done=_on_done,
+                    on_error=_on_error,
+                    max_tokens=512,
+                    temperature=0.7,
+                )
+            except Exception as exc:
+                _hide_typing()
+                _add_message(
+                    "assistant",
+                    "I'm having trouble connecting. Please make sure the model is downloaded "
+                    "and try again.",
+                )
+                log.exception("AI Coach send failed")
+
+        def _on_enter(event: tk.Event) -> None:  # type: ignore[type-arg]
+            _send_message()
+
+        msg_entry.bind("<Return>", _on_enter)
+
+        # --- Buttons ---
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(fill=tk.X, padx=8, pady=(0, 4))
+
+        ttk.Button(btn_frame, text="Send", command=_send_message).pack(
+            side=tk.LEFT, padx=2
+        )
+
+        def _clear_chat() -> None:
+            if messagebox.askyesno("Clear chat", "Delete all chat messages?", parent=win):
+                db.delete_all_llm_chat_messages(self.conn)
+                chat_text.configure(state=tk.NORMAL)
+                chat_text.delete("1.0", tk.END)
+                chat_text.configure(state=tk.DISABLED)
+
+        ttk.Button(btn_frame, text="Clear chat", command=_clear_chat).pack(
+            side=tk.LEFT, padx=2
+        )
+
+        # --- Disclaimer ---
+        disclaimer_label = ttk.Label(
+            win,
+            text=SHORT_DISCLAIMER,
+            style="Nudge.TLabel",
+            wraplength=560,
+            justify=tk.LEFT,
+        )
+        disclaimer_label.pack(fill=tk.X, padx=8, pady=(0, 6))
+
+        # Load existing chat history
+        try:
+            history = db.list_llm_chat_messages(self.conn, limit=50)
+            for msg in reversed(history):
+                _add_message(msg.role, msg.content)
+        except Exception:
+            pass
+
+    def _on_download_model(self) -> None:
+        """Download the LLM model with a progress dialog."""
+        model_name = self._config.llm_model
+        size_mb = model_size_mb(model_name)
+
+        if is_model_downloaded(model_name):
+            messagebox.showinfo(
+                "Already downloaded",
+                f"The {model_name} model is already downloaded.",
+                parent=self.root,
+            )
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("Downloading AI Model")
+        win.geometry("400x150")
+        win.configure(bg=self._palette["bg"])
+        win.transient(self.root)
+        win.grab_set()
+
+        ttk.Label(
+            win,
+            text=f"Downloading {model_name} model (~{size_mb} MB)...",
+            style="TLabel",
+        ).pack(padx=12, pady=(12, 4))
+
+        progress = ttk.Progressbar(
+            win, orient=tk.HORIZONTAL, length=360, mode="determinate"
+        )
+        progress.pack(padx=12, pady=8)
+
+        status_var = tk.StringVar(value="Starting download...")
+        status_label = ttk.Label(win, textvariable=status_var, style="Nudge.TLabel")
+        status_label.pack(padx=12)
+
+        def _update_progress(downloaded: int, total: int) -> None:
+            pct = int(downloaded / total * 100)
+            progress["value"] = pct
+            mb_done = downloaded / (1024 * 1024)
+            mb_total = total / (1024 * 1024)
+            status_var.set(f"{mb_done:.0f} / {mb_total:.0f} MB ({pct}%)")
+
+        def _download() -> None:
+            try:
+                ensure_model(model_name, progress_callback=_update_progress)
+                self.root.after(0, lambda: _done())
+            except Exception as exc:
+                self.root.after(0, lambda: _error(exc))
+
+        def _done() -> None:
+            win.destroy()
+            messagebox.showinfo(
+                "Download complete",
+                f"The {model_name} model is ready to use.",
+                parent=self.root,
+            )
+
+        def _error(exc: Exception) -> None:
+            win.destroy()
+            messagebox.showerror(
+                "Download failed",
+                f"Could not download the model:\n{exc}\n\n"
+                f"Please check your internet connection and try again.",
+                parent=self.root,
+            )
+
+        threading.Thread(target=_download, daemon=True).start()
+
+    def _show_llm_welcome(self) -> None:
+        """Show the LLM-generated welcome/encouragement popup on startup."""
+        if not self._config.show_llm_welcome:
+            return
+        if not is_model_downloaded(self._config.llm_model):
+            return
+
+        def _generate() -> None:
+            try:
+                user_context = build_user_context(self.conn)
+                prompt = build_encouragement_prompt(user_context)
+                messages = [{"role": "user", "content": prompt}]
+                engine = get_engine(self._config.llm_model)
+                text = engine.generate(
+                    messages=messages,
+                    max_tokens=128,
+                    temperature=0.8,
+                )
+                self.root.after(0, lambda: _show(text))
+            except Exception as exc:
+                log.debug("LLM welcome generation failed: %s", exc)
+
+        def _show(text: str) -> None:
+            if not text:
+                return
+            win = tk.Toplevel(self.root)
+            win.title("Welcome")
+            win.geometry("440x220")
+            win.configure(bg=self._palette["bg"])
+            win.transient(self.root)
+            win.grab_set()
+
+            ttk.Label(
+                win,
+                text=text,
+                style="Nudge.TLabel",
+                wraplength=400,
+                justify=tk.LEFT,
+            ).pack(fill=tk.BOTH, expand=True, padx=16, pady=(16, 8))
+
+            dont_show = tk.BooleanVar(value=False)
+
+            def _close() -> None:
+                if dont_show.get():
+                    conf = cfg.load_config()
+                    conf.show_llm_welcome = False
+                    cfg.save_config(conf)
+                    self._config.show_llm_welcome = False
+                win.destroy()
+
+            tk.Checkbutton(
+                win,
+                text="Don't show this again",
+                variable=dont_show,
+                bg=self._palette["bg"],
+                fg=self._palette["fg"],
+                selectcolor=self._palette["panel"],
+                activebackground=self._palette["bg"],
+                activeforeground=self._palette["fg"],
+                font=("sans-serif", self._font_size(9)),
+            ).pack(padx=16, anchor=tk.W)
+
+            ttk.Button(win, text="Close", command=_close).pack(pady=(4, 10))
+
+        threading.Thread(target=_generate, daemon=True).start()
+
+    # ------------------------------------------------------------------
     # Run
     # ------------------------------------------------------------------
 
     def run(self) -> None:
         """Start the tkinter main loop."""
+        self._show_llm_welcome()
         self.root.mainloop()
         self.conn.close()
 
