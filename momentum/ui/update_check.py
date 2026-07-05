@@ -43,7 +43,9 @@ def _read_release_payload(
     timeout: float,
     ssl_context: ssl.SSLContext | None = None,
 ) -> dict[str, Any]:
-    with urllib.request.urlopen(request, timeout=timeout, context=ssl_context) as response:
+    with urllib.request.urlopen(
+        request, timeout=timeout, context=ssl_context
+    ) as response:
         payload = json.loads(response.read().decode("utf-8"))
     return cast(dict[str, Any], payload)
 

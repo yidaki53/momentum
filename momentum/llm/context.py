@@ -3,19 +3,14 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import date, datetime
-from typing import Optional
+from datetime import date
 
 from momentum import db
 from momentum.assessments import (
-    bisbas_effective_domain_max_score,
     bisbas_effective_max_score,
-    bisbas_normalized_domain_score,
     bisbas_normalized_total_score,
     interpret_bdefs,
-    interpret_bisbas,
     interpret_stroop,
-    profile_from_latest_assessments,
 )
 from momentum.models import AssessmentType, TaskStatus
 
@@ -30,9 +25,7 @@ def build_user_context(conn: sqlite3.Connection) -> str:
     done_today = db.get_daily_log(conn, date.today()).tasks_completed
 
     if active_tasks:
-        parts.append(
-            f"Active tasks: {', '.join(t.title for t in active_tasks[:5])}"
-        )
+        parts.append(f"Active tasks: {', '.join(t.title for t in active_tasks[:5])}")
     if pending_tasks:
         parts.append(
             f"Pending tasks ({len(pending_tasks)}): "
@@ -88,6 +81,4 @@ def build_chat_history(
 ) -> list[dict[str, str]]:
     """Return recent chat messages as a list of {role, content} dicts."""
     messages = db.list_llm_chat_messages(conn, limit=limit)
-    return [
-        {"role": m.role, "content": m.content} for m in reversed(messages)
-    ]
+    return [{"role": m.role, "content": m.content} for m in reversed(messages)]

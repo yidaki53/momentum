@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import tempfile
 import urllib.request
@@ -15,9 +14,7 @@ log = logging.getLogger(__name__)
 # Default model: TinyLlama 1.1B Chat (GGUF Q4_K_M) — Apache 2.0 licensed
 MODEL_REPO = "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF"
 MODEL_FILENAME = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
-MODEL_URL = (
-    f"https://huggingface.co/{MODEL_REPO}/resolve/main/{MODEL_FILENAME}"
-)
+MODEL_URL = f"https://huggingface.co/{MODEL_REPO}/resolve/main/{MODEL_FILENAME}"
 MODEL_SIZE_MB = 720  # approximate
 
 # Fallback: Qwen2.5-0.5B-Instruct GGUF (Apache 2.0)
@@ -127,8 +124,10 @@ def list_downloaded_models() -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
     for f in models_dir.iterdir():
         if f.suffix == ".gguf":
-            results.append({
-                "path": str(f),
-                "size_mb": round(f.stat().st_size / (1024 * 1024), 1),
-            })
+            results.append(
+                {
+                    "path": str(f),
+                    "size_mb": round(f.stat().st_size / (1024 * 1024), 1),
+                }
+            )
     return results

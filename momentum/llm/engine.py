@@ -9,7 +9,7 @@ from typing import Callable, Optional
 
 from llama_cpp import Llama
 
-from momentum.llm.downloader import ensure_model, get_model_path, is_model_downloaded
+from momentum.llm.downloader import ensure_model
 
 log = logging.getLogger(__name__)
 

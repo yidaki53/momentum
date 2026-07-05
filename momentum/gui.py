@@ -50,7 +50,7 @@ from momentum.encouragement import get_break_message, get_nudge
 from momentum.llm import DISCLAIMER, SHORT_DISCLAIMER
 from momentum.llm.context import build_chat_history, build_user_context
 from momentum.llm.downloader import ensure_model, is_model_downloaded, model_size_mb
-from momentum.llm.engine import get_engine, reset_engine
+from momentum.llm.engine import get_engine
 from momentum.llm.prompts import build_chat_prompt, build_encouragement_prompt
 from momentum.models import (
     ActJournalEntryCreate,
@@ -1282,7 +1282,9 @@ class MomentumApp:
             font=("sans-serif", self._font_size(10)),
         ).pack(anchor=tk.W)
 
-        model_status = "Downloaded" if is_model_downloaded(current.llm_model) else "Not downloaded"
+        model_status = (
+            "Downloaded" if is_model_downloaded(current.llm_model) else "Not downloaded"
+        )
         ttk.Label(
             coach_frame,
             text=f"Model: {current.llm_model} ({model_status})",
@@ -2490,7 +2492,7 @@ class MomentumApp:
                     max_tokens=512,
                     temperature=0.7,
                 )
-            except Exception as exc:
+            except Exception:
                 _hide_typing()
                 _add_message(
                     "assistant",
@@ -2513,7 +2515,9 @@ class MomentumApp:
         )
 
         def _clear_chat() -> None:
-            if messagebox.askyesno("Clear chat", "Delete all chat messages?", parent=win):
+            if messagebox.askyesno(
+                "Clear chat", "Delete all chat messages?", parent=win
+            ):
                 db.delete_all_llm_chat_messages(self.conn)
                 chat_text.configure(state=tk.NORMAL)
                 chat_text.delete("1.0", tk.END)
