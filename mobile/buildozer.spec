@@ -13,8 +13,8 @@ version = 0.4.0
 # Users who manually enable it will need to install the runtime dependency separately.
 
 # Dependencies
-# Pin numpy to <2 for Android NDK compatibility (newer numpy C++17 code breaks on r25b)
-requirements = python3,kivy,pydantic,pydantic-core,pillow,matplotlib,numpy<2,certifi
+# Pin numpy to 1.26.4 for Android NDK compatibility (numpy 2.x C++17 breaks on r25b)
+requirements = python3,kivy,pydantic,pydantic-core,pillow,matplotlib,numpy==1.26.4,certifi
 
 # Include the core momentum package (via symlink) and data files
 source.include_patterns = main.py,momentum/*.py,momentum/**/*.py,momentum/**/**/*.py,ENCOURAGEMENTS.md,SCIENCE.md,README.md,IMAGES.md
