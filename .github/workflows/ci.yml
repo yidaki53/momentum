@@ -195,7 +195,8 @@ jobs:
         run: |
           mkdir -p $ANDROID_HOME/cmdline-tools/latest/bin
           yes | sdkmanager --sdk_root=$ANDROID_HOME "ndk;25b" || true
-          echo "NDK_HOME=$ANDROID_HOME/ndk/25b" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25b" >> $GITHUB_ENV
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/25b" >> $GITHUB_ENV
           echo "$ANDROID_HOME/ndk/25b" >> $GITHUB_PATH
 
       - name: Create mobile symlinks
@@ -298,6 +299,8 @@ jobs:
 
       - name: Build APK
         env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/25b
+          ANDROID_NDK: /usr/local/lib/android/sdk/ndk/25b
           P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
           ANDROID_UPLOAD_KEYSTORE_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWD }}
           P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}
@@ -339,6 +342,8 @@ jobs:
 
       - name: Build AAB
         env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/25b
+          ANDROID_NDK: /usr/local/lib/android/sdk/ndk/25b
           P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
           ANDROID_UPLOAD_KEYSTORE_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWD }}
           P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}
