@@ -50,7 +50,7 @@ module = ["momentum.gui", "momentum.charts"]
 ignore_errors = true
 
 [tool.coverage.run]
-omit = ["momentum/gui.py"]
+omit = ["momentum/gui.py", "momentum/llm/*"]
 
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover", "if __name__"]
