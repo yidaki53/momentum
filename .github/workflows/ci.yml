@@ -191,18 +191,6 @@ jobs:
         run: |
           pip install buildozer cython==0.29.36 python-for-android
 
-      - name: Patch p4a numpy recipe for v-prefixed git tags
-        run: |
-          # numpy tags like v1.26.4 are incompatible with p4a's 'git checkout {version}'.
-          # This step runs early to patch the recipe before buildozer uses it.
-          # Note: buildozer may ignore this if it bundles its own p4a version.
-          P4A_RECIPE=$(python3 -c "import pythonforandroid.recipes.numpy as m; print(m.__file__)" 2>/dev/null || true)
-          if [ -n "$P4A_RECIPE" ]; then
-            # Try to patch version to include 'v' prefix for git checkout
-            sed -i 's/version = "1\.26\.4"/version = "v1.26.4"/' "$P4A_RECIPE" 2>/dev/null || true
-            echo "P4A numpy recipe at: $P4A_RECIPE"
-          fi
-
       - name: Install Android NDK 25b
         run: |
           mkdir -p $ANDROID_HOME/cmdline-tools/latest/bin
@@ -339,21 +327,17 @@ jobs:
           sed -i 's|^android.release_artifact.*|android.release_artifact = apk|' buildozer.spec
           sed -i "s|^android.numeric_version.*|android.numeric_version = ${ANDROID_NUMERIC_VERSION}|" buildozer.spec
 
-          # Two-phase build:
-          # 1. First run clones p4a and downloads its bundled numpy source
-          # 2. We patch p4a's numpy recipe in the cloned location to fix git checkout
-          # 3. We inject Cython into hostpython3 for numpy compilation
-          # 4. Second run compiles with correct numpy version (1.26.x, no C++17)
+          # First buildozer run will clone numpy but fail on 'git checkout 1.26.4'
+          # (actual tag is 'v1.26.4'). Let it fail, then fix the checkout.
           buildozer android release 2>&1 || true
 
-          # Patch p4a's numpy recipe in the downloaded copy to use 'v' prefix for tags
-          P4A_NUMPY_RECIPE="/tmp/buildozer-build/android/platform/python-for-android/pythonforandroid/recipes/numpy/__init__.py"
-          if [ -f "$P4A_NUMPY_RECIPE" ]; then
-            # Convert version like "1.26.4" to "v1.26.4" for git checkout
-            # (numpy tags use v-prefix, p4a does 'git checkout {version}')
-            sed -i 's/version = "\([0-9]\)/version = "v\1/' "$P4A_NUMPY_RECIPE"
-            echo "Patched p4a numpy recipe at: $P4A_NUMPY_RECIPE"
-            grep -n 'version = "v' "$P4A_NUMPY_RECIPE" | head -3
+          # Fix the git checkout in the downloaded numpy source directory
+          # The numpy repo was cloned but checkout failed; fix it now
+          NUMPY_SRC="/tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/packages/numpy"
+          if [ -d "$NUMPY_SRC/.git" ]; then
+            cd "$NUMPY_SRC"
+            git checkout v1.26.4 2>&1 || true
+            echo "Fixed numpy checkout to v1.26.4: $(git rev-parse HEAD 2>/dev/null || echo 'unknown')"
           fi
 
           # Inject Cython into hostpython3's isolated site-packages
@@ -361,7 +345,7 @@ jobs:
           mkdir -p "$HP_SITE"
           pip install --target="$HP_SITE" Cython==0.29.36
 
-          # Retry with patched p4a and Cython available
+          # Retry with fixed numpy checkout
           buildozer android release
 
       - name: Build AAB
