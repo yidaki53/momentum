@@ -187,9 +187,9 @@ jobs:
             autoconf automake libtool libltdl-dev pkg-config zlib1g-dev \
             unzip zip
 
-      - name: Install buildozer, Cython, and python-for-android
+      - name: Install buildozer and Cython
         run: |
-          pip install buildozer cython==0.29.36 python-for-android
+          pip install buildozer cython==0.29.36
 
       - name: Install Android NDK 25b
         run: |
@@ -328,16 +328,19 @@ jobs:
           sed -i "s|^android.numeric_version.*|android.numeric_version = ${ANDROID_NUMERIC_VERSION}|" buildozer.spec
 
           # First buildozer run will clone numpy but fail on 'git checkout 1.26.4'
-          # (actual tag is 'v1.26.4'). Let it fail, then fix the checkout.
+          # (actual tag is 'v1.26.4'). Fix the p4a recipe before retry.
           buildozer android release 2>&1 || true
 
-          # Fix the git checkout in the downloaded numpy source directory
-          # The numpy repo was cloned but checkout failed; fix it now
-          NUMPY_SRC="/tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/packages/numpy"
-          if [ -d "$NUMPY_SRC/.git" ]; then
-            cd "$NUMPY_SRC"
-            git checkout v1.26.4 2>&1 || true
-            echo "Fixed numpy checkout to v1.26.4: $(git rev-parse HEAD 2>/dev/null || echo 'unknown')"
+          # Fix the p4a numpy recipe version (add 'v' prefix for git checkout)
+          P4A_RECIPE="/tmp/buildozer-build/android/platform/python-for-android/pythonforandroid/recipes/numpy/__init__.py"
+          if [ -f "$P4A_RECIPE" ]; then
+            # Show what we're patching
+            echo "P4a numpy recipe before patch:"
+            grep -n 'version' "$P4A_RECIPE" | head -5
+            # Convert version "1.26.4" to "v1.26.4"
+            sed -i 's/version = "v\?1\.\([0-9]\+\)\.\([0-9]\+\)"/version = "v1.\1.\2"/' "$P4A_RECIPE"
+            echo "P4a numpy recipe after patch:"
+            grep -n 'version' "$P4A_RECIPE" | head -5
           fi
 
           # Inject Cython into hostpython3's isolated site-packages

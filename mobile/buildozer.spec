@@ -45,10 +45,3 @@ log_level = 2
 # iOS (future)
 ios.kivy_ios_url = https://github.com/kivy/kivy-ios
 ios.kivy_ios_branch = master
-
-[buildozer]
-log_level = 2
-warn_on_root = 1
-build_dir = /tmp/buildozer-build
-# Use the externally-installed p4a (pip install python-for-android) instead of buildozer's bundled version
-p4a.source = /usr/local/lib/python3.11/site-packages/pythonforandroid
