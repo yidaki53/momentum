@@ -191,22 +191,6 @@ jobs:
         run: |
           pip install buildozer cython==0.29.36
 
-      - name: Patch p4a numpy recipe to handle v-prefixed git tags
-        run: |
-          # numpy tags are 'v1.26.4' but p4a does 'git checkout 1.26.4'.
-          # Find and patch the numpy recipe in p4a's installed location.
-          P4A_DIR=$(python3 -c "import pythonforandroid.recipes.numpy; print(pythonforandroid.recipes.numpy.__path__[0])" 2>/dev/null || true)
-          if [ -z "$P4A_DIR" ]; then
-            P4A_DIR=$(find / -path "*/pythonforandroid/recipes/numpy" -type d 2>/dev/null | head -1)
-          fi
-          echo "numpy recipe dir: $P4A_DIR"
-          if [ -n "$P4A_DIR" ] && [ -d "$P4A_DIR" ]; then
-            ls -la "$P4A_DIR"
-            for f in "$P4A_DIR"/*.py; do
-              echo "=== $f ==="
-              cat "$f"
-            done
-          fi
 
       - name: Install Android NDK 25b
         run: |
@@ -357,7 +341,8 @@ jobs:
           pip install --target="$HP_SITE" Cython==0.29.36
 
           # Patch p4a's numpy recipe: numpy tags are 'v1.26.4' but p4a
-          # does 'git checkout 1.26.4'. Fix the version string.
+          # does 'git checkout 1.26.4'. Fix the version string and
+          # clean up the broken download so p4a re-downloads correctly.
           P4A_DIR="/tmp/buildozer-build/android/platform/python-for-android"
           if [ -d "$P4A_DIR" ]; then
             NUMPY_RECIPE=$(find "$P4A_DIR" -path "*/numpy/__init__.py" 2>/dev/null | head -1)
@@ -369,6 +354,8 @@ jobs:
               find "$P4A_DIR" -path "*/numpy*" -name "*.py" 2>/dev/null | head -10
             fi
           fi
+          # Clean up broken numpy download so p4a re-downloads with patched version
+          rm -rf /tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/packages/numpy
 
           buildozer android release
 
