@@ -191,18 +191,20 @@ jobs:
         run: |
           pip install buildozer cython==0.29.36
 
-      - name: Patch python-for-android numpy recipe for v-prefixed tags
+      - name: Patch p4a to use 'v' prefix for numpy git tags
         run: |
-          # numpy's git tags use 'v1.26.4' format, but p4a's recipe does
-          # 'git checkout {version}' which becomes 'git checkout 1.26.4'.
-          # Patch the installed p4a recipe to prepend 'v' to the version.
-          NUMPY_RECIPE=$(python -c "import pythonforandroid.recipes.numpy as m; print(m.__file__)" 2>/dev/null || true)
-          if [ -n "$NUMPY_RECIPE" ]; then
-            sed -i 's/git checkout {version}/git checkout v{version}/' "$NUMPY_RECIPE"
-            echo "Patched numpy recipe at $NUMPY_RECIPE"
-          else
-            echo "numpy recipe not found in site-packages, will try alternate approach"
-          fi
+          # numpy tags are 'v1.26.4' but p4a checks out '1.26.4'.
+          # Patch the numpy version string in p4a's recipe to include 'v'.
+          P4A_DIR=$(python -c "import pythonforandroid; import os; print(os.path.dirname(pythonforandroid.__file__))")
+          echo "P4A dir: $P4A_DIR"
+          find "$P4A_DIR" -path "*/numpy*" -name "*.py" 2>/dev/null | head -20
+          # Try to find and patch the version line
+          for f in $(find "$P4A_DIR" -path "*/numpy*" -name "*.py" 2>/dev/null); do
+            if grep -q 'version' "$f" 2>/dev/null; then
+              echo "=== $f ==="
+              grep -n 'version' "$f" | head -10
+            fi
+          done
 
       - name: Install Android NDK 25b
         run: |
