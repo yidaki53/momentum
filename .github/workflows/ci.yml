@@ -191,6 +191,19 @@ jobs:
         run: |
           pip install buildozer cython==0.29.36
 
+      - name: Patch python-for-android numpy recipe for v-prefixed tags
+        run: |
+          # numpy's git tags use 'v1.26.4' format, but p4a's recipe does
+          # 'git checkout {version}' which becomes 'git checkout 1.26.4'.
+          # Patch the installed p4a recipe to prepend 'v' to the version.
+          NUMPY_RECIPE=$(python -c "import pythonforandroid.recipes.numpy as m; print(m.__file__)" 2>/dev/null || true)
+          if [ -n "$NUMPY_RECIPE" ]; then
+            sed -i 's/git checkout {version}/git checkout v{version}/' "$NUMPY_RECIPE"
+            echo "Patched numpy recipe at $NUMPY_RECIPE"
+          else
+            echo "numpy recipe not found in site-packages, will try alternate approach"
+          fi
+
       - name: Install Android NDK 25b
         run: |
           mkdir -p $ANDROID_HOME/cmdline-tools/latest/bin
@@ -295,15 +308,7 @@ jobs:
           fi
           rm -f /tmp/android-signing-verify.p12
 
-           echo "Android signing preflight passed for alias ${P4A_RELEASE_KEYALIAS} (store password and key entry password both verified)."
-
-      - name: Patch python-for-android numpy recipe for tag format
-        run: |
-          # Fix numpy recipe to handle 'v' prefix in version tags
-          P4A_RECIPE="/tmp/buildozer-build/android/platform/python-for-android/pythonforandroid/recipes/numpy"
-          if [ -d "$P4A_RECIPE" ]; then
-            sed -i 's/git checkout {}/git checkout v{}/' "$P4A_RECIPE/numpy.py" 2>/dev/null || true
-          fi
+          echo "Android signing preflight passed for alias ${P4A_RELEASE_KEYALIAS} (store password and key entry password both verified)."
 
       - name: Build APK
         env:
