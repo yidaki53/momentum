@@ -35,4 +35,4 @@ repos:
         always_run: true
         args:
           - -lc
-          - poetry run pytest -q --no-cov tests/test_models.py tests/test_assessments.py tests/test_config.py
+          - uv run pytest -q --no-cov tests/test_models.py tests/test_assessments.py tests/test_config.py

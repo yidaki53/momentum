@@ -55,6 +55,7 @@ try:
     from momentum.llm.downloader import ensure_model, is_model_downloaded, model_size_mb
     from momentum.llm.engine import get_engine
     from momentum.llm.prompts import build_chat_prompt, build_encouragement_prompt
+
     _LLM_AVAILABLE = True
 except ImportError:
     _LLM_AVAILABLE = False
@@ -468,7 +469,9 @@ class MomentumApp:
                 activeforeground=fg,
             )
             coach_menu.add_command(label="Open AI Coach", command=self._on_ai_coach)
-            coach_menu.add_command(label="Download Model", command=self._on_download_model)
+            coach_menu.add_command(
+                label="Download Model", command=self._on_download_model
+            )
             menubar.add_cascade(label="AI Coach", menu=coach_menu)
 
         # --- Peaceful image banner ---
