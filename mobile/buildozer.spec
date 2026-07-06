@@ -14,6 +14,7 @@ version = 0.4.0
 
 # Dependencies
 # Pin numpy to 1.26.4 for Android NDK compatibility (numpy 2.x C++17 breaks on r25b)
+# Use single = for buildozer requirements syntax
 requirements = python3,kivy,pydantic,pydantic-core,pillow,matplotlib,numpy==1.26.4,certifi
 
 # Include the core momentum package (via symlink) and data files

@@ -295,7 +295,15 @@ jobs:
           fi
           rm -f /tmp/android-signing-verify.p12
 
-          echo "Android signing preflight passed for alias ${P4A_RELEASE_KEYALIAS} (store password and key entry password both verified)."
+           echo "Android signing preflight passed for alias ${P4A_RELEASE_KEYALIAS} (store password and key entry password both verified)."
+
+      - name: Patch python-for-android numpy recipe for tag format
+        run: |
+          # Fix numpy recipe to handle 'v' prefix in version tags
+          P4A_RECIPE="/tmp/buildozer-build/android/platform/python-for-android/pythonforandroid/recipes/numpy"
+          if [ -d "$P4A_RECIPE" ]; then
+            sed -i 's/git checkout {}/git checkout v{}/' "$P4A_RECIPE/numpy.py" 2>/dev/null || true
+          fi
 
       - name: Build APK
         env:
