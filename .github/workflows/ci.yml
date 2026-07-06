@@ -191,6 +191,37 @@ jobs:
         run: |
           pip install buildozer cython==0.29.36
 
+      - name: Patch p4a numpy recipe to handle v-prefixed git tags
+        run: |
+          # numpy tags are 'v1.26.4' but p4a's base recipe.download_file
+          # does 'git checkout {self.version}' which becomes '1.26.4'.
+          # Patch p4a's numpy version to include 'v' prefix.
+          P4A_DIR=$(python3 -c "
+import os, sys
+# buildozer ships python-for-android via its own mechanism,
+# but the pip-installed pythonforandroid may be importable too
+for p in sys.path:
+    d = os.path.join(p, 'pythonforandroid', 'recipes', 'numpy')
+    if os.path.isdir(d):
+        print(d)
+        break
+" 2>/dev/null || true)
+          if [ -z "$P4A_DIR" ]; then
+            # Try to find it in buildozer's data directory
+            P4A_DIR=$(find /opt/hostedtoolcache -path "*/pythonforandroid/recipes/numpy" -type d 2>/dev/null | head -1)
+          fi
+          if [ -z "$P4A_DIR" ]; then
+            P4A_DIR=$(find /home/runner -path "*/pythonforandroid/recipes/numpy" -type d 2>/dev/null | head -1)
+          fi
+          echo "numpy recipe dir: $P4A_DIR"
+          if [ -n "$P4A_DIR" ] && [ -d "$P4A_DIR" ]; then
+            ls -la "$P4A_DIR"
+            for f in "$P4A_DIR"/*.py; do
+              echo "=== $f ==="
+              cat "$f"
+            done
+          fi
+
       - name: Install Android NDK 25b
         run: |
           mkdir -p $ANDROID_HOME/cmdline-tools/latest/bin
