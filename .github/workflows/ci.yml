@@ -187,10 +187,21 @@ jobs:
             autoconf automake libtool libltdl-dev pkg-config zlib1g-dev \
             unzip zip
 
-      - name: Install buildozer and Cython
+      - name: Install buildozer, Cython, and python-for-android
         run: |
-          pip install buildozer cython==0.29.36
+          pip install buildozer cython==0.29.36 python-for-android
 
+      - name: Patch p4a numpy recipe for v-prefixed git tags
+        run: |
+          # numpy tags like v1.26.4 are incompatible with p4a's 'git checkout {version}'.
+          # This step runs early to patch the recipe before buildozer uses it.
+          # Note: buildozer may ignore this if it bundles its own p4a version.
+          P4A_RECIPE=$(python3 -c "import pythonforandroid.recipes.numpy as m; print(m.__file__)" 2>/dev/null || true)
+          if [ -n "$P4A_RECIPE" ]; then
+            # Try to patch version to include 'v' prefix for git checkout
+            sed -i 's/version = "1\.26\.4"/version = "v1.26.4"/' "$P4A_RECIPE" 2>/dev/null || true
+            echo "P4A numpy recipe at: $P4A_RECIPE"
+          fi
 
       - name: Install Android NDK 25b
         run: |
@@ -328,27 +339,16 @@ jobs:
           sed -i 's|^android.release_artifact.*|android.release_artifact = apk|' buildozer.spec
           sed -i "s|^android.numeric_version.*|android.numeric_version = ${ANDROID_NUMERIC_VERSION}|" buildozer.spec
 
-          # Two-phase build: the first attempt extracts and builds
-          # hostpython3 properly, but numpy will fail because p4a sets
-          # PYTHONNOUSERSITE=1 and overrides PYTHONPATH -- making the
-          # system-installed Cython invisible.  After that first run
-          # creates the real directory tree, we inject Cython into
-          # hostpython3's site-packages and retry.
+          # Two-phase build: first run builds hostpython and downloads dependencies,
+          # then we inject Cython into the isolated hostpython3 site-packages.
           buildozer android release 2>&1 || true
 
+          # Inject Cython into hostpython3's isolated site-packages
           HP_SITE="/tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/build/other_builds/hostpython3/desktop/hostpython3/native-build/Lib/site-packages"
           mkdir -p "$HP_SITE"
           pip install --target="$HP_SITE" Cython==0.29.36
 
-          # The first buildozer run cloned numpy but failed on 'git checkout 1.26.4'
-          # because the tag is 'v1.26.4'. Fix the checkout in the downloaded repo.
-          NUMPY_DIR="/tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/packages/numpy"
-          if [ -d "$NUMPY_DIR" ]; then
-            cd "$NUMPY_DIR"
-            git checkout v1.26.4 2>&1 || true
-            echo "Fixed numpy checkout: $(git rev-parse HEAD)"
-          fi
-
+          # Retry with Cython available
           buildozer android release
 
       - name: Build AAB
