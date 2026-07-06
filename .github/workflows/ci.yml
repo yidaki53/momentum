@@ -346,9 +346,8 @@ jobs:
           if [ -f "$P4A_RECIPE" ]; then
             echo "P4a numpy recipe before patch:"
             grep -n 'version' "$P4A_RECIPE" | head -5
-            # Add 'v' prefix to numpy version for git tag compatibility (e.g., "1.26.4" -> "v1.26.4")
-            # Handle both single/double quotes and spacing variations
-            sed -i -E "s/version *= *[\"']([0-9])/version = \"v\1/" "$P4A_RECIPE"
+            # Add 'v' prefix to any version that looks like a number (e.g., "1.26.4" -> "v1.26.4")
+            sed -i 's/version = "\([0-9]\)/version = "v\1/' "$P4A_RECIPE"
             echo "P4a numpy recipe after patch:"
             grep -n 'version' "$P4A_RECIPE" | head -5
           else
