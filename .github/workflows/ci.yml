@@ -340,22 +340,14 @@ jobs:
           mkdir -p "$HP_SITE"
           pip install --target="$HP_SITE" Cython==0.29.36
 
-          # Patch p4a's numpy recipe: numpy tags are 'v1.26.4' but p4a
-          # does 'git checkout 1.26.4'. Fix the version string and
-          # clean up the broken download so p4a re-downloads correctly.
-          P4A_DIR="/tmp/buildozer-build/android/platform/python-for-android"
-          if [ -d "$P4A_DIR" ]; then
-            NUMPY_RECIPE=$(find "$P4A_DIR" -path "*/numpy/__init__.py" 2>/dev/null | head -1)
-            if [ -n "$NUMPY_RECIPE" ]; then
-              sed -i 's/version = "1\.26\.4"/version = "v1.26.4"/' "$NUMPY_RECIPE"
-              echo "Patched numpy recipe: $NUMPY_RECIPE"
-            else
-              echo "numpy recipe not found under $P4A_DIR"
-              find "$P4A_DIR" -path "*/numpy*" -name "*.py" 2>/dev/null | head -10
-            fi
+          # The first buildozer run cloned numpy but failed on 'git checkout 1.26.4'
+          # because the tag is 'v1.26.4'. Fix the checkout in the downloaded repo.
+          NUMPY_DIR="/tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/packages/numpy"
+          if [ -d "$NUMPY_DIR" ]; then
+            cd "$NUMPY_DIR"
+            git checkout v1.26.4 2>&1 || true
+            echo "Fixed numpy checkout: $(git rev-parse HEAD)"
           fi
-          # Clean up broken numpy download so p4a re-downloads with patched version
-          rm -rf /tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/packages/numpy
 
           buildozer android release
 
