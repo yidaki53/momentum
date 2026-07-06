@@ -13,9 +13,10 @@ version = 0.4.0
 # Users who manually enable it will need to install the runtime dependency separately.
 
 # Dependencies
-# numpy 2.x requires C++17 which breaks on NDK r25b. p4a will use a compatible
-# version by default. We patch the p4a recipe in CI to handle the 'v' tag prefix.
-requirements = python3,kivy,pydantic,pydantic-core,pillow,matplotlib,numpy,certifi
+# numpy 2.x requires C++17 which breaks on NDK r25b. Pin to 1.26.4.
+# p4a's recipe does 'git checkout {version}' and numpy tags use 'v' prefix.
+# Our CI patch fixes the v-prefix mismatch before build.
+requirements = python3,kivy,pydantic,pydantic-core,pillow,matplotlib,numpy==1.26.4,certifi
 
 # Include the core momentum package (via symlink) and data files
 source.include_patterns = main.py,momentum/*.py,momentum/**/*.py,momentum/**/**/*.py,ENCOURAGEMENTS.md,SCIENCE.md,README.md,IMAGES.md

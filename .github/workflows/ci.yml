@@ -339,16 +339,29 @@ jobs:
           sed -i 's|^android.release_artifact.*|android.release_artifact = apk|' buildozer.spec
           sed -i "s|^android.numeric_version.*|android.numeric_version = ${ANDROID_NUMERIC_VERSION}|" buildozer.spec
 
-          # Two-phase build: first run builds hostpython and downloads dependencies,
-          # then we inject Cython into the isolated hostpython3 site-packages.
+          # Two-phase build:
+          # 1. First run clones p4a and downloads its bundled numpy source
+          # 2. We patch p4a's numpy recipe in the cloned location to fix git checkout
+          # 3. We inject Cython into hostpython3 for numpy compilation
+          # 4. Second run compiles with correct numpy version (1.26.x, no C++17)
           buildozer android release 2>&1 || true
+
+          # Patch p4a's numpy recipe in the downloaded copy to use 'v' prefix for tags
+          P4A_NUMPY_RECIPE="/tmp/buildozer-build/android/platform/python-for-android/pythonforandroid/recipes/numpy/__init__.py"
+          if [ -f "$P4A_NUMPY_RECIPE" ]; then
+            # Convert version like "1.26.4" to "v1.26.4" for git checkout
+            # (numpy tags use v-prefix, p4a does 'git checkout {version}')
+            sed -i 's/version = "\([0-9]\)/version = "v\1/' "$P4A_NUMPY_RECIPE"
+            echo "Patched p4a numpy recipe at: $P4A_NUMPY_RECIPE"
+            grep -n 'version = "v' "$P4A_NUMPY_RECIPE" | head -3
+          fi
 
           # Inject Cython into hostpython3's isolated site-packages
           HP_SITE="/tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/build/other_builds/hostpython3/desktop/hostpython3/native-build/Lib/site-packages"
           mkdir -p "$HP_SITE"
           pip install --target="$HP_SITE" Cython==0.29.36
 
-          # Retry with Cython available
+          # Retry with patched p4a and Cython available
           buildozer android release
 
       - name: Build AAB
