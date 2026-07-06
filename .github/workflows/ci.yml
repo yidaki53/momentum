@@ -332,38 +332,16 @@ jobs:
           buildozer android release 2>&1 || true
 
           # Fix the p4a numpy recipe version (add 'v' prefix for git checkout)
-          # Find p4a recipe in multiple possible locations
-          P4A_RECIPE=""
-          for p in "${GITHUB_WORKSPACE}/mobile/.buildozer/android/platform/python-for-android/pythonforandroid/recipes/numpy/__init__.py" \
-                   "/tmp/buildozer-build/android/platform/python-for-android/pythonforandroid/recipes/numpy/__init__.py"; do
-            if [ -f "$p" ]; then
-              P4A_RECIPE="$p"
-              echo "Found p4a recipe at: $p"
-              break
-            fi
-          done
-
+          P4A_RECIPE="/tmp/buildozer-build/android/platform/python-for-android/pythonforandroid/recipes/numpy/__init__.py"
           if [ -f "$P4A_RECIPE" ]; then
+            # Show what we're patching
             echo "P4a numpy recipe before patch:"
             grep -n 'version' "$P4A_RECIPE" | head -5
-            # Add 'v' prefix to any version that looks like a number (e.g., "1.26.4" -> "v1.26.4")
-            sed -i 's/version = "\([0-9]\)/version = "v\1/' "$P4A_RECIPE"
+            # Convert version "1.26.4" to "v1.26.4"
+            sed -i 's/version = "v\?1\.\([0-9]\+\)\.\([0-9]\+\)"/version = "v1.\1.\2"/' "$P4A_RECIPE"
             echo "P4a numpy recipe after patch:"
             grep -n 'version' "$P4A_RECIPE" | head -5
-          else
-            echo "WARNING: Could not find p4a numpy recipe to patch - build may still fail!"
           fi
-
-          # Also fix the numpy source directory if it was already cloned but checkout failed
-          for NUMPY_SRC in "${GITHUB_WORKSPACE}/mobile/.buildozer/android/platform/build-arm64-v8a_armeabi-v7a/packages/numpy" \
-                           "/tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/packages/numpy" \
-                           "${GITHUB_WORKSPACE}/mobile/.buildozer/android/platform/packages/numpy"; do
-            if [ -d "$NUMPY_SRC/.git" ]; then
-              echo "Fixing numpy checkout in: $NUMPY_SRC"
-              (cd "$NUMPY_SRC" && git checkout v1.26.4 2>&1 || true)
-              break
-            fi
-          done
 
           # Inject Cython into hostpython3's isolated site-packages
           HP_SITE="/tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/build/other_builds/hostpython3/desktop/hostpython3/native-build/Lib/site-packages"
