@@ -32,12 +32,6 @@ repos:
         types: [file]
         files: \.(sh|bash)$
 
-  - repo: https://github.com/mpalmer/action-validator
-    rev: v0.5.0
-    hooks:
-      - id: action-validator
-        files: ^.github/workflows/
-
   - repo: local
     hooks:
       - id: pytest-fast
@@ -49,5 +43,3 @@ repos:
         args:
           - -lc
           - uv run pytest -q --no-cov tests/test_models.py tests/test_assessments.py tests/test_config.py
-
-

@@ -191,10 +191,13 @@ jobs:
         run: |
           pip install buildozer cython==0.29.36 python-for-android
 
-      - name: Install Android NDK 25b
+      - name: Install Android NDK 25b and platform API 34
         run: |
           mkdir -p $ANDROID_HOME/cmdline-tools/latest/bin
-          yes | sdkmanager --sdk_root=$ANDROID_HOME "ndk;25b" || true
+          yes | sdkmanager --sdk_root=$ANDROID_HOME \
+            "ndk;25b" \
+            "platform-tools" \
+            "platforms;android-34" || true
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25b" >> $GITHUB_ENV
           echo "ANDROID_NDK=$ANDROID_HOME/ndk/25b" >> $GITHUB_ENV
           echo "$ANDROID_HOME/ndk/25b" >> $GITHUB_PATH
