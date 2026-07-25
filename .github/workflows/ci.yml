@@ -191,6 +191,23 @@ jobs:
         run: |
           pip install buildozer cython==0.29.36 python-for-android
 
+      - name: Patch p4a numpy recipe for v-prefixed git tag
+        run: |
+          # numpy's git tags use 'v1.26.4' but p4a recipe version is '1.26.4'.
+          # buildozer.spec points p4a.source at the pip-installed p4a, so we
+          # patch the recipe here before buildozer ever runs.
+          NUMPY_RECIPE="/usr/local/lib/python3.11/site-packages/pythonforandroid/recipes/numpy/__init__.py"
+          if [ ! -f "$NUMPY_RECIPE" ]; then
+            echo "ERROR: numpy recipe not found at $NUMPY_RECIPE" >&2
+            find /usr/local/lib/python3.11/site-packages/pythonforandroid/recipes/numpy/ -type f 2>/dev/null || true
+            exit 1
+          fi
+          echo "Before patch:"
+          grep -E "version" "$NUMPY_RECIPE" | head -5
+          sed -i "s/version = '1\.26\.4'/version = 'v1.26.4'/" "$NUMPY_RECIPE"
+          echo "After patch:"
+          grep -E "version" "$NUMPY_RECIPE" | head -5
+
       - name: Install Android NDK 25b and platform API 34
         run: |
           mkdir -p $ANDROID_HOME/cmdline-tools/latest/bin
@@ -330,25 +347,17 @@ jobs:
           sed -i 's|^android.release_artifact.*|android.release_artifact = apk|' buildozer.spec
           sed -i "s|^android.numeric_version.*|android.numeric_version = ${ANDROID_NUMERIC_VERSION}|" buildozer.spec
 
-          # First buildozer run will clone numpy but fail on 'git checkout 1.26.4'
-          # (actual tag is 'v1.26.4'). Let it fail, then fix the checkout.
+          # Pass 1: numpy recipe is pre-patched to use 'v1.26.4', so git checkout
+          # now succeeds. Build will still fail when numpy tries to compile because
+          # hostpython3's isolated site-packages doesn't have Cython yet.
           buildozer android release 2>&1 || true
 
-          # Fix the git checkout in the downloaded numpy source directory
-          # The numpy repo was cloned but checkout failed; fix it now
-          NUMPY_SRC="/tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/packages/numpy"
-          if [ -d "$NUMPY_SRC/.git" ]; then
-            cd "$NUMPY_SRC"
-            git checkout v1.26.4 2>&1 || true
-            echo "Fixed numpy checkout to v1.26.4: $(git rev-parse HEAD 2>/dev/null || echo 'unknown')"
-          fi
-
-          # Inject Cython into hostpython3's isolated site-packages
+          # Inject Cython into hostpython3's isolated site-packages (created by pass 1)
           HP_SITE="/tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/build/other_builds/hostpython3/desktop/hostpython3/native-build/Lib/site-packages"
           mkdir -p "$HP_SITE"
           pip install --target="$HP_SITE" Cython==0.29.36
 
-          # Retry with fixed numpy checkout
+          # Pass 2: numpy git checkout already complete and cached, Cython now available.
           buildozer android release
 
       - name: Build AAB
