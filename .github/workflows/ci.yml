@@ -18,7 +18,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          lfs: true
+          # LFS disabled: dist/momentum is rebuilt by PyInstaller each run;
+          # fetching the committed LFS object drains the account bandwidth budget.
+          lfs: false
 
       - uses: actions/setup-python@v6
         with:
@@ -62,7 +64,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          lfs: true
+          # LFS disabled: dist/momentum is rebuilt by PyInstaller each run;
+          # fetching the committed LFS object drains the account bandwidth budget.
+          lfs: false
 
       - uses: actions/setup-python@v6
         with:
