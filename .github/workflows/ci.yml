@@ -309,6 +309,10 @@ jobs:
           ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/25b
           ANDROID_NDK: /usr/local/lib/android/sdk/ndk/25b
           ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/25b
+          # maturin (invoked by p4a via 'python -m build' to build pydantic-core
+          # from source) needs ANDROID_API_LEVEL to tag the wheel android_26_arm;
+          # without it the build fails with "Failed to determine Android API level".
+          ANDROID_API_LEVEL: "26"
           P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
           ANDROID_UPLOAD_KEYSTORE_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWD }}
           P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}
@@ -379,6 +383,10 @@ jobs:
           ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/25b
           ANDROID_NDK: /usr/local/lib/android/sdk/ndk/25b
           ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/25b
+          # maturin (invoked by p4a via 'python -m build' to build pydantic-core
+          # from source) needs ANDROID_API_LEVEL to tag the wheel android_26_arm;
+          # without it the build fails with "Failed to determine Android API level".
+          ANDROID_API_LEVEL: "26"
           P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
           ANDROID_UPLOAD_KEYSTORE_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWD }}
           P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}

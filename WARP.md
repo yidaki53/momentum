@@ -266,6 +266,11 @@ done < IMAGES.md
 - Fix (fallback): the "Build APK" step captures pass 1's log; if it shows a numpy version/checkout error (`pathspec` / `did not match` / `InvalidVersion`), it patches the **cloned** p4a's numpy recipe `version` to `v1.26.4` via `sed` and unpins `numpy` in `buildozer.spec` so pass 2 uses the recipe version. Removed the useless pip-installed patch step and the `p4a.source` CI override.
 - Two-pass buildozer retained for Cython injection (hostpython3's isolated site-packages only exists after pass 1 builds hostpython3).
 
+### CI: APK build -- pydantic-core maturin ANDROID_API_LEVEL fix (2026-07-25)
+- Root cause: `build-apk` failed at the pydantic-core recipe with `maturin failed: Failed to determine Android API level. Please set the ANDROID_API_LEVEL environment variable.` The Rust crate itself compiled fine (`Finished release profile [optimized]`); only the wheel platform-tag step failed. pydantic-core has no published Android wheel on PyPI, so p4a cross-compiles it from source via `python -m build` -> maturin. p4a exports `ANDROIDAPI`/`NDKAPI` but **not** `ANDROID_API_LEVEL`, which is the specific var maturin reads to tag the wheel `android_26_arm`.
+- Red herring: initially suspected a pydantic-core version regression and pinned `pydantic==2.12.5,pydantic-core==2.41.5` (the 2026-02-28-era pair). The pin was a no-op -- the failure was identical on 2.41.4 and 2.41.5. The pins are kept for reproducible mobile builds but were not the fix.
+- Fix: set `ANDROID_API_LEVEL: "26"` in the `env:` of both the "Build APK" and "Build AAB" steps in `.github/workflows/ci.yml`. Value 26 matches `android.minapi = 26` / `--ndk-api=26` / the `android_26_arm` platform tag p4a expects. The env var propagates into maturin's isolated build venv.
+
 ### Android APK Build (2026-02-28)
 - Successfully built 80MB APK with numpy/matplotlib for chart support
 - **Critical Cython fix**: python-for-android sets `PYTHONNOUSERSITE=1` and overrides `PYTHONPATH` to only `.../hostpython3/native-build/Lib/site-packages/`. Cython must be installed into that exact directory: `hostpython3 -m pip install --target=".../native-build/Lib/site-packages" Cython==0.29.36`

@@ -18,11 +18,10 @@ version = 0.4.0
 # p4a run 'git checkout v1.26.4' directly. CI also patches the cloned p4a
 # numpy recipe as a fallback (see .github/workflows/ci.yml, Build APK step).
 #
-# pydantic + pydantic-core pinned to the stable pair current around the
-# 2026-02-28 successful APK build (pydantic 2.12.5 requires pydantic-core
-# 2.41.5). pydantic-core has no published Android wheel, so p4a cross-
-# compiles it from source via maturin; newer pydantic-core failed that
-# cross-compile, so we pin back to this known-good-era pair.
+# pydantic + pydantic-core pinned for reproducible mobile builds (pydantic
+# 2.12.5 requires pydantic-core 2.41.5). pydantic-core has no published
+# Android wheel, so p4a cross-compiles it from source via maturin; CI sets
+# ANDROID_API_LEVEL so maturin can tag the wheel android_26_arm.
 requirements = python3,kivy,pydantic==2.12.5,pydantic-core==2.41.5,pillow,matplotlib,numpy==v1.26.4,certifi
 
 # Include the core momentum package (via symlink) and data files
