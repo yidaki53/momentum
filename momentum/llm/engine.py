@@ -1,4 +1,11 @@
-"""LLM inference engine — wraps llama-cpp-python for local model inference."""
+"""LLM inference engine — wraps llama-cpp-python for local model inference.
+
+The ``llama_cpp`` native dependency is imported lazily/guarded so this module
+remains import-safe on builds where it is not available (e.g. the Android APK
+when the optional llama-cpp-python recipe is absent). Use ``is_llm_available()``
+to check at runtime; ``LlmEngine.load()`` raises a clear error if the native
+backend is missing.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +14,13 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
-from llama_cpp import Llama
+try:  # Native dependency; absent on Android builds without the recipe.
+    from llama_cpp import Llama
+
+    LLM_AVAILABLE = True
+except ImportError:  # pragma: no cover - exercised on Android/no-native builds
+    Llama = None
+    LLM_AVAILABLE = False
 
 from momentum.llm.downloader import ensure_model
 
@@ -15,6 +28,11 @@ log = logging.getLogger(__name__)
 
 _engine_instance: Optional[LlmEngine] = None
 _engine_lock = threading.Lock()
+
+
+def is_llm_available() -> bool:
+    """Return True when the native llama-cpp-python backend is importable."""
+    return LLM_AVAILABLE
 
 
 class LlmEngine:
@@ -38,6 +56,11 @@ class LlmEngine:
         """Load the model into memory. Call once before generate()."""
         if self._llama is not None:
             return
+        if not LLM_AVAILABLE or Llama is None:
+            raise RuntimeError(
+                "llama-cpp-python is not available on this build; "
+                "the AI Coach UI is ready but on-device inference is not."
+            )
         log.info(
             "Loading model %s (ctx=%d, threads=%d)",
             self._model_path,
@@ -113,7 +136,9 @@ class LlmEngine:
                     full_text += content
             return full_text.strip()
         else:
-            return (
+            # ``response`` is Any (llama-cpp-python has no stubs); coerce to str
+            # so the declared return type holds.
+            return str(
                 response.get("choices", [{}])[0]
                 .get("message", {})
                 .get("content", "")
@@ -212,6 +237,16 @@ def get_engine(
         )
         _engine_instance.load()
         return _engine_instance
+
+
+# Re-exported for callers that only want to probe availability.
+__all__ = [
+    "LlmEngine",
+    "get_engine",
+    "reset_engine",
+    "is_llm_available",
+    "LLM_AVAILABLE",
+]
 
 
 def reset_engine() -> None:

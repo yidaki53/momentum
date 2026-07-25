@@ -62,7 +62,7 @@ def test_fetch_latest_release_retries_with_certifi_on_cert_failure(
     monkeypatch.setattr(update_check.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(
         update_check,
-        "_certifi_ssl_context",
+        "certifi_ssl_context",
         lambda: sentinel_context,
     )
 
@@ -84,7 +84,7 @@ def test_fetch_latest_release_raises_without_certifi_context(
         raise cert_error
 
     monkeypatch.setattr(update_check.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(update_check, "_certifi_ssl_context", lambda: None)
+    monkeypatch.setattr(update_check, "certifi_ssl_context", lambda: None)
 
     with pytest.raises(urllib.error.URLError):
         fetch_latest_release(timeout=1.0)
@@ -107,10 +107,46 @@ def test_fetch_latest_release_does_not_retry_on_non_ssl_url_error(
         return ssl.create_default_context()
 
     monkeypatch.setattr(update_check.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(update_check, "_certifi_ssl_context", fake_certifi_context)
+    monkeypatch.setattr(update_check, "certifi_ssl_context", fake_certifi_context)
 
     with pytest.raises(urllib.error.URLError):
         fetch_latest_release(timeout=1.0)
 
     assert calls == [None]
     assert marker.called is False
+
+
+def test_fetch_latest_release_parses_assets(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload_bytes = (
+        b'{"tag_name":"v0.4.1",'
+        b'"html_url":"https://github.com/yidaki53/momentum/releases/tag/v0.4.1",'
+        b'"assets":['
+        b'{"name":"momentum-linux","browser_download_url":"https://example.com/momentum-linux"},'
+        b'{"name":"momentum-android.apk","browser_download_url":"https://example.com/momentum-android.apk"}'
+        b"]}"
+    )
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+        def read(self) -> bytes:
+            return payload_bytes
+
+    def fake_urlopen(request, timeout, context=None):  # type: ignore[no-untyped-def]
+        return _Response()
+
+    monkeypatch.setattr(update_check.urllib.request, "urlopen", fake_urlopen)
+
+    release = fetch_latest_release(timeout=1.0)
+
+    assert release.version == "0.4.1"
+    assert release.url.endswith("/v0.4.1")
+    assert ("momentum-linux", "https://example.com/momentum-linux") in release.assets
+    assert (
+        "momentum-android.apk",
+        "https://example.com/momentum-android.apk",
+    ) in release.assets

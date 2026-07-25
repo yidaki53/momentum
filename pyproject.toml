@@ -49,6 +49,13 @@ strict = true
 module = ["momentum.gui", "momentum.charts"]
 ignore_errors = true
 
+[[tool.mypy.overrides]]
+# llama-cpp-python is a native C extension with no inline type stubs, and it is
+# not installed in every environment that runs mypy (e.g. CI test job vs local).
+# Treat it as Any so momentum/llm/engine.py type-checks without per-line ignores.
+module = ["llama_cpp", "llama_cpp.*"]
+ignore_missing_imports = true
+
 [tool.coverage.run]
 omit = ["momentum/gui.py", "momentum/llm/*"]
 

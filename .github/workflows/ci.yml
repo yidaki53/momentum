@@ -372,7 +372,33 @@ jobs:
           pip install --target="$HP_SITE" Cython==0.29.36
 
           # Pass 2: numpy checkout cached from pass 1, Cython now available.
-          buildozer android release
+          # Tolerate failure so the llama-cpp-python recipe fallback below can run.
+          set +e
+          buildozer android release > /tmp/buildozer-pass2.log 2>&1
+          PASS2_EXIT=$?
+          set -e
+          tail -60 /tmp/buildozer-pass2.log || true
+
+          # Fallback: if pass 2 failed on the llama-cpp-python recipe (cmake/
+          # scikit-build/llama.cpp errors), strip the recipe and local_recipes and
+          # rebuild without it. The AI Coach UI degrades gracefully without the
+          # native backend (is_llm_available() -> False -> informative message),
+          # so the APK still ships a coherent coach experience.
+          if [ "$PASS2_EXIT" -ne 0 ]; then
+            if grep -qiE "llama|llama_cpp|ggml|scikit-build|CMake Error|Failed to determine Android API level|not a supported wheel" /tmp/buildozer-pass2.log; then
+              echo "Pass 2 hit a llama-cpp-python/llama.cpp build error -- stripping the recipe and rebuilding without on-device inference."
+              sed -i 's|,llama-cpp-python||' buildozer.spec
+              sed -i '/^p4a.local_recipes/d' buildozer.spec
+              echo "Stripped buildozer.spec (llama recipe removed):"
+              grep -E "^requirements" buildozer.spec || true
+              grep -E "^p4a.local_recipes" buildozer.spec || echo "(p4a.local_recipes removed)"
+              buildozer android release
+            else
+              echo "Pass 2 failed for a non-llama reason; re-running to surface the real error." >&2
+              cat /tmp/buildozer-pass2.log >&2
+              buildozer android release
+            fi
+          fi
 
       - name: Build AAB
         env:
@@ -399,7 +425,27 @@ jobs:
           fi
           cd mobile
           sed -i 's|^android.release_artifact.*|android.release_artifact = aab|' buildozer.spec
-          buildozer android release
+          # The Build APK step may have already stripped llama-cpp-python from
+          # buildozer.spec (recipe fallback); this step inherits that state. If
+          # the AAB build itself fails on llama, apply the same fallback here.
+          set +e
+          buildozer android release > /tmp/buildozer-aab.log 2>&1
+          AAB_EXIT=$?
+          set -e
+          tail -60 /tmp/buildozer-aab.log || true
+          if [ "$AAB_EXIT" -ne 0 ]; then
+            if grep -qiE "llama|llama_cpp|ggml|scikit-build|CMake Error|Failed to determine Android API level|not a supported wheel" /tmp/buildozer-aab.log; then
+              echo "AAB build hit a llama-cpp-python/llama.cpp error -- stripping the recipe and rebuilding without on-device inference."
+              sed -i 's|,llama-cpp-python||' buildozer.spec
+              sed -i '/^p4a.local_recipes/d' buildozer.spec
+              grep -E "^requirements" buildozer.spec || true
+              buildozer android release
+            else
+              echo "AAB build failed for a non-llama reason; re-running to surface the real error." >&2
+              cat /tmp/buildozer-aab.log >&2
+              buildozer android release
+            fi
+          fi
 
       - name: Prepare APK artifact
         run: |

@@ -41,6 +41,7 @@ from kivy.properties import (
 )
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
+from kivy.uix.checkbox import CheckBox
 from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.image import Image as KivyImage
 from kivy.uix.label import Label
@@ -89,6 +90,7 @@ from momentum.models import (
     ActJournalEntryCreate,
     AssessmentType,
     FocusSessionCreate,
+    LlmChatMessageCreate,
     TaskCreate,
     TaskStatus,
     ThemeMode,
@@ -105,6 +107,7 @@ from momentum.ui.update_check import (
 log = logging.getLogger(__name__)
 
 _CHART_FUNCS: tuple | None = None
+_LLM_FUNCS: dict | None = None
 _UPDATE_CHECK_INTERVAL_S = 12 * 60 * 60
 
 
@@ -156,6 +159,46 @@ def _get_chart_funcs() -> tuple | None:
         log.debug("Chart module unavailable on this runtime", exc_info=True)
         _CHART_FUNCS = None
     return _CHART_FUNCS
+
+
+def _get_llm_funcs() -> dict | None:
+    """Import the AI Coach LLM layer lazily to keep Android startup lightweight.
+
+    The engine module is import-safe (it guards the native ``llama_cpp`` import),
+    so this never raises on a build without the native backend; callers must
+    still check ``is_llm_available()`` before attempting inference. Returns None
+    only if the momentum.llm package itself is unexpectedly missing.
+    """
+    global _LLM_FUNCS
+    if _LLM_FUNCS is not None:
+        return _LLM_FUNCS
+    try:
+        from momentum.llm import SHORT_DISCLAIMER, DISCLAIMER, is_llm_available
+        from momentum.llm.context import build_chat_history, build_user_context
+        from momentum.llm.downloader import (
+            ensure_model,
+            is_model_downloaded,
+            model_size_mb,
+        )
+        from momentum.llm.engine import get_engine
+        from momentum.llm.prompts import build_chat_prompt
+
+        _LLM_FUNCS = {
+            "is_llm_available": is_llm_available,
+            "is_model_downloaded": is_model_downloaded,
+            "model_size_mb": model_size_mb,
+            "ensure_model": ensure_model,
+            "get_engine": get_engine,
+            "build_user_context": build_user_context,
+            "build_chat_history": build_chat_history,
+            "build_chat_prompt": build_chat_prompt,
+            "SHORT_DISCLAIMER": SHORT_DISCLAIMER,
+            "DISCLAIMER": DISCLAIMER,
+        }
+    except Exception:
+        log.debug("LLM module unavailable on this runtime", exc_info=True)
+        _LLM_FUNCS = None
+    return _LLM_FUNCS
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -296,6 +339,43 @@ def _make_label(text, **kw):
     lbl.bind(width=lambda i, w: setattr(i, "text_size", (w - dp(8), None)))
     lbl.bind(texture_size=lambda i, ts: setattr(i, "height", ts[1] + dp(8)))
     return lbl
+
+
+def _make_check_row(text, *, active=False, group=None, font_size=None):
+    """Create a black & white tick-mark checkbox row with a trailing label.
+
+    The checkbox keeps its default black/white tick styling (no accent colour)
+    so the selected state is immediately obvious. Returns (row, checkbox) so
+    callers can bind ``active`` / read ``.active``.
+    """
+    app = App.get_running_app()
+    text_color = (
+        list(app.text_color) if app and hasattr(app, "text_color") else list(_TEXT)
+    )
+    font_scale = float(app.font_scale) if app and hasattr(app, "font_scale") else 1.0
+    row = BoxLayout(
+        orientation="horizontal",
+        size_hint_y=None,
+        height=dp(44),
+        spacing=dp(8),
+        padding=[dp(4), dp(0)],
+    )
+    cb = CheckBox(active=active, size_hint=(None, None), size=(dp(32), dp(32)))
+    if group is not None:
+        cb.group = group
+    row.add_widget(cb)
+    lbl = Label(
+        text=text,
+        color=text_color,
+        font_size=(font_size or sp(14)) * font_scale,
+        size_hint_x=1.0,
+        halign="left",
+        valign="middle",
+        text_size=(None, None),
+    )
+    lbl.bind(width=lambda i, w: setattr(i, "text_size", (w - dp(4), None)))
+    row.add_widget(lbl)
+    return row, cb
 
 
 def _clean_inline(text: str) -> str:
@@ -444,18 +524,86 @@ def _show_info_popup(title: str, text: str) -> None:
     popup.open()
 
 
-def _show_update_popup(version: str, url: str) -> None:
-    """Display an update-available popup with a direct download action."""
+def _android_activity():
+    """Return the running PythonActivity, or None when not on Android."""
+    try:
+        from jnius import autoclass
+
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        return PythonActivity.mActivity
+    except Exception:
+        return None
+
+
+def _is_play_installed() -> bool:
+    """Return True when this app was installed from the Play Store.
+
+    Play-installed builds are updated by the Play Store itself, and a
+    sideload self-install would fail the signature check, so self-update is
+    skipped for them.
+    """
+    activity = _android_activity()
+    if activity is None:
+        return False
+    try:
+        from jnius import autoclass
+
+        pm = activity.getPackageManager()
+        installer = pm.getInstallerPackageName(activity.getPackageName())
+        return installer is not None and "vending" in str(installer)
+    except Exception:
+        return False
+
+
+def _trigger_apk_download(apk_url: str) -> bool:
+    """Enqueue the APK via DownloadManager so the system installer can run it.
+
+    DownloadManager writes the file and shows a completion notification whose
+    tap opens the package installer (the APK MIME type triggers it), so no
+    FileProvider manifest entry is required. Returns True when enqueued.
+    """
+    activity = _android_activity()
+    if activity is None:
+        return False
+    try:
+        from jnius import autoclass
+
+        DownloadManager = autoclass("android.app.DownloadManager")
+        Request = autoclass("android.app.DownloadManager$Request")
+        Environment = autoclass("android.os.Environment")
+        Uri = autoclass("android.net.Uri")
+
+        dm = activity.getSystemService("download")
+        request = Request(Uri.parse(apk_url))
+        request.setMimeType("application/vnd.android.package-archive")
+        request.setDestinationInExternalFilesDir(
+            activity, Environment.DIRECTORY_DOWNLOADS, "momentum-update.apk"
+        )
+        request.setNotificationVisibility(
+            Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+        )
+        request.setTitle("Momentum update")
+        request.setDescription("Tap when complete to install.")
+        dm.enqueue(request)
+        return True
+    except Exception:
+        log.debug("APK download enqueue failed", exc_info=True)
+        return False
+
+
+def _show_update_popup(version: str, url: str, assets=()) -> None:
+    """Display an update-available popup with self-update and download actions."""
     app = App.get_running_app()
     fg = list(app.text_color) if app else list(_TEXT)
     accent = list(app.accent_color) if app else list(_ACCENT)
     neutral = list(app.neutral_button_color) if app else [0.25, 0.25, 0.25, 1]
+    secondary = list(app.secondary_button_color) if app else [0.4, 0.4, 0.6, 1]
     button_text = list(app.button_text_color) if app else list(_BUTTON_TEXT)
     content = BoxLayout(orientation="vertical", padding=10, spacing=10)
     label = Label(
         text=(
             f"Momentum {version} is available.\n\n"
-            "Open the releases page to download the latest build."
+            "Update now to download the new build, or open the releases page."
         ),
         font_size=sp(13),
         color=fg,
@@ -464,23 +612,69 @@ def _show_update_popup(version: str, url: str) -> None:
     )
     label.bind(texture_size=lambda inst, val: setattr(inst, "height", val[1]))
     content.add_widget(label)
-    buttons = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
-    open_btn = Button(
-        text="Open download page",
-        background_color=accent,
-        color=button_text,
+
+    apk_url = None
+    for name, dl_url in assets:
+        if name == "momentum-android.apk":
+            apk_url = dl_url
+            break
+    can_self_update = (
+        apk_url is not None
+        and not _is_play_installed()
+        and _android_activity() is not None
     )
+
+    def _update_now(_):
+        if apk_url is not None and _trigger_apk_download(apk_url):
+            _show_info_popup(
+                "Downloading update",
+                "Momentum is downloading in the background. "
+                "Tap the download notification when it completes to install.",
+            )
+            popup.dismiss()
+        else:
+            webbrowser.open(url)
+            popup.dismiss()
+
+    def _open_page(_):
+        webbrowser.open(url)
+        popup.dismiss()
+
+    buttons = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+    if can_self_update:
+        update_btn = Button(
+            text="Update now",
+            background_color=accent,
+            color=button_text,
+        )
+        update_btn.bind(on_release=_update_now)
+        buttons.add_widget(update_btn)
+        page_btn = Button(
+            text="Open download page",
+            background_color=secondary,
+            color=button_text,
+        )
+        page_btn.bind(on_release=_open_page)
+        buttons.add_widget(page_btn)
+    else:
+        page_btn = Button(
+            text="Open download page",
+            background_color=accent,
+            color=button_text,
+        )
+        page_btn.bind(on_release=_open_page)
+        buttons.add_widget(page_btn)
     close_btn = Button(
         text="Later",
         background_color=neutral,
         color=button_text,
     )
-    popup = Popup(title="Update available", content=content, size_hint=(0.9, None), height=dp(240))
-    open_btn.bind(on_release=lambda _: (webbrowser.open(url), popup.dismiss()))
     close_btn.bind(on_release=lambda _: popup.dismiss())
-    buttons.add_widget(open_btn)
     buttons.add_widget(close_btn)
     content.add_widget(buttons)
+    popup = Popup(
+        title="Update available", content=content, size_hint=(0.92, None), height=dp(260)
+    )
     popup.open()
 
 
@@ -834,6 +1028,15 @@ KV = """
             text_size: self.width - dp(16), None
             halign: 'center'
             valign: 'middle'
+        Button:
+            text: 'AI Coach'
+            size_hint_y: None
+            height: dp(44)
+            background_color: app.accent_color
+            color: app.button_text_color
+            font_size: sp(14) * app.font_scale
+            bold: True
+            on_release: root.open_coach()
         Widget:
             size_hint_y: None
             height: dp(4)
@@ -858,6 +1061,67 @@ KV = """
                 height: self.minimum_height
                 padding: [dp(16), dp(12)]
                 spacing: dp(4)
+        Toolbar:
+
+<CoachScreen>:
+    BoxLayout:
+        orientation: 'vertical'
+        canvas.before:
+            Color:
+                rgba: app.bg_color
+            Rectangle:
+                pos: self.pos
+                size: self.size
+        ActiveTimerBanner:
+        ScrollView:
+            id: coach_scroll
+            do_scroll_x: False
+            BoxLayout:
+                id: coach_chat
+                orientation: 'vertical'
+                size_hint_y: None
+                height: self.minimum_height
+                padding: [dp(12), dp(8)]
+                spacing: dp(6)
+        BoxLayout:
+            orientation: 'vertical'
+            size_hint_y: None
+            height: dp(120)
+            padding: [dp(8), dp(4)]
+            spacing: dp(4)
+            TextInput:
+                id: coach_input
+                multiline: True
+                font_size: sp(13) * app.font_scale
+                background_color: app.input_bg_color
+                foreground_color: app.text_color
+                hint_text: 'Type a message to your AI Coach...'
+            BoxLayout:
+                size_hint_y: None
+                height: dp(44)
+                spacing: dp(6)
+                Button:
+                    text: 'Send'
+                    background_color: app.accent_color
+                    color: app.button_text_color
+                    font_size: sp(13) * app.font_scale
+                    on_release: root.send_message()
+                Button:
+                    text: 'Clear chat'
+                    background_color: app.neutral_button_color
+                    color: app.button_text_color
+                    font_size: sp(13) * app.font_scale
+                    on_release: root.clear_chat()
+            Label:
+                id: coach_disclaimer
+                text: ''
+                size_hint_y: None
+                height: dp(28)
+                color: app.muted_color
+                font_size: sp(10) * app.font_scale
+                text_size: self.width - dp(8), None
+                halign: 'center'
+                valign: 'middle'
         Toolbar:
 
 <TestsMenuScreen>:
@@ -1962,6 +2226,15 @@ class HomeScreen(Screen):
 
         _run_ui_action(_open, prefix="Could not open ACT journal history.")
 
+    def open_coach(self) -> None:
+        """Navigate to the AI Coach chat screen."""
+
+        def _go() -> None:
+            self.manager.transition = NoTransition()
+            self.manager.current = "coach"
+
+        _run_ui_action(_go, prefix="Could not open the AI Coach.")
+
 
 # ---------------------------------------------------------------------------
 # Generic scrollable-content screen (reused by several pages)
@@ -1971,6 +2244,343 @@ class HomeScreen(Screen):
 class ScrollScreen(Screen):
     """A screen with a toolbar and a scrollable content area (#content)."""
     pass
+
+
+# ---------------------------------------------------------------------------
+# AI Coach
+# ---------------------------------------------------------------------------
+
+
+_COACH_UNAVAILABLE_MSG = (
+    "AI Coach inference is not available on this build. The chat UI is ready; "
+    "on-device inference requires a build that bundles the local model engine."
+)
+
+
+class CoachScreen(Screen):
+    """AI Coach chat screen with on-device inference and graceful degradation.
+
+    The model is only downloaded when the user explicitly opts in (tap the
+    download prompt), keeping the installed APK small. When the native
+    ``llama_cpp`` backend is absent (Android build without the recipe), the
+    screen shows an informative message instead of attempting inference.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._disclaimer_shown = False
+
+    def _home_conn(self):
+        home = self.manager.get_screen("home")
+        return home.conn
+
+    def on_enter(self):
+        chat = self.ids.coach_chat
+        chat.clear_widgets()
+        funcs = _get_llm_funcs()
+        if funcs is None or not funcs["is_llm_available"]():
+            self._show_unavailable(funcs)
+            return
+        # Backend is present: offer opt-in model download, then load history.
+        self.ids.coach_disclaimer.text = funcs["SHORT_DISCLAIMER"]
+        conf = cfg.load_config()
+        model_name = conf.llm_model
+        if not funcs["is_model_downloaded"](model_name):
+            self._offer_model_download(model_name, funcs)
+            return
+        self._load_history(funcs)
+        if not self._disclaimer_shown:
+            self._disclaimer_shown = True
+            _show_info_popup("AI Coach", funcs["DISCLAIMER"])
+
+    def _show_unavailable(self, funcs) -> None:
+        """Show the graceful-degradation panel and disable the chat input."""
+        chat = self.ids.coach_chat
+        chat.clear_widgets()
+        chat.add_widget(_make_label(
+            "AI Coach",
+            font_size=sp(20), bold=True, color=_ACCENT,
+        ))
+        chat.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        chat.add_widget(_make_label(
+            _COACH_UNAVAILABLE_MSG,
+            font_size=sp(13), color=_MUTED,
+        ))
+        chat.add_widget(Widget(size_hint_y=None, height=dp(12)))
+        if funcs is not None:
+            chat.add_widget(_make_label(
+                funcs["SHORT_DISCLAIMER"],
+                font_size=sp(11), color=_MUTED,
+            ))
+        # Disable the input so the user cannot try to send without a backend.
+        self.ids.coach_input.disabled = True
+        self.ids.coach_disclaimer.text = ""
+
+    def _offer_model_download(self, model_name: str, funcs) -> None:
+        """Prompt the user to opt in to downloading the model (keeps APK small)."""
+        chat = self.ids.coach_chat
+        size_mb = funcs["model_size_mb"](model_name)
+        chat.add_widget(_make_label(
+            "AI Coach",
+            font_size=sp(20), bold=True, color=_ACCENT,
+        ))
+        chat.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        chat.add_widget(_make_label(
+            f"The AI Coach model ({model_name}, ~{size_mb} MB) has not been "
+            f"downloaded yet. Download it now? This happens once and may take "
+            f"a few minutes.",
+            font_size=sp(13), color=_MUTED,
+        ))
+        btn_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+        download_btn = Button(
+            text="Download model",
+            background_color=list(_ACCENT),
+            color=list(_BUTTON_TEXT),
+        )
+        download_btn.bind(
+            on_release=lambda _: self._start_model_download(model_name, funcs)
+        )
+        btn_row.add_widget(download_btn)
+        chat.add_widget(btn_row)
+        self.ids.coach_input.disabled = True
+
+    def _start_model_download(self, model_name: str, funcs) -> None:
+        """Run the opt-in model download behind a progress popup."""
+        size_mb = funcs["model_size_mb"](model_name)
+        content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+        content.add_widget(_make_label(
+            f"Downloading {model_name} model (~{size_mb} MB)...",
+            font_size=sp(13),
+        ))
+        progress = ProgressBar(max=100, value=0, size_hint_y=None, height=dp(20))
+        content.add_widget(progress)
+        status = _make_label("Starting download...", font_size=sp(12), color=_MUTED)
+        content.add_widget(status)
+        popup = Popup(
+            title="Downloading AI Model",
+            content=content,
+            size_hint=(0.9, 0.4),
+            auto_dismiss=False,
+        )
+        popup.open()
+
+        def _update_progress(downloaded: int, total: int) -> None:
+            if total <= 0:
+                return
+            pct = int(downloaded / total * 100)
+            progress.value = pct
+            mb_done = downloaded / (1024 * 1024)
+            mb_total = total / (1024 * 1024)
+            status.text = f"{mb_done:.0f} / {mb_total:.0f} MB ({pct}%)"
+
+        def _download() -> None:
+            try:
+                funcs["ensure_model"](model_name, progress_callback=_update_progress)
+                Clock.schedule_once(lambda _dt: _done())
+            except Exception as exc:
+                Clock.schedule_once(lambda _dt, e=exc: _error(e))
+
+        def _done() -> None:
+            popup.dismiss()
+            _show_info_popup(
+                "Download complete",
+                f"The {model_name} model is ready to use.",
+            )
+            self.ids.coach_input.disabled = False
+            self.on_enter()
+
+        def _error(exc) -> None:
+            popup.dismiss()
+            _show_error_popup(
+                "Download failed",
+                f"Could not download the model:\n{exc}\n\n"
+                f"Please check your internet connection and try again.",
+            )
+
+        threading.Thread(target=_download, daemon=True).start()
+
+    def _load_history(self, funcs) -> None:
+        """Load existing chat messages into the scroll area."""
+        chat = self.ids.coach_chat
+        chat.clear_widgets()
+        self.ids.coach_input.disabled = False
+        try:
+            conn = self._home_conn()
+            if conn is None:
+                return
+            messages = db.list_llm_chat_messages(conn, limit=50)
+            for msg in reversed(messages):
+                self._add_message(msg.role, msg.content)
+        except Exception:
+            log.debug("Could not load AI Coach history", exc_info=True)
+
+    def _add_message(self, role: str, content: str) -> None:
+        """Append a user/assistant message bubble to the chat area."""
+        chat = self.ids.coach_chat
+        label_text = "You" if role == "user" else "AI Coach"
+        color = list(_ACCENT) if role == "user" else list(_TEXT)
+        chat.add_widget(_make_label(
+            label_text, font_size=sp(12), bold=True, color=color,
+        ))
+        chat.add_widget(_make_label(
+            content, font_size=sp(13), color=list(_TEXT),
+        ))
+        chat.add_widget(Widget(size_hint_y=None, height=dp(4)))
+        self._scroll_to_bottom()
+
+    def _scroll_to_bottom(self) -> None:
+        scroll = self.ids.coach_scroll
+        Clock.schedule_once(
+            lambda _dt: setattr(scroll, "scroll_y", 0.0), 0
+        )
+
+    def _show_typing(self) -> None:
+        chat = self.ids.coach_chat
+        typing_label = _make_label(
+            "AI Coach is thinking...",
+            font_size=sp(12), italic=True, color=list(_MUTED),
+        )
+        typing_label.id = "typing_indicator"
+        chat.add_widget(typing_label)
+        self._scroll_to_bottom()
+
+    def _hide_typing(self) -> None:
+        chat = self.ids.coach_chat
+        for child in list(chat.children):
+            if getattr(child, "id", None) == "typing_indicator":
+                chat.remove_widget(child)
+
+    def send_message(self) -> None:
+        """Send the current input to the AI Coach and stream the reply."""
+        funcs = _get_llm_funcs()
+        if funcs is None or not funcs["is_llm_available"]():
+            _show_info_popup("AI Coach", _COACH_UNAVAILABLE_MSG)
+            return
+        conf = cfg.load_config()
+        model_name = conf.llm_model
+        if not funcs["is_model_downloaded"](model_name):
+            self.on_enter()
+            return
+        text_input = self.ids.coach_input
+        user_msg = text_input.text.strip()
+        if not user_msg:
+            return
+        text_input.text = ""
+
+        def _send() -> None:
+            conn = self._home_conn()
+            if conn is None:
+                _show_error_popup("AI Coach", "The database is not open yet.")
+                return
+            db.add_llm_chat_message(
+                conn, LlmChatMessageCreate(role="user", content=user_msg)
+            )
+            self._add_message("user", user_msg)
+            try:
+                user_context = funcs["build_user_context"](conn)
+                chat_history = funcs["build_chat_history"](conn, limit=6)
+                messages = funcs["build_chat_prompt"](
+                    user_msg, user_context, chat_history
+                )
+                self._show_typing()
+                engine = funcs["get_engine"](model_name)
+
+                def _on_token(token: str) -> None:
+                    Clock.schedule_once(
+                        lambda _dt, t=token: self._append_token(t), 0
+                    )
+
+                def _on_done(full_text: str) -> None:
+                    Clock.schedule_once(
+                        lambda _dt, ft=full_text: self._finish_reply(ft), 0
+                    )
+
+                def _on_error(exc) -> None:
+                    Clock.schedule_once(
+                        lambda _dt, e=exc: self._fail_reply(e), 0
+                    )
+
+                # Accumulate streamed tokens so on_done can persist the full reply.
+                self._pending_reply = ""
+                engine.generate_async(
+                    messages=messages,
+                    on_token=lambda t: self._record_token(t, _on_token),
+                    on_done=_on_done,
+                    on_error=_on_error,
+                    max_tokens=512,
+                    temperature=0.7,
+                )
+            except Exception as exc:
+                self._hide_typing()
+                self._add_message(
+                    "assistant",
+                    f"I'm having trouble right now. Please make sure the model is "
+                    f"downloaded and try again. ({exc})",
+                )
+                log.exception("AI Coach send failed")
+
+        _run_ui_action(_send, prefix="Could not send the AI Coach message.")
+
+    def _record_token(self, token: str, forward) -> None:
+        self._pending_reply = getattr(self, "_pending_reply", "") + token
+        forward(token)
+
+    def _append_token(self, token: str) -> None:
+        """Append a streamed token to the most recent assistant bubble."""
+        chat = self.ids.coach_chat
+        # If the last content label is an assistant reply being built, extend it.
+        if chat.children and hasattr(chat.children[0], "_coach_reply"):
+            chat.children[0].text += token
+        else:
+            self._hide_typing()
+            lbl = _make_label(token, font_size=sp(13), color=list(_TEXT))
+            lbl._coach_reply = True  # type: ignore[attr-defined]
+            chat.add_widget(lbl)
+        self._scroll_to_bottom()
+
+    def _finish_reply(self, full_text: str) -> None:
+        self._hide_typing()
+        text = full_text or getattr(self, "_pending_reply", "")
+        self._pending_reply = ""
+        if not text:
+            return
+        # Replace the in-progress bubble with the final text to avoid duplicates.
+        chat = self.ids.coach_chat
+        for child in list(chat.children):
+            if getattr(child, "_coach_reply", False):
+                chat.remove_widget(child)
+                break
+        self._add_message("assistant", text)
+        try:
+            conn = self._home_conn()
+            if conn is not None:
+                db.add_llm_chat_message(
+                    conn, LlmChatMessageCreate(role="assistant", content=text)
+                )
+        except Exception:
+            log.debug("Could not persist AI Coach reply", exc_info=True)
+
+    def _fail_reply(self, exc) -> None:
+        self._hide_typing()
+        self._add_message(
+            "assistant",
+            f"I'm sorry, I encountered an error: {exc}",
+        )
+        log.exception("AI Coach generation failed")
+
+    def clear_chat(self) -> None:
+        """Delete all chat history after confirmation."""
+
+        def _clear() -> None:
+            conn = self._home_conn()
+            if conn is None:
+                return
+            db.delete_all_llm_chat_messages(conn)
+            self.ids.coach_chat.clear_widgets()
+            self._disclaimer_shown = False
+            _show_info_popup("Chat cleared", "All AI Coach messages were deleted.")
+
+        _run_ui_action(_clear, prefix="Could not clear the AI Coach chat.")
 
 
 # ---------------------------------------------------------------------------
@@ -1991,8 +2601,6 @@ class SettingsScreen(ScrollScreen):
         button_text = list(app.button_text_color) if app else list(_BUTTON_TEXT)
         muted = list(app.muted_color) if app else list(_MUTED)
         neutral = list(app.neutral_button_color) if app else [0.25, 0.25, 0.25, 1]
-        secondary = list(app.secondary_button_color) if app else [0.35, 0.35, 0.48, 1]
-        success = list(app.success_button_color) if app else [0.29, 0.478, 0.29, 1]
         danger = list(app.danger_button_color) if app else [0.55, 0.35, 0.35, 1]
         input_bg = list(app.input_bg_color) if app else [0.2, 0.2, 0.2, 1]
         font_scale = app.font_scale if app else 1.0
@@ -2009,8 +2617,10 @@ class SettingsScreen(ScrollScreen):
         self._db_label = _make_label(db_text, font_size=sp(12), color=muted)
         c.add_widget(self._db_label)
         c.add_widget(_make_label(
-            "App data is kept across upgrades. Android controls uninstall data removal, "
-            "so use Cloud Sync or a custom path if you want a copy outside the app.",
+            "Your data lives in the app's private storage and is kept automatically "
+            "when Momentum is updated. It is only removed if you uninstall the app or "
+            "tap Clear data in Android settings. Use Cloud Sync or a custom path to "
+            "keep a copy outside the app.",
             font_size=sp(11),
             color=muted,
         ))
@@ -2068,44 +2678,40 @@ class SettingsScreen(ScrollScreen):
         c.add_widget(Widget(size_hint_y=None, height=dp(12)))
         c.add_widget(_make_label("Appearance", font_size=sp(16), bold=True, color=accent))
         theme_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        for label, mode, color in (
-            ("Dark", ThemeMode.DARK.value, neutral),
-            ("Light", ThemeMode.LIGHT.value, secondary),
+        for label, mode in (
+            ("Dark", ThemeMode.DARK.value),
+            ("Light", ThemeMode.LIGHT.value),
         ):
-            tb = ToggleButton(
-                text=label,
+            _crow, cb = _make_check_row(
+                label,
+                active=current.theme_mode.value == mode,
                 group="theme_mode",
-                state="down" if current.theme_mode.value == mode else "normal",
-                background_color=list(color),
-                color=list(button_text),
-                font_size=sp(12) * font_scale,
+                font_size=sp(13),
             )
-            tb.bind(
-                on_release=lambda inst, m=mode: self._set_theme(m) if inst.state == "down" else None
+            cb.bind(
+                active=lambda inst, val, m=mode: self._set_theme(m) if val else None
             )
-            theme_row.add_widget(tb)
+            theme_row.add_widget(_crow)
         c.add_widget(theme_row)
         c.add_widget(Widget(size_hint_y=None, height=dp(8)))
         c.add_widget(_make_label("Timer cycle mode", font_size=sp(16), bold=True, color=accent))
         cycle_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        for label, mode, color in (
-            ("Manual", TimerCycleMode.MANUAL.value, neutral),
-            ("Auto focus/break", TimerCycleMode.AUTO.value, success),
+        for label, mode in (
+            ("Manual", TimerCycleMode.MANUAL.value),
+            ("Auto focus/break", TimerCycleMode.AUTO.value),
         ):
-            tb = ToggleButton(
-                text=label,
+            _crow, cb = _make_check_row(
+                label,
+                active=current.timer_cycle_mode.value == mode,
                 group="timer_cycle_mode",
-                state="down" if current.timer_cycle_mode.value == mode else "normal",
-                background_color=list(color),
-                color=list(button_text),
-                font_size=sp(11) * font_scale,
+                font_size=sp(12),
             )
-            tb.bind(
-                on_release=lambda inst, m=mode: (
-                    self._set_timer_cycle_mode(m) if inst.state == "down" else None
+            cb.bind(
+                active=lambda inst, val, m=mode: (
+                    self._set_timer_cycle_mode(m) if val else None
                 )
             )
-            cycle_row.add_widget(tb)
+            cycle_row.add_widget(_crow)
         c.add_widget(cycle_row)
         c.add_widget(_make_label(
             "Manual keeps focus and break separate. Auto chains focus and break "
@@ -2117,74 +2723,56 @@ class SettingsScreen(ScrollScreen):
         # -- Accessibility --
         c.add_widget(Widget(size_hint_y=None, height=dp(8)))
         c.add_widget(_make_label("Accessibility", font_size=sp(16), bold=True, color=accent))
-        access_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        large_text_btn = ToggleButton(
-            text="Larger text",
-            state="down" if current.accessibility_large_text else "normal",
-            background_color=list(success),
-            color=list(button_text),
-            font_size=sp(11) * font_scale,
-        )
-        high_contrast_btn = ToggleButton(
-            text="High contrast",
-            state="down" if current.accessibility_high_contrast else "normal",
-            background_color=list(secondary),
-            color=list(button_text),
-            font_size=sp(11) * font_scale,
-        )
-        reduce_visual_btn = ToggleButton(
-            text="Reduce visuals",
-            state="down" if current.accessibility_reduce_visual_load else "normal",
-            background_color=list(neutral),
-            color=list(button_text),
-            font_size=sp(11) * font_scale,
-        )
-        access_row.add_widget(large_text_btn)
-        access_row.add_widget(high_contrast_btn)
-        access_row.add_widget(reduce_visual_btn)
-        c.add_widget(access_row)
+        _access_cbs: list[CheckBox] = []
+        for label, is_on in (
+            ("Larger text", current.accessibility_large_text),
+            ("High contrast", current.accessibility_high_contrast),
+            ("Reduce visuals", current.accessibility_reduce_visual_load),
+        ):
+            _crow, cb = _make_check_row(label, active=is_on, font_size=sp(13))
+            _access_cbs.append(cb)
+            c.add_widget(_crow)
 
-        def _apply_accessibility(_):
+        def _apply_accessibility(*_):
             self._set_accessibility(
-                large_text=large_text_btn.state == "down",
-                high_contrast=high_contrast_btn.state == "down",
-                reduce_visual_load=reduce_visual_btn.state == "down",
+                large_text=_access_cbs[0].active,
+                high_contrast=_access_cbs[1].active,
+                reduce_visual_load=_access_cbs[2].active,
             )
 
-        large_text_btn.bind(on_release=_apply_accessibility)
-        high_contrast_btn.bind(on_release=_apply_accessibility)
-        reduce_visual_btn.bind(on_release=_apply_accessibility)
+        for cb in _access_cbs:
+            cb.bind(active=_apply_accessibility)
 
         # -- Updates --
         c.add_widget(Widget(size_hint_y=None, height=dp(12)))
         c.add_widget(_make_label("Updates", font_size=sp(16), bold=True, color=accent))
-        auto_check_btn = ToggleButton(
-            text="Check at startup",
-            state="down" if current.check_updates_at_startup else "normal",
-            background_color=list(neutral),
-            color=list(button_text),
-            font_size=sp(11) * font_scale,
+        _check_startup_row, check_startup_cb = _make_check_row(
+            "Check at startup",
+            active=current.check_updates_at_startup,
+            font_size=sp(13),
         )
+        c.add_widget(_check_startup_row)
+
+        def _set_auto_check_updates(inst, val):
+            cfg.set_check_updates_at_startup(val)
+
+        check_startup_cb.bind(active=_set_auto_check_updates)
+
         check_now_btn = Button(
             text="Check now",
-            background_color=list(secondary),
+            size_hint_y=None,
+            height=dp(44),
+            background_color=list(accent),
             color=list(button_text),
-            font_size=sp(11) * font_scale,
+            font_size=sp(13) * font_scale,
         )
-        updates_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        updates_row.add_widget(auto_check_btn)
-        updates_row.add_widget(check_now_btn)
-        c.add_widget(updates_row)
-
-        def _set_auto_check_updates(_):
-            cfg.set_check_updates_at_startup(auto_check_btn.state == "down")
+        c.add_widget(check_now_btn)
 
         def _check_updates_now(_):
             app = App.get_running_app()
             if app is not None:
                 app.trigger_update_check(manual=True)
 
-        auto_check_btn.bind(on_release=_set_auto_check_updates)
         check_now_btn.bind(on_release=_check_updates_now)
 
         # -- Data management --
@@ -3296,6 +3884,7 @@ class MomentumApp(App):
         sm.add_widget(BisbasScreen(name="bisbas"))
         sm.add_widget(StroopScreen(name="stroop"))
         sm.add_widget(ResultsScreen(name="results"))
+        sm.add_widget(CoachScreen(name="coach"))
         return sm
 
     def on_start(self) -> None:
@@ -3367,6 +3956,7 @@ class MomentumApp(App):
                 {
                     "latest_version": latest.version,
                     "url": latest.url,
+                    "assets": list(latest.assets),
                     "update_available": is_update_available(APP_VERSION, latest.version),
                     "newer_than_release": compare_versions(APP_VERSION, latest.version) > 0,
                 }
@@ -3394,7 +3984,11 @@ class MomentumApp(App):
             return
 
         if bool(result.get("update_available", False)):
-            _show_update_popup(str(result["latest_version"]), str(result["url"]))
+            _show_update_popup(
+                str(result["latest_version"]),
+                str(result["url"]),
+                result.get("assets") or [],
+            )
             return
 
         if manual:

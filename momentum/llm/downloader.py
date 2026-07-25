@@ -9,6 +9,8 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, Optional
 
+from momentum.config import app_data_root
+
 log = logging.getLogger(__name__)
 
 # Default model: TinyLlama 1.1B Chat (GGUF Q4_K_M) — Apache 2.0 licensed
@@ -27,8 +29,13 @@ FALLBACK_SIZE_MB = 350
 
 
 def _models_dir() -> Path:
-    """Return the directory where downloaded models are cached."""
-    p = Path.home() / ".local" / "share" / "momentum" / "models"
+    """Return the directory where downloaded models are cached.
+
+    On Android this lives under the app-private data root (so models survive
+    updates and are not world-readable); on desktop it stays at the XDG-style
+    ``~/.local/share/momentum/models`` path (unchanged behaviour).
+    """
+    p = app_data_root() / "models"
     p.mkdir(parents=True, exist_ok=True)
     return p
 

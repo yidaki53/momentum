@@ -4,7 +4,7 @@ import json
 import ssl
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 LATEST_RELEASE_URL = "https://api.github.com/repos/yidaki53/momentum/releases/latest"
@@ -15,6 +15,8 @@ FALLBACK_RELEASES_PAGE = "https://github.com/yidaki53/momentum/releases/latest"
 class ReleaseInfo:
     version: str
     url: str
+    assets: list[tuple[str, str]] = field(default_factory=list)
+    # Each asset is a (name, browser_download_url) tuple.
 
 
 def normalize_version(version: str) -> str:
@@ -50,7 +52,7 @@ def _read_release_payload(
     return cast(dict[str, Any], payload)
 
 
-def _is_certificate_verification_error(exc: urllib.error.URLError) -> bool:
+def is_certificate_verification_error(exc: urllib.error.URLError) -> bool:
     reason = exc.reason
     if isinstance(reason, ssl.SSLCertVerificationError):
         return True
@@ -61,9 +63,9 @@ def _is_certificate_verification_error(exc: urllib.error.URLError) -> bool:
     )
 
 
-def _certifi_ssl_context() -> ssl.SSLContext | None:
+def certifi_ssl_context() -> ssl.SSLContext | None:
     try:
-        import certifi  # type: ignore[import-not-found]
+        import certifi
     except ImportError:
         return None
     return ssl.create_default_context(cafile=certifi.where())
@@ -77,9 +79,9 @@ def fetch_latest_release(timeout: float = 5.0) -> ReleaseInfo:
     try:
         payload = _read_release_payload(request, timeout)
     except urllib.error.URLError as exc:
-        if not _is_certificate_verification_error(exc):
+        if not is_certificate_verification_error(exc):
             raise
-        certifi_context = _certifi_ssl_context()
+        certifi_context = certifi_ssl_context()
         if certifi_context is None:
             raise
         payload = _read_release_payload(request, timeout, ssl_context=certifi_context)
@@ -87,7 +89,15 @@ def fetch_latest_release(timeout: float = 5.0) -> ReleaseInfo:
     raw_version = payload.get("tag_name") or payload.get("name") or ""
     version = normalize_version(raw_version)
     url = payload.get("html_url") or FALLBACK_RELEASES_PAGE
-    return ReleaseInfo(version=version, url=url)
+    assets: list[tuple[str, str]] = []
+    for asset in payload.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        name = asset.get("name")
+        download_url = asset.get("browser_download_url")
+        if isinstance(name, str) and isinstance(download_url, str):
+            assets.append((name, download_url))
+    return ReleaseInfo(version=version, url=url, assets=assets)
 
 
 def is_update_available(current: str, latest: str) -> bool:

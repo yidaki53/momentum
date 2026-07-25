@@ -387,3 +387,81 @@ class TestGui:
         result = runner.invoke(app, ["gui"])
         assert result.exit_code == 0
         mock_gui.assert_called_once()
+
+
+class TestUpdateCommands:
+    @pytest.fixture(autouse=True)
+    def _tmp_config(self, tmp_path: Path, monkeypatch) -> None:
+        """Redirect config reads/writes to tmp_path so tests never touch the
+        real ~/.config/momentum/config.json."""
+        cfg_dir = tmp_path / "config"
+        monkeypatch.setattr("momentum.config._CONFIG_DIR", cfg_dir)
+        monkeypatch.setattr("momentum.config._CONFIG_FILE", cfg_dir / "config.json")
+
+    def _mock_release(self, monkeypatch, version: str = "0.4.0") -> None:
+        from momentum.ui import update_check
+
+        monkeypatch.setattr(
+            update_check,
+            "fetch_latest_release",
+            lambda timeout=5.0: update_check.ReleaseInfo(
+                version=version, url="https://example.com/release"
+            ),
+        )
+
+    def test_check_updates_up_to_date(self, monkeypatch) -> None:
+        self._mock_release(monkeypatch, "0.4.0")
+        result = runner.invoke(app, ["check-updates"])
+        assert result.exit_code == 0
+        assert "latest version" in result.output
+
+    def test_check_updates_available(self, monkeypatch) -> None:
+        self._mock_release(monkeypatch, "0.5.0")
+        result = runner.invoke(app, ["check-updates"])
+        assert result.exit_code == 0
+        assert "0.5.0" in result.output
+        assert "momentum update" in result.output
+
+    def test_check_updates_network_error(self, monkeypatch) -> None:
+        from momentum.ui import update_check
+
+        def boom(timeout: float = 5.0):
+            raise OSError("network down")
+
+        monkeypatch.setattr(update_check, "fetch_latest_release", boom)
+        result = runner.invoke(app, ["check-updates"])
+        assert result.exit_code == 1
+
+    def test_update_no_new_version(self, monkeypatch) -> None:
+        self._mock_release(monkeypatch, "0.4.0")
+        result = runner.invoke(app, ["update"])
+        assert result.exit_code == 0
+        assert "latest version" in result.output
+
+    def test_update_falls_back_when_not_frozen(self, monkeypatch) -> None:
+        # Dev/poetry runs are not frozen, so self-update must fall back to notify.
+        self._mock_release(monkeypatch, "0.5.0")
+        result = runner.invoke(app, ["update"])
+        assert result.exit_code == 0
+        assert "Automatic update is not available" in result.output
+        assert "https://example.com/release" in result.output
+
+    def test_startup_notice_when_update_available(self, monkeypatch) -> None:
+        from momentum import config as cfg
+        from momentum.ui import update_check
+
+        # Opt-in check enabled, throttle forced elapsed (last_update_check_unix=0).
+        cfg.save_config(
+            cfg.AppConfig(check_updates_at_startup=True, last_update_check_unix=0)
+        )
+        monkeypatch.setattr(
+            update_check,
+            "fetch_latest_release",
+            lambda timeout=5.0: update_check.ReleaseInfo(
+                version="0.5.0", url="https://example.com/release"
+            ),
+        )
+        result = runner.invoke(app, ["status"])
+        assert result.exit_code == 0
+        assert "0.5.0" in result.output
+        assert "momentum update" in result.output

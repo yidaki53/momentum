@@ -7,6 +7,7 @@ import logging
 import random
 import re
 import threading
+import time
 import tkinter as tk
 import urllib.request
 import webbrowser
@@ -82,6 +83,8 @@ from momentum.ui.charts import bdefs_momentum_glow, bdefs_radar
 
 if TYPE_CHECKING:
     from momentum.assessments import PersonalisationProfile
+    from momentum.ui.self_update import SelfUpdateResult
+    from momentum.ui.update_check import ReleaseInfo
 
 log = logging.getLogger(__name__)
 
@@ -123,6 +126,9 @@ _PEACEFUL_PHOTOS: list[str] = _load_photos()
 
 _IMG_WIDTH: int = 500
 _IMG_HEIGHT: int = 120
+
+# Opt-in startup update checks are throttled to once per 12 hours.
+_UPDATE_CHECK_INTERVAL_S: int = 12 * 60 * 60
 
 
 class MomentumApp:
@@ -1327,11 +1333,7 @@ class MomentumApp:
             cfg.save_config(conf)
 
         def _check_updates_now():
-            messagebox.showinfo(
-                "Checking updates",
-                "Checking for updates... (feature coming soon)",
-                parent=win,
-            )
+            self._check_for_updates_async(manual=True)
 
         tk.Checkbutton(
             updates_frame,
@@ -2693,11 +2695,213 @@ class MomentumApp:
         threading.Thread(target=_generate, daemon=True).start()
 
     # ------------------------------------------------------------------
+    # Update check & self-update
+    # ------------------------------------------------------------------
+
+    def _maybe_check_updates_on_startup(self) -> None:
+        """Run an opt-in, throttled update check in a background thread."""
+        conf = cfg.load_config()
+        if not conf.check_updates_at_startup:
+            return
+        if (time.time() - conf.last_update_check_unix) < _UPDATE_CHECK_INTERVAL_S:
+            return
+        self._check_for_updates_async(manual=False)
+
+    def _check_for_updates_async(self, *, manual: bool) -> None:
+        """Fetch the latest release off the UI thread and report back."""
+        from momentum.ui.update_check import fetch_latest_release
+
+        def _work() -> None:
+            try:
+                latest = fetch_latest_release()
+            except Exception as exc:  # noqa: BLE001 - surface any failure to the UI
+                self.root.after(
+                    0, lambda e=exc: self._on_update_check_result(manual, None, e)
+                )
+                return
+            self.root.after(
+                0, lambda: self._on_update_check_result(manual, latest, None)
+            )
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_update_check_result(
+        self,
+        manual: bool,
+        latest: Optional[ReleaseInfo],
+        error: Optional[BaseException],
+    ) -> None:
+        """Handle a completed update check (runs on the UI thread)."""
+        from momentum import __version__
+        from momentum.ui.update_check import compare_versions, is_update_available
+
+        # Persist the check timestamp regardless of outcome.
+        conf = cfg.load_config()
+        conf.last_update_check_unix = int(time.time())
+        cfg.save_config(conf)
+
+        if error is not None:
+            if manual:
+                messagebox.showerror(
+                    "Update check failed",
+                    f"Could not check for updates.\n\n{error}",
+                    parent=self.root,
+                )
+            return
+
+        if latest is not None and is_update_available(__version__, latest.version):
+            self._show_update_dialog(latest)
+            return
+
+        if manual:
+            if latest is not None and compare_versions(__version__, latest.version) > 0:
+                messagebox.showinfo(
+                    "Up to date",
+                    "This build is newer than the latest published release.",
+                    parent=self.root,
+                )
+            else:
+                messagebox.showinfo(
+                    "Up to date",
+                    f"You are running the latest version ({__version__}).",
+                    parent=self.root,
+                )
+
+    def _show_update_dialog(self, latest: ReleaseInfo) -> None:
+        """Show the update-available popup with self-update and download actions."""
+        from momentum.ui.self_update import (
+            is_frozen_build,
+            select_asset_for_current_platform,
+        )
+
+        win = tk.Toplevel(self.root)
+        win.title("Update available")
+        win.geometry("440x240")
+        win.configure(bg=self._palette["bg"])
+        win.transient(self.root)
+        win.grab_set()
+
+        ttk.Label(
+            win,
+            text=(
+                f"Momentum {latest.version} is available.\n\n"
+                "Update now to download and install the new build, or open "
+                "the releases page to download it manually."
+            ),
+            style="Nudge.TLabel",
+            wraplength=400,
+            justify=tk.LEFT,
+        ).pack(fill=tk.BOTH, expand=True, padx=16, pady=(16, 8))
+
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(fill=tk.X, padx=12, pady=(0, 10))
+
+        can_self_update = (
+            is_frozen_build()
+            and select_asset_for_current_platform(latest.assets) is not None
+        )
+
+        def _update_now() -> None:
+            win.destroy()
+            self._do_self_update(latest)
+
+        def _open_page() -> None:
+            webbrowser.open(latest.url)
+            win.destroy()
+
+        if can_self_update:
+            ttk.Button(btn_frame, text="Update now", command=_update_now).pack(
+                side=tk.LEFT, padx=2
+            )
+            ttk.Button(btn_frame, text="Open download page", command=_open_page).pack(
+                side=tk.LEFT, padx=2
+            )
+        else:
+            ttk.Button(btn_frame, text="Open download page", command=_open_page).pack(
+                side=tk.LEFT, padx=2
+            )
+        ttk.Button(btn_frame, text="Later", command=win.destroy).pack(
+            side=tk.LEFT, padx=2
+        )
+
+    def _do_self_update(self, latest: ReleaseInfo) -> None:
+        """Run perform_self_update behind a progress dialog, then relaunch."""
+        from momentum.ui.self_update import SelfUpdateStatus, perform_self_update
+
+        win = tk.Toplevel(self.root)
+        win.title("Updating Momentum")
+        win.geometry("400x150")
+        win.configure(bg=self._palette["bg"])
+        win.transient(self.root)
+        win.grab_set()
+
+        ttk.Label(
+            win,
+            text=f"Downloading Momentum {latest.version}...",
+            style="TLabel",
+        ).pack(padx=12, pady=(12, 4))
+
+        progress = ttk.Progressbar(
+            win, orient=tk.HORIZONTAL, length=360, mode="determinate"
+        )
+        progress.pack(padx=12, pady=8)
+
+        status_var = tk.StringVar(value="Starting download...")
+        ttk.Label(win, textvariable=status_var, style="Nudge.TLabel").pack(padx=12)
+
+        def _update_progress(downloaded: int, total: int) -> None:
+            if total > 0:
+                pct = int(downloaded / total * 100)
+                progress["value"] = pct
+                mb_done = downloaded / (1024 * 1024)
+                mb_total = total / (1024 * 1024)
+                status_var.set(f"{mb_done:.0f} / {mb_total:.0f} MB ({pct}%)")
+            else:
+                mb_done = downloaded / (1024 * 1024)
+                status_var.set(f"{mb_done:.0f} MB downloaded...")
+
+        def _work() -> None:
+            result = perform_self_update(
+                latest, restart_args=["gui"], progress_callback=_update_progress
+            )
+            self.root.after(0, lambda r=result: _done(r))
+
+        def _done(result: SelfUpdateResult) -> None:
+            win.destroy()
+            if result.status is SelfUpdateStatus.UPDATED:
+                messagebox.showinfo(
+                    "Update complete",
+                    f"Momentum has been updated to {result.new_version}.\n"
+                    "The new build is launching; this window will close.",
+                    parent=self.root,
+                )
+                self.root.destroy()
+                return
+            if result.status is SelfUpdateStatus.ERROR:
+                messagebox.showerror(
+                    "Update failed",
+                    f"{result.message}\n\nDownload it manually:\n{result.releases_url}",
+                    parent=self.root,
+                )
+                return
+            # FALLBACK_NOTIFY: not a frozen build or not a writable install path.
+            messagebox.showinfo(
+                "Manual download required",
+                "Automatic update is not available for this install.\n\n"
+                f"Download Momentum {result.new_version} from:\n{result.releases_url}",
+                parent=self.root,
+            )
+            webbrowser.open(result.releases_url)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    # ------------------------------------------------------------------
     # Run
     # ------------------------------------------------------------------
 
     def run(self) -> None:
         """Start the tkinter main loop."""
+        self._maybe_check_updates_on_startup()
         self._show_llm_welcome()
         self.root.mainloop()
         self.conn.close()

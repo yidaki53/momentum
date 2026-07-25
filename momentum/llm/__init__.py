@@ -7,13 +7,15 @@ from momentum.llm.downloader import (
     ensure_model,
     get_model_path,
 )
-from momentum.llm.engine import LlmEngine, get_engine
+from momentum.llm.engine import LLM_AVAILABLE, LlmEngine, get_engine, is_llm_available
 
 __all__ = [
     "DISCLAIMER",
     "SHORT_DISCLAIMER",
     "LlmEngine",
     "get_engine",
+    "is_llm_available",
+    "LLM_AVAILABLE",
     "ensure_model",
     "get_model_path",
     "MODEL_REPO",

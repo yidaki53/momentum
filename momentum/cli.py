@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -29,6 +30,45 @@ app = typer.Typer(
     help="A gentle tool to help you get things done, one small step at a time.",
     no_args_is_help=True,
 )
+
+# Opt-in startup update checks are throttled to once per 12 hours so the
+# network cost is bounded regardless of how often the CLI is invoked.
+_UPDATE_CHECK_INTERVAL_S = 12 * 60 * 60
+
+
+@app.callback(invoke_without_command=True)
+def _startup(ctx: typer.Context) -> None:
+    """Run opt-in update detection before each command (throttled, notify-only)."""
+    from momentum import __version__
+    from momentum import config as cfg
+    from momentum.ui.self_update import cleanup_old_binary
+    from momentum.ui.update_check import fetch_latest_release, is_update_available
+
+    # Best-effort cleanup of a leftover .old binary from a Windows self-update.
+    cleanup_old_binary()
+
+    # Skip the startup notice when the user is explicitly asking about updates.
+    if ctx.invoked_subcommand in {"update", "check-updates"}:
+        return
+
+    conf = cfg.load_config()
+    if not conf.check_updates_at_startup:
+        return
+    if (time.time() - conf.last_update_check_unix) < _UPDATE_CHECK_INTERVAL_S:
+        return
+
+    try:
+        latest = fetch_latest_release(timeout=1.5)
+    except Exception:
+        return  # network errors are silent on the startup path
+
+    conf.last_update_check_unix = int(time.time())
+    cfg.save_config(conf)
+    if is_update_available(__version__, latest.version):
+        typer.echo(
+            f"Momentum {latest.version} is available. Run `momentum update` to update.",
+            err=True,
+        )
 
 
 def _conn() -> sqlite3.Connection:
@@ -289,6 +329,12 @@ def start() -> None:
             sessions.run_focus(minutes=focus_minutes, task_id=task.id)
             conn.close()
             return
+        # Declined the suggestion -- end gently rather than falling through to
+        # the no-tasks prompt (which would push for a brand-new task and abort
+        # on exhausted stdin under newer click).
+        display.print_nudge(personalised_nudge(encouragement.get_nudge(), profile))
+        conn.close()
+        return
 
     # No tasks -- ask them to name one small thing
     display.print_nudge(
@@ -796,6 +842,82 @@ def autostart(
             display.print_info(f"  Desktop entry: {result.desktop_entry_path}")
     else:
         display.print_info("Use --enable, --disable, or --status.")
+
+
+# ---------------------------------------------------------------------------
+# Updates
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def update() -> None:
+    """Download and install the latest Momentum release (frozen builds only)."""
+    from momentum import __version__
+    from momentum import config as cfg
+    from momentum.ui.self_update import SelfUpdateStatus, perform_self_update
+    from momentum.ui.update_check import fetch_latest_release, is_update_available
+
+    try:
+        latest = fetch_latest_release()
+    except Exception as exc:
+        display.print_warning(f"Could not check for updates: {exc}")
+        raise typer.Exit(1)
+
+    conf = cfg.load_config()
+    conf.last_update_check_unix = int(time.time())
+    cfg.save_config(conf)
+
+    if not is_update_available(__version__, latest.version):
+        display.print_info(f"You are running the latest version ({__version__}).")
+        return
+
+    display.print_info(f"Momentum {latest.version} is available. Updating...")
+    result = perform_self_update(latest)
+    if result.status is SelfUpdateStatus.UPDATED:
+        display.print_success(
+            f"Updated to {result.new_version}. The new build is relaunching."
+        )
+        raise typer.Exit(0)
+    if result.status is SelfUpdateStatus.ERROR:
+        display.print_warning(f"Update failed: {result.message}")
+        display.print_info(f"Download it manually: {result.releases_url}")
+        raise typer.Exit(1)
+    # FALLBACK_NOTIFY: not a frozen build or not a writable install path.
+    display.print_info(
+        "Automatic update is not available for this install. "
+        "Download the new build manually."
+    )
+    display.print_info(f"Momentum {result.new_version}: {result.releases_url}")
+
+
+@app.command(name="check-updates")
+def check_updates() -> None:
+    """Check whether a newer Momentum release is available."""
+    from momentum import __version__
+    from momentum import config as cfg
+    from momentum.ui.update_check import (
+        compare_versions,
+        fetch_latest_release,
+        is_update_available,
+    )
+
+    try:
+        latest = fetch_latest_release()
+    except Exception as exc:
+        display.print_warning(f"Could not check for updates: {exc}")
+        raise typer.Exit(1)
+
+    conf = cfg.load_config()
+    conf.last_update_check_unix = int(time.time())
+    cfg.save_config(conf)
+
+    if is_update_available(__version__, latest.version):
+        display.print_info(f"Momentum {latest.version} is available.")
+        display.print_info(f"Run `momentum update` to update, or visit: {latest.url}")
+    elif compare_versions(__version__, latest.version) > 0:
+        display.print_info("This build is newer than the latest published release.")
+    else:
+        display.print_info(f"You are running the latest version ({__version__}).")
 
 
 if __name__ == "__main__":

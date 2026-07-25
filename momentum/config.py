@@ -41,6 +41,21 @@ def _android_data_dir() -> Path:
     return Path(".")  # last resort
 
 
+def app_data_root() -> Path:
+    """Return the root directory for all Momentum user data on this platform.
+
+    On Android this is the app-private ``getFilesDir()`` (preserved across app
+    updates and uninstallable-only-by-uninstall), so the DB, config, and
+    downloaded models all live here. On desktop it is the XDG-style
+    ``~/.local/share/momentum`` location (``_DB_DIR``'s parent) so behaviour is
+    unchanged. Callers that need a sub-tree (e.g. the LLM model cache) should use
+    ``app_data_root() / "<subdir>"``.
+    """
+    if _is_android():
+        return _android_data_dir() / "data"
+    return Path.home() / ".local" / "share" / "momentum"
+
+
 def _android_legacy_data_dirs() -> list[Path]:
     """Return legacy Android data roots that may contain older config or DB files."""
     candidates: list[Path] = []
