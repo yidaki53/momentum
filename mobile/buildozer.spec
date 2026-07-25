@@ -50,5 +50,8 @@ ios.kivy_ios_branch = master
 log_level = 2
 warn_on_root = 1
 build_dir = /tmp/buildozer-build
-# Use the externally-installed p4a (pip install python-for-android) instead of buildozer's bundled version
+# Use the externally-installed p4a (pip install python-for-android) instead of buildozer's bundled version.
+# CI overrides this dynamically (actions/setup-python installs Python under /opt/hostedtoolcache,
+# not /usr/local/lib/pythonX.Y). For local builds, set this to your interpreter's p4a path, e.g.:
+#   python -c 'import os, pythonforandroid; print(os.path.dirname(pythonforandroid.__file__))'
 p4a.source = /usr/local/lib/python3.11/site-packages/pythonforandroid

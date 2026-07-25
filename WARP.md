@@ -255,12 +255,15 @@ done < IMAGES.md
 - Went from 22% to 79% coverage by adding tests for assessments, charts, config, autostart, and more CLI/DB commands
 - GUI module excluded from coverage (tkinter is impractical to unit test)
 
-### APK Build Fix: numpy v-prefix patch (2026-07-25)
-- Root cause: `build-apk` job was failing because p4a's numpy recipe has `version = '1.26.4'` but numpy's git tags use `v1.26.4`. `git checkout 1.26.4` fails with `pathspec '1.26.4' did not match any file(s)`.
-- Previous workaround (two-pass with post-failure checkout fix) did not work because p4a doesn't cache a failed checkout — it re-clones numpy on the second pass and runs `git checkout 1.26.4` again.
-- Fix: Added a dedicated CI step **"Patch p4a numpy recipe for v-prefixed git tag"** that runs after `pip install python-for-android` and before buildozer. It patches `/usr/local/lib/python3.11/site-packages/pythonforandroid/recipes/numpy/__init__.py` via `sed` to change `version = '1.26.4'` → `version = 'v1.26.4'`.
-- `buildozer.spec` sets `p4a.source = /usr/local/lib/python3.11/site-packages/pythonforandroid`, so buildozer uses the pip-installed p4a and the patch takes effect.
-- Two-pass approach is still required for Cython injection (hostpython3's isolated site-packages only exists after pass 1 builds hostpython3). Pass 1 now gets further (past checkout, fails at Cython compilation). Pass 2 sees numpy as already checked out and cached.
+### CI: LFS bandwidth budget fix (2026-07-25)
+- The `test` job failed at `actions/checkout@v5` with `This repository exceeded its LFS budget` because checkout had `lfs: true` and the only LFS-tracked file (`dist/momentum`) was re-fetched every run.
+- Fix: set `lfs: false` on the `test` and `build` (matrix) checkouts. CI rebuilds `dist/momentum` via PyInstaller each run, so no job needs the committed LFS object.
+
+### CI: p4a path portability + numpy v-prefix patch (2026-07-25)
+- Root cause: `build-apk` failed because p4a's numpy recipe has `version = '1.26.4'` but numpy's git tags use `v1.26.4`. `git checkout 1.26.4` fails with `pathspec '1.26.4' did not match any file(s)`.
+- The patch step and `buildozer.spec`'s `p4a.source` both hardcoded `/usr/local/lib/python3.11/site-packages/pythonforandroid`, but `actions/setup-python@v6` installs Python under `/opt/hostedtoolcache/Python/3.11.15/x64`, so that path does not exist on the runner.
+- Fix: both the patch step and the "Build APK" step now resolve the p4a location dynamically via `python -c 'import os, pythonforandroid; print(os.path.dirname(pythonforandroid.__file__))'`. The "Build APK" step overrides `p4a.source` in `buildozer.spec` with `sed` to that resolved path. `buildozer.spec` keeps a default value with a comment explaining CI overrides it and how to find the path locally.
+- Two-pass buildozer retained for Cython injection (hostpython3's isolated site-packages only exists after pass 1 builds hostpython3).
 
 ### Android APK Build (2026-02-28)
 - Successfully built 80MB APK with numpy/matplotlib for chart support

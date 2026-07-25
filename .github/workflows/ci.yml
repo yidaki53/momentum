@@ -200,12 +200,18 @@ jobs:
           # numpy's git tags use 'v1.26.4' but p4a recipe version is '1.26.4'.
           # buildozer.spec points p4a.source at the pip-installed p4a, so we
           # patch the recipe here before buildozer ever runs.
-          NUMPY_RECIPE="/usr/local/lib/python3.11/site-packages/pythonforandroid/recipes/numpy/__init__.py"
+          #
+          # Resolve the recipe path dynamically: actions/setup-python installs
+          # Python under /opt/hostedtoolcache, not /usr/local/lib/pythonX.Y, so
+          # a hardcoded path is not portable across runner/setup-python versions.
+          NUMPY_RECIPE="$(python -c 'import os, pythonforandroid; print(os.path.join(os.path.dirname(pythonforandroid.__file__), "recipes", "numpy", "__init__.py"))')"
           if [ ! -f "$NUMPY_RECIPE" ]; then
             echo "ERROR: numpy recipe not found at $NUMPY_RECIPE" >&2
-            find /usr/local/lib/python3.11/site-packages/pythonforandroid/recipes/numpy/ -type f 2>/dev/null || true
+            RECIPE_DIR="$(python -c 'import os, pythonforandroid; print(os.path.join(os.path.dirname(pythonforandroid.__file__), "recipes", "numpy"))')"
+            find "$RECIPE_DIR" -type f 2>/dev/null || true
             exit 1
           fi
+          echo "Recipe: $NUMPY_RECIPE"
           echo "Before patch:"
           grep -E "version" "$NUMPY_RECIPE" | head -5
           sed -i "s/version = '1\.26\.4'/version = 'v1.26.4'/" "$NUMPY_RECIPE"
@@ -350,6 +356,11 @@ jobs:
           sed -i 's|^build_dir.*|build_dir = /tmp/buildozer-build|' buildozer.spec
           sed -i 's|^android.release_artifact.*|android.release_artifact = apk|' buildozer.spec
           sed -i "s|^android.numeric_version.*|android.numeric_version = ${ANDROID_NUMERIC_VERSION}|" buildozer.spec
+          # Point p4a.source at the pip-installed python-for-android. actions/setup-python
+          # installs Python under /opt/hostedtoolcache, not /usr/local/lib/pythonX.Y, so
+          # the spec's default path won't exist -- resolve it from the active interpreter.
+          P4A_DIR="$(python -c 'import os, pythonforandroid; print(os.path.dirname(pythonforandroid.__file__))')"
+          sed -i "s|^p4a.source.*|p4a.source = ${P4A_DIR}|" buildozer.spec
 
           # Pass 1: numpy recipe is pre-patched to use 'v1.26.4', so git checkout
           # now succeeds. Build will still fail when numpy tries to compile because
