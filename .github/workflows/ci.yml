@@ -309,11 +309,6 @@ jobs:
           ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/25b
           ANDROID_NDK: /usr/local/lib/android/sdk/ndk/25b
           ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/25b
-          # ANDROID_API_LEVEL for maturin (only used if pydantic-core falls back
-          # to a source build; the prebuilt wheel from the p4a-wheels index is
-          # used by default). Set to 24 to match android.minapi and the
-          # android_24_* prebuilt platform tags.
-          ANDROID_API_LEVEL: "24"
           P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
           ANDROID_UPLOAD_KEYSTORE_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWD }}
           P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}
@@ -384,11 +379,6 @@ jobs:
           ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/25b
           ANDROID_NDK: /usr/local/lib/android/sdk/ndk/25b
           ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/25b
-          # ANDROID_API_LEVEL for maturin (only used if pydantic-core falls back
-          # to a source build; the prebuilt wheel from the p4a-wheels index is
-          # used by default). Set to 24 to match android.minapi and the
-          # android_24_* prebuilt platform tags.
-          ANDROID_API_LEVEL: "24"
           P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
           ANDROID_UPLOAD_KEYSTORE_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWD }}
           P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}

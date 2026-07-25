@@ -19,22 +19,12 @@ version = 0.4.0
 # numpy recipe as a fallback (see .github/workflows/ci.yml, Build APK step).
 # No prebuilt numpy 1.26.4 wheel exists, so numpy builds from source.
 #
-# pydantic + pydantic-core: pydantic-core is a Rust crate with no PyPI Android
-# wheel, and p4a's maturin source build fails (ANDROID_API_LEVEL not seen in
-# the isolated build env). Instead we pull a prebuilt Android wheel from the
-# community p4a-wheels index (p4a.extra_args below). That index hosts
-# pydantic_core-2.41.4 (cp314, android_24_*), and pydantic 2.12.3 requires
-# pydantic-core==2.41.4, so the pair is pinned to match the prebuilt.
-# android.minapi is 24 to match the android_24_* prebuilt platform tags.
-requirements = python3,kivy,pydantic==2.12.3,pydantic-core==2.41.4,pillow,matplotlib,numpy==v1.26.4,certifi
-
-# Prebuilt Android wheels (p4a PR #3280). The community index hosts cp314 /
-# android_24_* wheels built with NDK r25b for p4a's target Python 3.14.
-# p4a checks each recipe for a prebuilt first and falls back to source build.
-# pydantic-core uses the prebuilt (bypasses maturin); numpy falls back to
-# source (no 1.26.4 prebuilt). If this index is down, pydantic-core falls
-# back to source build and the APK build fails -- pin a mirror if needed.
-p4a.extra_args = --extra-index-url https://anshdadwal.is-a.dev/p4a-wheels/p4a/
+# pydantic is intentionally NOT included: pydantic-core is a Rust crate with
+# no PyPI Android wheel, and p4a's maturin source build fails (ANDROID_API_LEVEL
+# not seen in the isolated build env), and the prebuilt-wheel install is rejected
+# by p4a's pure-Python pip (no --platform flag). momentum/models.py uses stdlib
+# dataclasses instead, so pydantic is not needed on Android.
+requirements = python3,kivy,pillow,matplotlib,numpy==v1.26.4,certifi
 
 # Include the core momentum package (via symlink) and data files
 source.include_patterns = main.py,momentum/*.py,momentum/**/*.py,momentum/**/**/*.py,ENCOURAGEMENTS.md,SCIENCE.md,README.md,IMAGES.md
@@ -46,7 +36,7 @@ presplash.filename = presplash.png
 # Android settings
 android.permissions = INTERNET,VIBRATE,WAKE_LOCK
 android.api = 34
-android.minapi = 24
+android.minapi = 26
 android.ndk = 25b
 android.accept_sdk_license = True
 android.numeric_version = 100000003

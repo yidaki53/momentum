@@ -1,11 +1,10 @@
-"""Tests for Pydantic models."""
+"""Tests for dataclass models."""
 
 from __future__ import annotations
 
 from datetime import date
 
 import pytest
-from pydantic import ValidationError
 
 from momentum.models import (
     AutostartStatus,
@@ -50,11 +49,11 @@ class TestTaskCreate:
         assert tc.parent_id is None
 
     def test_empty_title_rejected(self) -> None:
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError):
             TaskCreate(title="")
 
     def test_long_title_rejected(self) -> None:
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError):
             TaskCreate(title="x" * 501)
 
     def test_with_parent(self) -> None:
@@ -68,11 +67,11 @@ class TestFocusSessionCreate:
         assert fs.task_id is None
 
     def test_zero_minutes_rejected(self) -> None:
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError):
             FocusSessionCreate(duration_minutes=0)
 
     def test_over_120_minutes_rejected(self) -> None:
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError):
             FocusSessionCreate(duration_minutes=121)
 
 
@@ -93,7 +92,7 @@ class TestDailyLog:
         assert dl.tasks_completed == 3
 
     def test_negative_rejected(self) -> None:
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError):
             DailyLog(date=date.today(), tasks_completed=-1, focus_minutes=0)
 
 

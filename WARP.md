@@ -55,7 +55,7 @@ momentum/
 │   ├── cli.py                   # Typer CLI entry point (all commands)
 │   ├── gui.py                   # Tkinter GUI dashboard
 │   ├── db.py                    # SQLite database layer
-│   ├── models.py                # Pydantic models (single source of truth)
+│   ├── models.py                # Dataclass models (single source of truth)
 │   ├── assessments.py           # BDEFS and Stroop test logic
 │   ├── charts.py                # Matplotlib radar and timeseries charts
 │   ├── config.py                # App config (DB path, cloud sync, window position)
@@ -270,6 +270,14 @@ done < IMAGES.md
 - Root cause: pydantic-core is a Rust crate with no PyPI Android wheel. p4a cross-compiles it from source via `python -m build` -> maturin, which fails with `Failed to determine Android API level. Please set the ANDROID_API_LEVEL environment variable.` The Rust crate compiles fine; only maturin's wheel platform-tag step fails.
 - Dead ends: (1) setting `ANDROID_API_LEVEL` in the step env did not help -- maturin runs inside p4a's isolated `python -m build` venv and does not see the step env var. (2) Pinning pydantic-core to the 2026-02-28-era version was a no-op (identical failure on 2.41.4 and 2.41.5) -- the regression is the maturin env propagation, not the version.
 - Fix: use a prebuilt Android wheel from the community p4a-wheels index (`https://anshdadwal.is-a.dev/p4a-wheels/p4a/`, built with NDK r25b for p4a's target Python 3.14). Added `p4a.extra_args = --extra-index-url ...` to `mobile/buildozer.spec`; p4a checks each recipe for a prebuilt first and falls back to source build. Pinned `pydantic==2.12.3,pydantic-core==2.41.4` (the prebuilt version; pydantic 2.12.3 requires pydantic-core 2.41.4). Lowered `android.minapi` 26 -> 24 to match the `android_24_*` prebuilt platform tags (broader device support: Android 7.0+). Set `ANDROID_API_LEVEL=24` in CI as a fallback for any source build. numpy stays on source build (no `v1.26.4` prebuilt; the v-prefix checkout fix handles it).
+
+### CI: APK build -- drop pydantic-core by refactoring models to dataclasses (2026-07-25)
+- Supersedes the prebuilt-wheel approach above. The prebuilt wheel was found by p4a but rejected during install: p4a's pure-Python `pip install` path lacks the `--platform` flag, so cross-platform `android_24_*` wheels fail with `not a supported wheel on this platform`. Patching p4a internals to add `--platform`/`--only-binary` was rejected as too fragile.
+- Decision: the mobile app only used pydantic for plain data containers -- no advanced features (no `.model_validate`, no custom validators, no JSON schema). Refactoring `momentum/models.py` from `BaseModel` subclasses to stdlib `dataclasses` removes the pydantic dependency on Android entirely.
+- Changes: 16 `BaseModel` subclasses -> `@dataclass` with `__post_init__` validation (via a `_require(cond, msg)` helper) reproducing the original `Field(...)` constraints (`min_length`/`max_length`/`gt`/`ge`/`le`) and raising `ValueError`. The 6 `str`-enums are unchanged. `config.py` `save_config` now serialises via `dataclasses.asdict` + `json.dumps` with an enum/datetime encoder. `tests/test_models.py` swapped `ValidationError` -> `ValueError`.
+- `mobile/buildozer.spec`: removed `pydantic`/`pydantic-core` from `requirements`, removed the `p4a.extra_args` community index, restored `android.minapi = 26`. `.github/workflows/ci.yml`: removed the `ANDROID_API_LEVEL` env var from the Build APK / Build AAB steps (numpy v-prefix fix + Cython injection unchanged).
+- Desktop: `pydantic` stays in `pyproject.toml` (harmless; no longer imported by `models.py`). Removing it is optional dead-weight cleanup, not required for the APK fix.
+- No production code caught `pydantic.ValidationError` (grep confirmed only `test_models.py`), so the switch to `ValueError` did not change production behaviour. Model callers all use kwargs, so dataclass field reorderings are safe.
 
 ### Android APK Build (2026-02-28)
 - Successfully built 80MB APK with numpy/matplotlib for chart support

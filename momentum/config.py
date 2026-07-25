@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
+import enum
 import json
 import os
 import shutil
 import sys
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -191,12 +194,19 @@ def save_config(config: AppConfig) -> Path:
     """Write config to disk. Returns the config file path."""
     try:
         _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        if hasattr(config, "model_dump_json"):
-            payload = config.model_dump_json(indent=2)
-        elif hasattr(config, "json"):
-            payload = config.json(indent=2)
-        else:
-            payload = json.dumps(config.dict(), indent=2)
+
+        def _json_default(obj: object) -> object:
+            if isinstance(obj, enum.Enum):
+                return obj.value
+            if isinstance(obj, (datetime, date)):
+                return obj.isoformat()
+            raise TypeError(
+                f"Object of type {type(obj).__name__} is not JSON serialisable"
+            )
+
+        payload = json.dumps(
+            dataclasses.asdict(config), indent=2, default=_json_default
+        )
         _CONFIG_FILE.write_text(payload, encoding="utf-8")
     except Exception as exc:
         raise RuntimeError(f"Could not write config file at {_CONFIG_FILE}") from exc
