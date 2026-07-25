@@ -195,29 +195,6 @@ jobs:
         run: |
           pip install buildozer cython==0.29.36 python-for-android
 
-      - name: Patch p4a numpy recipe for v-prefixed git tag
-        run: |
-          # numpy's git tags use 'v1.26.4' but p4a recipe version is '1.26.4'.
-          # buildozer.spec points p4a.source at the pip-installed p4a, so we
-          # patch the recipe here before buildozer ever runs.
-          #
-          # Resolve the recipe path dynamically: actions/setup-python installs
-          # Python under /opt/hostedtoolcache, not /usr/local/lib/pythonX.Y, so
-          # a hardcoded path is not portable across runner/setup-python versions.
-          NUMPY_RECIPE="$(python -c 'import os, pythonforandroid; print(os.path.join(os.path.dirname(pythonforandroid.__file__), "recipes", "numpy", "__init__.py"))')"
-          if [ ! -f "$NUMPY_RECIPE" ]; then
-            echo "ERROR: numpy recipe not found at $NUMPY_RECIPE" >&2
-            RECIPE_DIR="$(python -c 'import os, pythonforandroid; print(os.path.join(os.path.dirname(pythonforandroid.__file__), "recipes", "numpy"))')"
-            find "$RECIPE_DIR" -type f 2>/dev/null || true
-            exit 1
-          fi
-          echo "Recipe: $NUMPY_RECIPE"
-          echo "Before patch:"
-          grep -E "version" "$NUMPY_RECIPE" | head -5
-          sed -i "s/version = '1\.26\.4'/version = 'v1.26.4'/" "$NUMPY_RECIPE"
-          echo "After patch:"
-          grep -E "version" "$NUMPY_RECIPE" | head -5
-
       - name: Install Android NDK 25b and platform API 34
         run: |
           mkdir -p $ANDROID_HOME/cmdline-tools/latest/bin
@@ -356,23 +333,45 @@ jobs:
           sed -i 's|^build_dir.*|build_dir = /tmp/buildozer-build|' buildozer.spec
           sed -i 's|^android.release_artifact.*|android.release_artifact = apk|' buildozer.spec
           sed -i "s|^android.numeric_version.*|android.numeric_version = ${ANDROID_NUMERIC_VERSION}|" buildozer.spec
-          # Point p4a.source at the pip-installed python-for-android. actions/setup-python
-          # installs Python under /opt/hostedtoolcache, not /usr/local/lib/pythonX.Y, so
-          # the spec's default path won't exist -- resolve it from the active interpreter.
-          P4A_DIR="$(python -c 'import os, pythonforandroid; print(os.path.dirname(pythonforandroid.__file__))')"
-          sed -i "s|^p4a.source.*|p4a.source = ${P4A_DIR}|" buildozer.spec
 
-          # Pass 1: numpy recipe is pre-patched to use 'v1.26.4', so git checkout
-          # now succeeds. Build will still fail when numpy tries to compile because
-          # hostpython3's isolated site-packages doesn't have Cython yet.
-          buildozer android release 2>&1 || true
+          # Pass 1: buildozer clones python-for-android fresh from GitHub (ignoring
+          # p4a.source) and runs 'git checkout v1.26.4' via the numpy==v1.26.4 pin in
+          # buildozer.spec. Pass 1 is expected to fail when numpy compiles because
+          # hostpython3's isolated site-packages doesn't have Cython yet -- but it
+          # clones p4a, checks out numpy, and builds hostpython3.
+          buildozer android release > /tmp/buildozer-pass1.log 2>&1 || true
+          tail -40 /tmp/buildozer-pass1.log || true
+
+          # Fallback: if p4a rejected/normalised the v1.26.4 pin (pathspec or version
+          # error), patch the CLONED p4a's numpy recipe to force version 'v1.26.4' and
+          # unpin numpy so pass 2 uses the recipe version instead of the pin.
+          # buildozer clones p4a into /tmp/buildozer-build/android/platform/python-for-android/.
+          CLONED_P4A="/tmp/buildozer-build/android/platform/python-for-android"
+          CLONED_NUMPY_RECIPE="${CLONED_P4A}/pythonforandroid/recipes/numpy/__init__.py"
+          if [ -f "$CLONED_NUMPY_RECIPE" ] && grep -qiE "pathspec|did not match any file|InvalidVersion" /tmp/buildozer-pass1.log; then
+            echo "Pass 1 hit a numpy version/checkout error -- applying cloned-recipe fallback."
+            echo "Recipe before patch:"
+            grep -E "version" "$CLONED_NUMPY_RECIPE" | head -5 || true
+            sed -i -E 's/^([[:space:]]*version[[:space:]]*=).*/\1"v1.26.4"/' "$CLONED_NUMPY_RECIPE"
+            if grep -q 'version = "v1.26.4"' "$CLONED_NUMPY_RECIPE"; then
+              echo "Recipe after patch:"
+              grep -E "version" "$CLONED_NUMPY_RECIPE" | head -5 || true
+              sed -i 's|numpy==v1.26.4|numpy|' buildozer.spec
+              echo "Unpinned numpy in buildozer.spec for pass 2 (recipe version v1.26.4 will be used):"
+              grep -E "^requirements" buildozer.spec || true
+            else
+              echo "Recipe version line not found; keeping numpy==v1.26.4 pin for pass 2."
+            fi
+          else
+            echo "No numpy version/checkout error detected in pass 1; keeping numpy==v1.26.4 pin for pass 2."
+          fi
 
           # Inject Cython into hostpython3's isolated site-packages (created by pass 1)
           HP_SITE="/tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/build/other_builds/hostpython3/desktop/hostpython3/native-build/Lib/site-packages"
           mkdir -p "$HP_SITE"
           pip install --target="$HP_SITE" Cython==0.29.36
 
-          # Pass 2: numpy git checkout already complete and cached, Cython now available.
+          # Pass 2: numpy checkout cached from pass 1, Cython now available.
           buildozer android release
 
       - name: Build AAB

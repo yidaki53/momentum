@@ -14,9 +14,10 @@ version = 0.4.0
 
 # Dependencies
 # numpy 2.x requires C++17 which breaks on NDK r25b. Pin to 1.26.4.
-# p4a's recipe does 'git checkout {version}' and numpy tags use 'v' prefix.
-# Our CI patch fixes the v-prefix mismatch before build.
-requirements = python3,kivy,pydantic,pydantic-core,pillow,matplotlib,numpy==1.26.4,certifi
+# numpy git tags are v-prefixed (v1.26.4), so the pin uses 'v1.26.4' to make
+# p4a run 'git checkout v1.26.4' directly. CI also patches the cloned p4a
+# numpy recipe as a fallback (see .github/workflows/ci.yml, Build APK step).
+requirements = python3,kivy,pydantic,pydantic-core,pillow,matplotlib,numpy==v1.26.4,certifi
 
 # Include the core momentum package (via symlink) and data files
 source.include_patterns = main.py,momentum/*.py,momentum/**/*.py,momentum/**/**/*.py,ENCOURAGEMENTS.md,SCIENCE.md,README.md,IMAGES.md
@@ -50,8 +51,8 @@ ios.kivy_ios_branch = master
 log_level = 2
 warn_on_root = 1
 build_dir = /tmp/buildozer-build
-# Use the externally-installed p4a (pip install python-for-android) instead of buildozer's bundled version.
-# CI overrides this dynamically (actions/setup-python installs Python under /opt/hostedtoolcache,
-# not /usr/local/lib/pythonX.Y). For local builds, set this to your interpreter's p4a path, e.g.:
-#   python -c 'import os, pythonforandroid; print(os.path.dirname(pythonforandroid.__file__))'
-p4a.source = /usr/local/lib/python3.11/site-packages/pythonforandroid
+# buildozer clones python-for-android fresh from GitHub by default. p4a.source only
+# takes effect when it points at a git repo or tarball URL -- a site-packages path is
+# ignored and buildozer falls back to cloning. CI relies on that fresh clone and patches
+# the cloned numpy recipe in the Build APK step. Set p4a.source only if you want a
+# specific local p4a git checkout for local builds.

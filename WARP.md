@@ -259,10 +259,11 @@ done < IMAGES.md
 - The `test` job failed at `actions/checkout@v5` with `This repository exceeded its LFS budget` because checkout had `lfs: true` and the only LFS-tracked file (`dist/momentum`) was re-fetched every run.
 - Fix: set `lfs: false` on the `test` and `build` (matrix) checkouts. CI rebuilds `dist/momentum` via PyInstaller each run, so no job needs the committed LFS object.
 
-### CI: p4a path portability + numpy v-prefix patch (2026-07-25)
-- Root cause: `build-apk` failed because p4a's numpy recipe has `version = '1.26.4'` but numpy's git tags use `v1.26.4`. `git checkout 1.26.4` fails with `pathspec '1.26.4' did not match any file(s)`.
-- The patch step and `buildozer.spec`'s `p4a.source` both hardcoded `/usr/local/lib/python3.11/site-packages/pythonforandroid`, but `actions/setup-python@v6` installs Python under `/opt/hostedtoolcache/Python/3.11.15/x64`, so that path does not exist on the runner.
-- Fix: both the patch step and the "Build APK" step now resolve the p4a location dynamically via `python -c 'import os, pythonforandroid; print(os.path.dirname(pythonforandroid.__file__))'`. The "Build APK" step overrides `p4a.source` in `buildozer.spec` with `sed` to that resolved path. `buildozer.spec` keeps a default value with a comment explaining CI overrides it and how to find the path locally.
+### CI: APK build -- numpy v-prefix checkout fix (2026-07-25)
+- Root cause: `build-apk` failed with `error: pathspec '1.26.4' did not match any file(s) known to git` during `git checkout 1.26.4`. numpy git tags are v-prefixed (`v1.26.4`), but the `numpy==1.26.4` requirements pin made p4a run `git checkout 1.26.4`.
+- Key discovery: buildozer **clones python-for-android fresh from GitHub** into `/tmp/buildozer-build/android/platform/python-for-android/` and ignores both the pip-installed p4a and `buildozer.spec`'s `p4a.source` (a site-packages path is not a git repo, so buildozer falls back to cloning). The earlier "Patch p4a numpy recipe" step patched the pip-installed p4a that was never used, and was also a no-op (that recipe's version was already `v2.3.0`). The `numpy==1.26.4` pin overrides the recipe's `version` field, so patching the recipe version never affected the checkout tag.
+- Fix (primary): pin `numpy==v1.26.4` in `mobile/buildozer.spec` so p4a runs `git checkout v1.26.4` directly.
+- Fix (fallback): the "Build APK" step captures pass 1's log; if it shows a numpy version/checkout error (`pathspec` / `did not match` / `InvalidVersion`), it patches the **cloned** p4a's numpy recipe `version` to `v1.26.4` via `sed` and unpins `numpy` in `buildozer.spec` so pass 2 uses the recipe version. Removed the useless pip-installed patch step and the `p4a.source` CI override.
 - Two-pass buildozer retained for Cython injection (hostpython3's isolated site-packages only exists after pass 1 builds hostpython3).
 
 ### Android APK Build (2026-02-28)
