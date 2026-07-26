@@ -385,8 +385,12 @@ jobs:
           # native backend (is_llm_available() -> False -> informative message),
           # so the APK still ships a coherent coach experience.
           if [ "$PASS2_EXIT" -ne 0 ]; then
-            if grep -qiE "llama|llama_cpp|ggml|scikit-build|CMake Error|Failed to determine Android API level|not a supported wheel" /tmp/buildozer-pass2.log; then
-              echo "Pass 2 hit a llama-cpp-python/llama.cpp build error -- stripping the recipe and rebuilding without on-device inference."
+            # The grep only runs on a failed pass 2, so matching the broad "llama"
+            # token is safe (llama-cpp-python is the risky ingredient; if it failed
+            # to prebuild or source-build, strip it and rebuild so the APK ships).
+            # The download markers catch a recipe URL 404 / sdist download failure.
+            if grep -qiE "llama|llama_cpp|ggml|scikit-build|CMake Error|Failed to determine Android API level|not a supported wheel|no file found|Could not download|Download failed" /tmp/buildozer-pass2.log; then
+              echo "Pass 2 hit a llama-cpp-python/llama.cpp-related error -- stripping the recipe and rebuilding without on-device inference."
               sed -i 's|,llama-cpp-python||' buildozer.spec
               sed -i '/^p4a.local_recipes/d' buildozer.spec
               echo "Stripped buildozer.spec (llama recipe removed):"
@@ -434,8 +438,8 @@ jobs:
           set -e
           tail -60 /tmp/buildozer-aab.log || true
           if [ "$AAB_EXIT" -ne 0 ]; then
-            if grep -qiE "llama|llama_cpp|ggml|scikit-build|CMake Error|Failed to determine Android API level|not a supported wheel" /tmp/buildozer-aab.log; then
-              echo "AAB build hit a llama-cpp-python/llama.cpp error -- stripping the recipe and rebuilding without on-device inference."
+            if grep -qiE "llama|llama_cpp|ggml|scikit-build|CMake Error|Failed to determine Android API level|not a supported wheel|no file found|Could not download|Download failed" /tmp/buildozer-aab.log; then
+              echo "AAB build hit a llama-cpp-python/llama.cpp-related error -- stripping the recipe and rebuilding without on-device inference."
               sed -i 's|,llama-cpp-python||' buildozer.spec
               sed -i '/^p4a.local_recipes/d' buildozer.spec
               grep -E "^requirements" buildozer.spec || true
@@ -446,6 +450,20 @@ jobs:
               buildozer android release
             fi
           fi
+
+      - name: Collect build logs
+        if: always()
+        run: |
+          mkdir -p android-build-logs
+          cp /tmp/buildozer-pass1.log /tmp/buildozer-pass2.log /tmp/buildozer-aab.log android-build-logs/ 2>/dev/null || true
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: android-build-logs
+          path: android-build-logs/
+          if-no-files-found: ignore
 
       - name: Prepare APK artifact
         run: |

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from configparser import ConfigParser
 from pathlib import Path
 
 
@@ -172,6 +173,13 @@ def test_buildozer_spec_enables_backup_and_llama_recipe() -> None:
     # a local recipes directory; CI falls back to building without it.
     assert "llama-cpp-python" in spec
     assert "p4a.local_recipes = p4a-recipes" in spec
+    # llama-cpp-python's pure-Python runtime deps are in the requirements so
+    # Llama import/use works on-device.
+    assert "diskcache" in spec
+    assert "jinja2" in spec
+    assert "typing-extensions" in spec
+    # v1 ships arm64-v8a only (deterministic single-arch prebuilt).
+    assert "android.archs = arm64-v8a" in spec
     # The recipe file itself exists and declares the p4a recipe.
     recipe = root / "mobile" / "p4a-recipes" / "llama_cpp_python" / "__init__.py"
     assert recipe.exists()
@@ -183,14 +191,54 @@ def test_buildozer_spec_enables_backup_and_llama_recipe() -> None:
     assert "gracefully" in recipe_src.lower() or "graceful" in recipe_src.lower()
 
 
-def test_ci_has_llama_recipe_fallback() -> None:
+def test_llama_recipe_uses_normalised_sdist_url_and_declares_runtime_deps() -> None:
+    root = Path(__file__).resolve().parent.parent
+    recipe = root / "mobile" / "p4a-recipes" / "llama_cpp_python" / "__init__.py"
+    src = recipe.read_text(encoding="utf-8")
+    # PyPI sdist filenames use the NORMALISED name (underscores); the hyphen
+    # form 404s. The URL must use llama_cpp_python (underscores).
+    assert "llama_cpp_python-{version}.tar.gz" in src
+    assert "llama-cpp-python-{version}.tar.gz" not in src
+    # Runtime deps declared in llama-cpp-python's pyproject are listed so a
+    # source build is self-contained (numpy is a top-level requirement).
+    assert '"typing-extensions"' in src
+    assert '"diskcache"' in src
+    assert '"jinja2"' in src
+    assert "python_depends" in src
+
+
+def test_llama_p4a_wiring_is_in_app_section_and_pulls_prebuilt() -> None:
+    root = Path(__file__).resolve().parent.parent
+    spec_path = root / "mobile" / "buildozer.spec"
+    cfg = ConfigParser()
+    cfg.read(str(spec_path))
+    # buildozer reads p4a.local_recipes / p4a.extra_args from [app], NOT
+    # [buildozer]. A prior version had p4a.local_recipes under [buildozer] and
+    # the recipe was silently never registered with p4a.
+    assert cfg.get("app", "p4a.local_recipes", fallback="") == "p4a-recipes"
+    assert cfg.get("buildozer", "p4a.local_recipes", fallback="") == ""
+    extra_args = cfg.get("app", "p4a.extra_args", fallback="")
+    # Prebuilt-wheel index is wired via p4a.extra_args (buildozer 1.5.0 predates
+    # the first-class extra_index_urls token; p4a PR #3280 understands the flag).
+    assert "--extra-index-url=https://yidaki53.github.io/p4a-wheels/p4a" in extra_args
+
+
+def test_ci_has_llama_recipe_fallback_and_uploads_logs() -> None:
     ci = (
         Path(__file__).resolve().parent.parent / ".github" / "workflows" / "ci.yml"
     ).read_text(encoding="utf-8")
-    # Both the APK and AAB build steps strip the llama recipe on a cmake/llama
+    # Both the APK and AAB build steps strip the llama recipe on a llama/cmake
     # error and rebuild, so the APK always ships (graceful degradation).
     assert "llama-cpp-python" in ci
     assert "sed -i 's|,llama-cpp-python||' buildozer.spec" in ci
     assert "sed -i '/^p4a.local_recipes/d' buildozer.spec" in ci
     assert "CMake Error" in ci
-    assert "is_llm_available" in ci or "graceful" in ci.lower()
+    # Download-failure markers catch a recipe URL 404 / sdist download failure.
+    assert "no file found" in ci
+    assert "Could not download" in ci
+    # Full buildozer logs are uploaded as an artifact so failures are
+    # diagnosable (previously only tail -60 was echoed and the real error was
+    # lost).
+    assert "android-build-logs" in ci
+    assert "/tmp/buildozer-pass2.log" in ci
+    assert "if: always()" in ci

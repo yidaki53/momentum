@@ -1,14 +1,22 @@
 """python-for-android recipe for llama-cpp-python (on-device AI Coach).
 
-HIGH RISK / BEST-EFFORT: llama-cpp-python wraps the llama.cpp C++ library and
-builds it via scikit-build (CMake). There is no official Android wheel, so this
-recipe cross-compiles llama.cpp for Android via the NDK CMake toolchain. The
-scikit-build/CMake env propagation is the fragile point (the same class of
-failure that killed the pydantic-core/maturin approach), so the CI build-apk
-job includes a fallback that strips this recipe and rebuilds without it; the AI
-Coach UI degrades gracefully when the native backend is absent
-(``is_llm_available()`` -> False -> informative message, no crash). See
-WARP.md "AI Coach on Android" notes and ``.github/workflows/ci.yml``.
+llama-cpp-python wraps the llama.cpp C++ library and builds it via scikit-build
+(CMake). The sdist filename on PyPI uses the NORMALISED package name
+(``llama_cpp_python`` with underscores) -- the legacy ``/source/l/<letter>/``
+path 302-redirects the underscore form to the real hash URL, but the hyphen
+form 404s. A hyphen URL here was the real cause of the first CI build failure:
+p4a retried the 404 ~5x then aborted ~40s in, never reaching CMake, and the CI
+fallback grep (which matched bare "llama" in normal recipe-build-order output)
+false-positive-stripped the recipe. See WARP.md "On-device AI Coach" notes.
+
+The production path is a prebuilt Android wheel hosted in the ``yidaki53/
+p4a-wheels`` index and pulled via ``--extra-index-url`` (p4a PR #3280, wired
+through ``p4a.extra_args`` since buildozer 1.5.0 predates the first-class spec
+tokens). This source recipe is the in-recipe fallback: ``PyProjectRecipe``
+checks the index first and only falls back to this source build when no
+prebuilt wheel matches. If the source build still fails, CI's build-apk job
+strips this recipe and rebuilds without it; the AI Coach UI then degrades
+gracefully (``is_llm_available()`` -> False -> informative message, no crash).
 
 The build is CPU-only (no CUDA/Metal/Vulkan/OpenCL), matching the desktop
 default. The model itself is NOT bundled -- it is downloaded on first use only
@@ -24,16 +32,23 @@ from pythonforandroid.logger import info
 class LlamaCppPythonRecipe(PyProjectRecipe):
     """Cross-compile llama-cpp-python (scikit-build + CMake) for Android.
 
-    Uses ``PyProjectRecipe`` to drive ``python -m build`` (which invokes
-    scikit-build-core -> CMake), and injects the NDK CMake toolchain + CPU-only
-    ggml flags via ``CMAKE_ARGS`` (the env var llama-cpp-python's CMake reads).
+    Used only when no prebuilt ``android_26_*`` wheel is found in the
+    ``yidaki53/p4a-wheels`` index. Drives ``python -m build`` (scikit-build-core
+    -> CMake) and injects the NDK CMake toolchain + CPU-only ggml flags via
+    ``CMAKE_ARGS`` (the env var llama-cpp-python's CMake reads).
     """
 
     version = "0.3.14"
-    # PyPI source distribution (includes the vendored llama.cpp source tree).
-    url = "https://files.pythonhosted.org/packages/source/l/llama-cpp-python/llama-cpp-python-{version}.tar.gz"
+    # PyPI sdist: the filename uses the NORMALISED name (underscores). The
+    # legacy ``/source/l/llama-cpp-python/`` path 302-redirects this underscore
+    # form to the real hash URL; the hyphen form 404s (do NOT use hyphens here).
+    url = "https://files.pythonhosted.org/packages/source/l/llama-cpp-python/llama_cpp_python-{version}.tar.gz"
     site_packages_name = "llama_cpp"
     depends = ["python3", "certifi"]
+    # Runtime deps declared in llama-cpp-python's pyproject. numpy is already a
+    # top-level requirement; these three are pure-Python and p4a installs them
+    # via pip into the APK so ``Llama`` import/use works on-device.
+    python_depends = ["typing-extensions", "diskcache", "jinja2"]
     # llama.cpp is C++; bundle libc++_shared so the .so files load on Android.
     need_stl_shared = True
     call_hostpython_via_targetpython = False
