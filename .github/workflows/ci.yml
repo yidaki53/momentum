@@ -379,8 +379,9 @@ jobs:
           set -e
           tail -60 /tmp/buildozer-pass2.log || true
 
-          # The build must succeed with llama-cpp-python included.
-          # If pass 2 failed, re-run to surface the real error.
+          # The build must succeed with llama-cpp-python included -- no fallback
+          # to a build without on-device inference. If pass 2 failed, re-run to
+          # surface the real error.
           if [ "$PASS2_EXIT" -ne 0 ]; then
             echo "Pass 2 failed; re-running to surface the real error." >&2
             cat /tmp/buildozer-pass2.log >&2

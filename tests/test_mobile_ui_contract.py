@@ -186,9 +186,9 @@ def test_buildozer_spec_enables_backup_and_llama_recipe() -> None:
     recipe_src = recipe.read_text(encoding="utf-8")
     assert "class LlamaCppPythonRecipe" in recipe_src
     assert "recipe = LlamaCppPythonRecipe()" in recipe_src
-    # CPU-only build (no GPU backends) and the graceful-degradation note.
+    # CPU-only build (no GPU backends) and the no-fallback note.
     assert "-DGGML_CUDA=OFF" in recipe_src
-    assert "gracefully" in recipe_src.lower() or "graceful" in recipe_src.lower()
+    assert "no fallback" in recipe_src.lower()
 
 
 def test_llama_recipe_uses_normalised_sdist_url_and_declares_runtime_deps() -> None:
@@ -223,19 +223,17 @@ def test_llama_p4a_wiring_is_in_app_section_and_pulls_prebuilt() -> None:
     assert "--extra-index-url=https://yidaki53.github.io/p4a-wheels/p4a" in extra_args
 
 
-def test_ci_has_llama_recipe_fallback_and_uploads_logs() -> None:
+def test_ci_requires_llama_build_to_succeed_and_uploads_logs() -> None:
     ci = (
         Path(__file__).resolve().parent.parent / ".github" / "workflows" / "ci.yml"
     ).read_text(encoding="utf-8")
-    # Both the APK and AAB build steps strip the llama recipe on a llama/cmake
-    # error and rebuild, so the APK always ships (graceful degradation).
+    # The build must succeed with llama-cpp-python included. No fallback to
+    # strip the recipe on build failure.
     assert "llama-cpp-python" in ci
-    assert "sed -i 's|,llama-cpp-python||' buildozer.spec" in ci
-    assert "sed -i '/^p4a.local_recipes/d' buildozer.spec" in ci
-    assert "CMake Error" in ci
-    # Download-failure markers catch a recipe URL 404 / sdist download failure.
-    assert "no file found" in ci
-    assert "Could not download" in ci
+    # The fallback mechanism that stripped llama-cpp-python has been removed
+    assert "sed -i 's|,llama-cpp-python||' buildozer.spec" not in ci
+    assert "sed -i '/^p4a.local_recipes/d' buildozer.spec" not in ci
+    assert "no fallback" in ci.lower()
     # Full buildozer logs are uploaded as an artifact so failures are
     # diagnosable (previously only tail -60 was echoed and the real error was
     # lost).
