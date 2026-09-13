@@ -33,11 +33,9 @@ version = 0.4.0
 # hosted in the yidaki53/p4a-wheels index and pulled via --extra-index-url (see
 # p4a.extra_args below; p4a PR #3280 prebuilt-wheel support). A local p4a recipe
 # (p4a-recipes/) is the in-recipe source fallback used when no prebuilt wheel
-# matches; if that source build also fails, CI's build-apk job strips the recipe
-# and rebuilds without it, and the AI Coach UI degrades gracefully (no on-device
-# inference, but the chat screen and an informative message are present). The
-# model downloads on first use only when the user opts in, so the APK stays
-# small either way.
+# matches. The build must succeed with llama-cpp-python included -- no fallback
+# to a build without on-device inference. The model downloads on first use only
+# when the user opts in, so the APK stays small.
 # diskcache/jinja2/typing-extensions are llama-cpp-python runtime deps (numpy is
 # already listed); they are pure-Python and must be in the APK or Llama import/use
 # fails on-device.
@@ -92,7 +90,6 @@ log_level = 2
 # silently never registered with p4a (it was only bundled as app source data) and p4a
 # fell back to pip-installing llama-cpp-python from PyPI, which failed.
 # Local recipes directory for the llama-cpp-python source recipe (see p4a-recipes/).
-# CI strips this line in the fallback pass when the recipe fails to build.
 p4a.local_recipes = p4a-recipes
 # Pull a prebuilt android_26 arm64-v8a wheel for llama-cpp-python from our
 # self-hosted PEP 503 index (yidaki53/p4a-wheels, served via GitHub Pages at

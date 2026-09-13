@@ -4,19 +4,15 @@ llama-cpp-python wraps the llama.cpp C++ library and builds it via scikit-build
 (CMake). The sdist filename on PyPI uses the NORMALISED package name
 (``llama_cpp_python`` with underscores) -- the legacy ``/source/l/<letter>/``
 path 302-redirects the underscore form to the real hash URL, but the hyphen
-form 404s. A hyphen URL here was the real cause of the first CI build failure:
-p4a retried the 404 ~5x then aborted ~40s in, never reaching CMake, and the CI
-fallback grep (which matched bare "llama" in normal recipe-build-order output)
-false-positive-stripped the recipe. See WARP.md "On-device AI Coach" notes.
+form 404s. See WARP.md "On-device AI Coach" notes.
 
 The production path is a prebuilt Android wheel hosted in the ``yidaki53/
 p4a-wheels`` index and pulled via ``--extra-index-url`` (p4a PR #3280, wired
 through ``p4a.extra_args`` since buildozer 1.5.0 predates the first-class spec
 tokens). This source recipe is the in-recipe fallback: ``PyProjectRecipe``
 checks the index first and only falls back to this source build when no
-prebuilt wheel matches. If the source build still fails, CI's build-apk job
-strips this recipe and rebuilds without it; the AI Coach UI then degrades
-gracefully (``is_llm_available()`` -> False -> informative message, no crash).
+prebuilt wheel matches. The build must succeed with llama-cpp-python included
+-- no fallback to a build without on-device inference.
 
 The build is CPU-only (no CUDA/Metal/Vulkan/OpenCL), matching the desktop
 default. The model itself is NOT bundled -- it is downloaded on first use only
