@@ -181,7 +181,17 @@ def test_buildozer_spec_enables_backup_and_llama_recipe() -> None:
     # v1 ships arm64-v8a only (deterministic single-arch prebuilt).
     assert "android.archs = arm64-v8a" in spec
     # The recipe file itself exists and declares the p4a recipe.
-    recipe = root / "mobile" / "p4a-recipes" / "llama_cpp_python" / "__init__.py"
+    # NOTE: the folder MUST use the hyphenated, PEP-503-normalised name
+    # ``llama-cpp-python`` -- p4a resolves recipe names by folder name
+    # (Recipe.name is a @property over the module/folder path), and the
+    # buildozer.spec requirement token is the hyphenated form. An underscore
+    # folder (``llama_cpp_python``) is NOT matched, so p4a silently falls back
+    # to pip-installing the package (wheel-only) instead of using the local
+    # source recipe, which breaks the on-device AI coach build.
+    recipe_dir = root / "mobile" / "p4a-recipes" / "llama-cpp-python"
+    assert recipe_dir.is_dir()
+    assert not (root / "mobile" / "p4a-recipes" / "llama_cpp_python").exists()
+    recipe = recipe_dir / "__init__.py"
     assert recipe.exists()
     recipe_src = recipe.read_text(encoding="utf-8")
     assert "class LlamaCppPythonRecipe" in recipe_src
@@ -193,7 +203,7 @@ def test_buildozer_spec_enables_backup_and_llama_recipe() -> None:
 
 def test_llama_recipe_uses_normalised_sdist_url_and_declares_runtime_deps() -> None:
     root = Path(__file__).resolve().parent.parent
-    recipe = root / "mobile" / "p4a-recipes" / "llama_cpp_python" / "__init__.py"
+    recipe = root / "mobile" / "p4a-recipes" / "llama-cpp-python" / "__init__.py"
     src = recipe.read_text(encoding="utf-8")
     # PyPI sdist filenames use the NORMALISED name (underscores); the hyphen
     # form 404s. The URL must use llama_cpp_python (underscores).

@@ -1,0 +1,143 @@
+"""python-for-android recipe for llama-cpp-python (on-device AI Coach).
+
+llama-cpp-python wraps the llama.cpp C++ library and builds it via scikit-build
+(CMake). The sdist filename on PyPI uses the NORMALISED package name
+(llama_cpp_python with underscores) -- the legacy /source/l/<letter>/ path
+302-redirects the underscore form to the real hash URL, but the hyphen form
+404s. See WARP.md "On-device AI Coach" notes.
+
+The production path is a prebuilt Android wheel hosted in the yidaki53/p4a-wheels
+index and pulled via --extra-index-url (p4a PR #3280, wired through p4a.extra_args
+since buildozer 1.5.0 predates the first-class spec tokens). This source recipe
+is the in-recipe fallback: PyProjectRecipe checks the index first and only falls
+back to this source build when no prebuilt wheel matches. The build must succeed
+with llama-cpp-python included -- no fallback to a build without on-device inference.
+
+The build is CPU-only (no CUDA/Metal/Vulkan/OpenCL), matching the desktop
+default. The model itself is NOT bundled -- it is downloaded on first use only
+when the user opts in, keeping the APK small.
+
+Build-system notes
+------------------
+p4a clones python-for-android fresh from GitHub and its PyProjectRecipe.build_arch
+invokes `python -m build --wheel --config-setting builddir=<dir>`. That config-setting
+key (builddir, no hyphen) is what *setuptools-backed* backends expect, but
+llama-cpp-python 0.3.14 builds with scikit-build-core 1.x, whose recognised key is
+`build-dir` (hyphenated). Passing `builddir` makes scikit-build-core abort::
+
+    ERROR: Unrecognized options in config-settings:
+      builddir -> Did you mean: build-dir, build?
+
+scikit-build-core's extra_build_args is appended AFTER the bad `builddir` key in
+upstream, so it cannot fix the abort. We therefore override build_arch to emit the
+correct `build-dir` key.
+"""
+
+import sh
+from glob import glob
+from os.path import join, isfile, realpath
+
+from pythonforandroid.util import current_directory, ensure_dir
+from pythonforandroid.recipe import PyProjectRecipe
+from pythonforandroid.logger import warning, shprint
+
+
+class LlamaCppPythonRecipe(PyProjectRecipe):
+    """Cross-compile llama-cpp-python (scikit-build + CMake) for Android.
+
+    Used only when no prebuilt android_26_* wheel is found in the
+    yidaki53/p4a-wheels index. Drives `python -m build` (scikit-build-core ->
+    CMake) and injects the NDK CMake toolchain + CPU-only ggml flags via
+    CMAKE_ARGS (the env var llama-cpp-python's CMake reads).
+    """
+
+    version = "0.3.14"
+    url = "https://files.pythonhosted.org/packages/source/l/llama-cpp-python/llama_cpp_python-{version}.tar.gz"
+    site_packages_name = "llama_cpp"
+    depends = ["python3", "certifi"]
+    python_depends = ["typing-extensions", "diskcache", "jinja2"]
+    need_stl_shared = True
+    call_hostpython_via_targetpython = False
+
+    _GGML_CMAKE_ARGS = [
+        "-DGGML_NATIVE=OFF",
+        "-DGGML_OPENMP=OFF",
+        "-DGGML_BLAS=OFF",
+        "-DGGML_CUDA=OFF",
+        "-DGGML_METAL=OFF",
+        "-DGGML_VULKAN=OFF",
+        "-DGGML_OPENCL=OFF",
+        "-DGGML_SYCL=OFF",
+        "-DGGML_RPC=OFF",
+        "-DLLAMA_BUILD=ON",
+        "-DLLAVA_BUILD=OFF",
+        "-DBUILD_SHARED_LIBS=ON",
+        "-DCMAKE_BUILD_TYPE=Release",
+    ]
+
+    def get_recipe_env(self, arch, **kwargs):
+        env = super().get_recipe_env(arch, **kwargs)
+        ndk_dir = self.ctx.ndk_dir
+        toolchain = join(ndk_dir, "build", "cmake", "android.toolchain.cmake")
+        cmake_args = list(self._GGML_CMAKE_ARGS) + [
+            "-DCMAKE_TOOLCHAIN_FILE={}".format(toolchain),
+            "-DANDROID_ABI={}".format(arch.arch),
+            "-DANDROID_PLATFORM=android-{}".format(self.ctx.ndk_api),
+            "-DANDROID_NDK={}".format(ndk_dir),
+        ]
+        existing = env.get("CMAKE_ARGS", "")
+        env["CMAKE_ARGS"] = (existing + ";" if existing else "") + ";".join(cmake_args)
+        env["ANDROID_NDK_HOME"] = ndk_dir
+        env["ANDROID_NDK"] = ndk_dir
+        env["ANDROID_NDK_ROOT"] = ndk_dir
+        env["ANDROID_ABI"] = arch.arch
+        env["ANDROID_PLATFORM"] = "android-{}".format(self.ctx.ndk_api)
+        return env
+
+    def build_arch(self, arch):
+        # Mirror PyProjectRecipe.build_arch but pass config-settings the way
+        # *this* project's build backend accepts them. llama-cpp-python builds
+        # with scikit-build-core, which reads the hyphenated ``build-dir`` key
+        # (and, in recent versions, REJECTS the un-hyphenated ``builddir`` p4a
+        # passes by default with "Unrecognized options in config-settings").
+        # extra_build_args is appended AFTER the bad key upstream, so it cannot
+        # fix the abort -- we rebuild the arg list ourselves.
+        if self.check_prebuilt(arch, "skipping build_arch"):
+            result = self.install_prebuilt_wheel(arch)
+            if result:
+                return
+            warning("Failed to install prebuilt wheel, falling back to build_arch")
+
+        build_dir = self.get_build_dir(arch.arch)
+        if not (
+            isfile(join(build_dir, "pyproject.toml"))
+            or isfile(join(build_dir, "setup.py"))
+        ):
+            warning("Skipping build because it does not appear to be a Python project.")
+            return
+        self.install_hostpython_prerequisites(
+            packages=["build[virtualenv]", "pip", "setuptools", "patchelf"]
+            + self.hostpython_prerequisites
+        )
+
+        env = self.get_recipe_env(arch, with_flags_in_cc=True)
+        sub_build_dir = join(build_dir, "p4a_android_build")
+        ensure_dir(sub_build_dir)
+
+        # scikit-build-core accepts `build-dir` (hyphenated), not `builddir`.
+        build_args = [
+            "-m",
+            "build",
+            "--wheel",
+            "--config-setting",
+            "build-dir={}".format(sub_build_dir),
+        ] + self.extra_build_args
+
+        built_wheels = []
+        with current_directory(build_dir):
+            shprint(sh.Command(self.real_hostpython_location), *build_args, _env=env)
+            built_wheels = [realpath(whl) for whl in glob.glob("dist/*.whl")]
+        self.install_wheel(arch, built_wheels)
+
+
+recipe = LlamaCppPythonRecipe()
