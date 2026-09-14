@@ -28,13 +28,15 @@ llama-cpp-python 0.3.14 builds with scikit-build-core 1.x, whose recognised key 
     ERROR: Unrecognized options in config-settings:
       builddir -> Did you mean: build-dir, build?
 
-scikit-build-core's extra_build_args is appended AFTER the bad `builddir` key in
-upstream, so it cannot fix the abort. We therefore override build_arch to emit the
-correct `build-dir` key.
+scikit-build-core emits that error before the source build starts, so the fix must
+replace the bad key rather than append around it. Keep this recipe as close to
+upstream `PyProjectRecipe.build_arch` as possible: the only behavioural changes
+are the corrected scikit-build-core `build-dir` config-setting and the NDK/CMake
+environment from `get_recipe_env`.
 """
 
+import glob
 import sh
-from glob import glob
 from os.path import join, isfile, realpath
 
 from pythonforandroid.util import current_directory, ensure_dir
@@ -60,18 +62,10 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
     call_hostpython_via_targetpython = False
 
     _GGML_CMAKE_ARGS = [
-        "-DGGML_NATIVE=OFF",
-        "-DGGML_OPENMP=OFF",
-        "-DGGML_BLAS=OFF",
-        "-DGGML_CUDA=OFF",
-        "-DGGML_METAL=OFF",
-        "-DGGML_VULKAN=OFF",
-        "-DGGML_OPENCL=OFF",
-        "-DGGML_SYCL=OFF",
-        "-DGGML_RPC=OFF",
-        "-DLLAMA_BUILD=ON",
-        "-DLLAVA_BUILD=OFF",
-        "-DBUILD_SHARED_LIBS=ON",
+        "-DGGML_NATIVE=OFF", "-DGGML_OPENMP=OFF", "-DGGML_BLAS=OFF",
+        "-DGGML_CUDA=OFF", "-DGGML_METAL=OFF", "-DGGML_VULKAN=OFF",
+        "-DGGML_OPENCL=OFF", "-DGGML_SYCL=OFF", "-DGGML_RPC=OFF",
+        "-DLLAMA_BUILD=ON", "-DLLAVA_BUILD=OFF", "-DBUILD_SHARED_LIBS=ON",
         "-DCMAKE_BUILD_TYPE=Release",
     ]
 
@@ -86,7 +80,14 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
             "-DANDROID_NDK={}".format(ndk_dir),
         ]
         existing = env.get("CMAKE_ARGS", "")
-        env["CMAKE_ARGS"] = (existing + ";" if existing else "") + ";".join(cmake_args)
+        if existing:
+            # bootstrap cmake args are space-separated -D flags; merge into a
+            # single space-separated CMAKE_ARGS string so CMake/CMakeToolchain
+            # parses each -D flag individually (not as a single joined value).
+            existing_flags = existing.split()
+        else:
+            existing_flags = []
+        env["CMAKE_ARGS"] = " ".join(existing_flags + cmake_args)
         env["ANDROID_NDK_HOME"] = ndk_dir
         env["ANDROID_NDK"] = ndk_dir
         env["ANDROID_NDK_ROOT"] = ndk_dir
@@ -95,13 +96,13 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
         return env
 
     def build_arch(self, arch):
-        # Mirror PyProjectRecipe.build_arch but pass config-settings the way
-        # *this* project's build backend accepts them. llama-cpp-python builds
-        # with scikit-build-core, which reads the hyphenated ``build-dir`` key
-        # (and, in recent versions, REJECTS the un-hyphenated ``builddir`` p4a
-        # passes by default with "Unrecognized options in config-settings").
-        # extra_build_args is appended AFTER the bad key upstream, so it cannot
-        # fix the abort -- we rebuild the arg list ourselves.
+        # Mirror PyProjectRecipe.build_arch, except that the `python -m build`
+        # config-setting key is scikit-build-core's `build-dir` (hyphenated) rather
+        # than upstream's `builddir`. scikit-build-core rejects the un-hyphenated
+        # key outright ("Unrecognized options in config-settings"), so the bad
+        # key must be replaced, not appended to. All other behaviour -- prebuilt
+        # short-circuit, hostpython prerequisites, env from get_recipe_env, and
+        # install_wheel -- is unchanged from upstream.
         if self.check_prebuilt(arch, "skipping build_arch"):
             result = self.install_prebuilt_wheel(arch)
             if result:
@@ -109,15 +110,11 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
             warning("Failed to install prebuilt wheel, falling back to build_arch")
 
         build_dir = self.get_build_dir(arch.arch)
-        if not (
-            isfile(join(build_dir, "pyproject.toml"))
-            or isfile(join(build_dir, "setup.py"))
-        ):
+        if not (isfile(join(build_dir, "pyproject.toml")) or isfile(join(build_dir, "setup.py"))):
             warning("Skipping build because it does not appear to be a Python project.")
             return
         self.install_hostpython_prerequisites(
-            packages=["build[virtualenv]", "pip", "setuptools", "patchelf"]
-            + self.hostpython_prerequisites
+            packages=["build[virtualenv]", "pip", "setuptools", "patchelf"] + self.hostpython_prerequisites
         )
 
         env = self.get_recipe_env(arch, with_flags_in_cc=True)
@@ -126,16 +123,15 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
 
         # scikit-build-core accepts `build-dir` (hyphenated), not `builddir`.
         build_args = [
-            "-m",
-            "build",
-            "--wheel",
-            "--config-setting",
-            "build-dir={}".format(sub_build_dir),
+            "-m", "build", "--wheel",
+            "--config-setting", "build-dir={}".format(sub_build_dir),
         ] + self.extra_build_args
 
         built_wheels = []
         with current_directory(build_dir):
-            shprint(sh.Command(self.real_hostpython_location), *build_args, _env=env)
+            shprint(
+                sh.Command(self.real_hostpython_location), *build_args, _env=env
+            )
             built_wheels = [realpath(whl) for whl in glob.glob("dist/*.whl")]
         self.install_wheel(arch, built_wheels)
 
