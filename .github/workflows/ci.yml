@@ -364,12 +364,23 @@ jobs:
             fi
           else
             echo "No numpy version/checkout error detected in pass 1; keeping numpy==v1.26.4 pin for pass 2."
-          fi
+                    fi
 
           # Inject Cython into hostpython3's isolated site-packages (created by pass 1)
           HP_SITE="/tmp/buildozer-build/android/platform/build-arm64-v8a_armeabi-v7a/build/other_builds/hostpython3/desktop/hostpython3/native-build/Lib/site-packages"
           mkdir -p "$HP_SITE"
           pip install --target="$HP_SITE" Cython==0.29.36
+
+          # Patch the cloned p4a: make the recipe venv's `pip install -U pip`
+          # upgrade non-fatal. A partially-upgraded pip (mixed dist-infos) raises
+          # ImportError and aborts the build here; the bundled pip is still usable.
+          CLONED_P4A="/tmp/buildozer-build/android/platform/python-for-android"
+          P4A_PATCH="$GITHUB_WORKSPACE/mobile/patches/p4a-venv-pip-fallback.patch"
+          if [ -f "$P4A_PATCH" ]; then
+            echo "Applying p4a venv-pip-fallback patch (non-fatal pip upgrade):"
+            git -C "$CLONED_P4A" apply -v "$P4A_PATCH" && echo "Patch applied." \
+              || { echo "Patch failed (already applied or context changed); continuing." >&2; }
+          fi
 
           # Pass 2: numpy checkout cached from pass 1, Cython now available.
           # Tolerate failure so the llama-cpp-python recipe fallback below can run.

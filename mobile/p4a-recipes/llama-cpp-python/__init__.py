@@ -37,11 +37,11 @@ environment from `get_recipe_env`.
 
 import glob
 import sh
-from os.path import join, isfile, realpath
+from os.path import join, isfile, realpath, basename
 
 from pythonforandroid.util import current_directory, ensure_dir
 from pythonforandroid.recipe import PyProjectRecipe
-from pythonforandroid.logger import warning, shprint
+from pythonforandroid.logger import warning, shprint, info
 
 
 class LlamaCppPythonRecipe(PyProjectRecipe):
@@ -134,6 +134,35 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
             )
             built_wheels = [realpath(whl) for whl in glob.glob("dist/*.whl")]
         self.install_wheel(arch, built_wheels)
+
+    def install_libraries(self, arch):
+        """Stage llama_cpp's native backends onto the Android loader path.
+
+        p4a's ``PyProjectRecipe.install_wheel()`` only unpacks the wheel into
+        the python install dir, which gets bundled into ``libpybundle.so``.
+        But ``llama_cpp`` loads its backends with ``ctypes`` via
+        ``os.path.dirname(__file__) / "lib" / lib<ggml>.so`` and ``libllama.so``
+        has NO rpath while its ``DT_NEEDED`` list imports ``libggml.so``,
+        ``libggml-base.so`` and ``libggml-cpu.so``. Android's linker only
+        resolves sibling libraries that live in the app's native lib dir
+        (``lib/<arch>/``), NOT the package dir, so the libs must ALSO be
+        staged there.
+
+        ``install_libraries()`` is called by p4a *unconditionally* after
+        ``build_arch`` (even when build_arch was skipped on a cache hit), so
+        overriding it here guarantees the libs land in ``libs/<arch>/`` that
+        gradle ships into the APK's ``lib/<arch>/`` -- i.e. on the loader path.
+        Without this, ``from llama_cpp import Llama`` raises at runtime and the
+        AI Coach disables itself ("inference is not available on this build").
+        """
+        # Defer to base first: handles built_libraries recipes (no-op here).
+        super().install_libraries(arch)
+        destination = self.ctx.get_python_install_dir(arch.arch)
+        native_libs = glob.glob(join(destination, "llama_cpp", "lib", "*.so"))
+        if native_libs:
+            info("Staging llama native libs into native lib dir: "
+                 + ", ".join(sorted(basename(p) for p in native_libs)))
+            self.install_libs(arch, *native_libs)
 
 
 recipe = LlamaCppPythonRecipe()

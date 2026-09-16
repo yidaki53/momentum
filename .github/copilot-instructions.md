@@ -24,6 +24,7 @@
 - Validation gates: `.github/instructions/05-validation-gates.md`
 - CI and runtime operations: `.github/instructions/06-ci-and-runtime.md`
 - Runtime diagnostics playbook: `.github/instructions/07-runtime-diagnostics.md`
+- Android AI-coach native build: `.github/instructions/08-android-ai-coach-build.md`
 
 ## Prompt assets index
 - Feature workflow: `.github/prompts/feature-workflow.prompt.md`
