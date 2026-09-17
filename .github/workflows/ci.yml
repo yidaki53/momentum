@@ -11,6 +11,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  PIP_FIND_LINKS: file://${{ github.workspace }}/mobile/p4a-wheels
 
 jobs:
   test:
@@ -82,6 +83,11 @@ jobs:
         run: |
           poetry run pip install --upgrade setuptools wheel
           poetry run python setup.py build_ext --inplace
+
+      - name: Stamp desktop build identity
+        shell: bash
+        run: |
+          printf 'BUILD_NUMBER = %s\nBUILD_VARIANT = "cpu"\n' "$GITHUB_RUN_NUMBER" > momentum/build_info.py
 
       - name: Build standalone binary
         shell: bash
@@ -304,6 +310,10 @@ jobs:
 
           echo "Android signing preflight passed for alias ${P4A_RELEASE_KEYALIAS} (store password and key entry password both verified)."
 
+      - name: Stamp CPU build identity
+        run: |
+          printf 'BUILD_NUMBER = %s\nBUILD_VARIANT = "cpu"\n' "$GITHUB_RUN_NUMBER" > momentum/build_info.py
+
       - name: Build APK
         env:
           ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/25b
@@ -466,6 +476,7 @@ jobs:
             exit 1
           fi
           cp "$APK_PATH" artifacts/momentum-android.apk
+          python mobile/scripts/verify_coach_apk.py artifacts/momentum-android.apk
 
       - name: Prepare AAB artifact
         run: |
@@ -491,8 +502,242 @@ jobs:
             artifacts/momentum-android.apk
             artifacts/momentum-android.aab
 
+  build-apk-vulkan:
+    # Variant of build-apk that produces a SECOND APK with the Vulkan (GPU)
+    # backend enabled for the on-device AI Coach. The llama-cpp-python recipe
+    # (mobile/p4a-recipes/llama-cpp-python) is CPU-only by default and pulls a
+    # prebuilt CPU wheel; setting GGML_VULKAN=ON makes the recipe skip the
+    # prebuilt short-circuit and compile llama-cpp-python from source with
+    # -DGGML_VULKAN=ON (and points CMake at the NDK Vulkan headers/lib via
+    # VULKAN_SDK). NDK r25b ships vulkan/vulkan.h + libvulkan.so for aarch64.
+    # By design this job does NOT build an AAB (the Vulkan variant is an
+    # additional sideload artifact alongside the release APK/AAB).
+    needs: test
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libffi-dev libssl-dev \
+            autoconf automake libtool libltdl-dev pkg-config zlib1g-dev \
+            unzip zip
+
+      - name: Install buildozer, Cython, and python-for-android
+        run: |
+          pip install buildozer cython==0.29.36 python-for-android
+
+      - name: Install Android NDK 25b and platform API 34
+        run: |
+          mkdir -p $ANDROID_HOME/cmdline-tools/latest/bin
+          yes | sdkmanager --sdk_root=$ANDROID_HOME \
+            "ndk;25b" \
+            "platform-tools" \
+            "platforms;android-34" || true
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25b" >> $GITHUB_ENV
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/25b" >> $GITHUB_ENV
+          echo "$ANDROID_HOME/ndk/25b" >> $GITHUB_PATH
+
+      - name: Create mobile symlinks
+        run: |
+          cd mobile
+          ln -sfn ../momentum momentum
+          ln -sfn ../ENCOURAGEMENTS.md ENCOURAGEMENTS.md
+          ln -sfn ../SCIENCE.md SCIENCE.md
+          ln -sfn ../README.md README.md
+          ln -sfn ../IMAGES.md IMAGES.md
+
+      - name: Prepare Android signing keystore
+        env:
+          ANDROID_UPLOAD_KEYSTORE_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_B64 }}
+          ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          KEYSTORE_B64="${ANDROID_UPLOAD_KEYSTORE_B64:-${ANDROID_RELEASE_KEYSTORE_B64:-}}"
+          if [ -z "${KEYSTORE_B64}" ]; then
+            echo "Missing required secret: ANDROID_UPLOAD_KEYSTORE_B64 (preferred) or ANDROID_RELEASE_KEYSTORE_B64 (legacy)." >&2
+            exit 1
+          fi
+          mkdir -p mobile/.ci
+          export KEYSTORE_B64
+          python -c "import base64,os,re; raw=os.environ.get('KEYSTORE_B64',''); clean=re.sub(r'\s+','',raw).replace('-','+').replace('_','/'); clean += '='*((4-len(clean)%4)%4); open('mobile/.ci/release.keystore','wb').write(base64.b64decode(clean, validate=True))" || {
+            echo "Android upload/release keystore secret is not valid base64 after normalization." >&2
+            exit 1
+          }
+          if [ ! -s mobile/.ci/release.keystore ]; then
+            echo "Decoded Android keystore is empty or unreadable" >&2
+            exit 1
+          fi
+
+      - name: Validate Android signing configuration
+        env:
+          P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
+          ANDROID_UPLOAD_KEYSTORE_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWD }}
+          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}
+          ANDROID_UPLOAD_KEYALIAS: ${{ secrets.ANDROID_UPLOAD_KEYALIAS }}
+          P4A_RELEASE_KEYALIAS: ${{ secrets.ANDROID_RELEASE_KEYALIAS }}
+          ANDROID_UPLOAD_KEYALIAS_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYALIAS_PASSWD }}
+          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYALIAS_PASSWD }}
+        run: |
+          set -euo pipefail
+          P4A_RELEASE_KEYSTORE_PASSWD="${ANDROID_UPLOAD_KEYSTORE_PASSWD:-${P4A_RELEASE_KEYSTORE_PASSWD:-}}"
+          P4A_RELEASE_KEYALIAS="${ANDROID_UPLOAD_KEYALIAS:-${P4A_RELEASE_KEYALIAS:-}}"
+          P4A_RELEASE_KEYALIAS_PASSWD="${ANDROID_UPLOAD_KEYALIAS_PASSWD:-${P4A_RELEASE_KEYALIAS_PASSWD:-}}"
+          if [ -z "${P4A_RELEASE_KEYSTORE_PASSWD}" ] || [ -z "${P4A_RELEASE_KEYALIAS}" ] || [ -z "${P4A_RELEASE_KEYALIAS_PASSWD}" ]; then
+            echo "Missing required Android signing secrets: ANDROID_UPLOAD_KEYSTORE_PASSWD, ANDROID_UPLOAD_KEYALIAS, ANDROID_UPLOAD_KEYALIAS_PASSWD (preferred) or ANDROID_RELEASE_* (legacy)." >&2
+            exit 1
+          fi
+          if ! keytool -list \
+            -keystore "${P4A_RELEASE_KEYSTORE}" \
+            -storepass "${P4A_RELEASE_KEYSTORE_PASSWD}" \
+            >/tmp/android-signing-check-vulkan.log 2>&1; then
+            echo "Android signing preflight failed: cannot open keystore." >&2
+            cat /tmp/android-signing-check-vulkan.log >&2
+            exit 1
+          fi
+          if ! grep -q "${P4A_RELEASE_KEYALIAS}" /tmp/android-signing-check-vulkan.log; then
+            echo "Android signing preflight failed: alias '${P4A_RELEASE_KEYALIAS}' not found in keystore." >&2
+            cat /tmp/android-signing-check-vulkan.log >&2
+            exit 1
+          fi
+          if ! keytool -importkeystore \
+            -srckeystore "${P4A_RELEASE_KEYSTORE}" \
+            -srcstorepass "${P4A_RELEASE_KEYSTORE_PASSWD}" \
+            -srcalias "${P4A_RELEASE_KEYALIAS}" \
+            -srckeypass "${P4A_RELEASE_KEYALIAS_PASSWD}" \
+            -destkeystore /tmp/android-signing-verify-vulkan.p12 \
+            -deststorepass "ci_verify_tmp" -destkeypass "ci_verify_tmp" \
+            -deststoretype pkcs12 -noprompt \
+            >/tmp/android-keypass-check-vulkan.log 2>&1; then
+            echo "Android signing preflight failed: cannot decrypt key entry." >&2
+            cat /tmp/android-keypass-check-vulkan.log >&2
+            exit 1
+          fi
+          rm -f /tmp/android-signing-verify-vulkan.p12
+          echo "Android signing preflight passed for alias ${P4A_RELEASE_KEYALIAS} (store password and key entry password both verified)."
+      - name: Stamp Vulkan build identity
+        run: |
+          printf 'BUILD_NUMBER = %s\nBUILD_VARIANT = "vulkan"\n' "$GITHUB_RUN_NUMBER" > momentum/build_info.py
+
+      - name: Build APK with Vulkan
+        env:
+          # KEY difference from build-apk: enables the Vulkan backend in the
+          # llama-cpp-python recipe, which also skips the prebuilt CPU wheel
+          # in favor of a source build.
+          GGML_VULKAN: "ON"
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/25b
+          ANDROID_NDK: /usr/local/lib/android/sdk/ndk/25b
+          ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/25b
+          P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/mobile/.ci/release.keystore
+          ANDROID_UPLOAD_KEYSTORE_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWD }}
+          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWD }}
+          ANDROID_UPLOAD_KEYALIAS: ${{ secrets.ANDROID_UPLOAD_KEYALIAS }}
+          P4A_RELEASE_KEYALIAS: ${{ secrets.ANDROID_RELEASE_KEYALIAS }}
+          ANDROID_UPLOAD_KEYALIAS_PASSWD: ${{ secrets.ANDROID_UPLOAD_KEYALIAS_PASSWD }}
+          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.ANDROID_RELEASE_KEYALIAS_PASSWD }}
+        run: |
+          set -euo pipefail
+          P4A_RELEASE_KEYSTORE_PASSWD="${ANDROID_UPLOAD_KEYSTORE_PASSWD:-${P4A_RELEASE_KEYSTORE_PASSWD:-}}"
+          P4A_RELEASE_KEYALIAS="${ANDROID_UPLOAD_KEYALIAS:-${P4A_RELEASE_KEYALIAS:-}}"
+          P4A_RELEASE_KEYALIAS_PASSWD="${ANDROID_UPLOAD_KEYALIAS_PASSWD:-${P4A_RELEASE_KEYALIAS_PASSWD:-}}"
+          if [ -z "${P4A_RELEASE_KEYSTORE_PASSWD}" ] || [ -z "${P4A_RELEASE_KEYALIAS}" ] || [ -z "${P4A_RELEASE_KEYALIAS_PASSWD}" ]; then
+            echo "Missing required Android signing secrets." >&2
+            exit 1
+          fi
+          cd mobile
+          ANDROID_NUMERIC_VERSION=$((100000000 + GITHUB_RUN_NUMBER))
+          sed -i 's|^build_dir.*|build_dir = /tmp/buildozer-build-vulkan|' buildozer.spec
+          sed -i 's|^android.release_artifact.*|android.release_artifact = apk|' buildozer.spec
+          sed -i "s|^android.numeric_version.*|android.numeric_version = ${ANDROID_NUMERIC_VERSION}|" buildozer.spec
+          # Pass 1: clones p4a + numpy (v1.26.4 pin) and builds hostpython3.
+          # Expected to fail when numpy compiles (hostpython3 lacks Cython).
+          buildozer android release > /tmp/buildozer-vulkan-pass1.log 2>&1 || true
+          tail -40 /tmp/buildozer-vulkan-pass1.log || true
+          CLONED_P4A="/tmp/buildozer-build-vulkan/android/platform/python-for-android"
+          CLONED_NUMPY_RECIPE="${CLONED_P4A}/pythonforandroid/recipes/numpy/__init__.py"
+          if [ -f "$CLONED_NUMPY_RECIPE" ] && grep -qiE "pathspec|did not match|InvalidVersion" /tmp/buildozer-vulkan-pass1.log; then
+            echo "Pass 1 hit a numpy version/checkout error -- applying cloned-recipe fallback."
+            grep -E "version" "$CLONED_NUMPY_RECIPE" | head -5 || true
+            sed -i -E 's/^([[:space:]]*version[[:space:]]*=).*/\1"v1.26.4"/' "$CLONED_NUMPY_RECIPE"
+            if grep -q 'version = "v1.26.4"' "$CLONED_NUMPY_RECIPE"; then
+              grep -E "version" "$CLONED_NUMPY_RECIPE" | head -5 || true
+              sed -i 's|numpy==v1.26.4|numpy|' buildozer.spec
+              echo "Unpinned numpy in buildozer.spec for pass 2 (recipe v1.26.4 will be used):"
+              grep -E "^requirements" buildozer.spec || true
+            else
+              echo "Recipe version line not found; keeping numpy==v1.26.4 pin."
+            fi
+          else
+            echo "No numpy version/checkout error in pass 1; keeping numpy==v1.26.4 pin."
+          fi
+          HP_SITE="/tmp/buildozer-build-vulkan/android/platform/build-arm64-v8a/build/other_builds/hostpython3/desktop/hostpython3/native-build/Lib/site-packages"
+          mkdir -p "$HP_SITE"
+          pip install --target="$HP_SITE" Cython==0.29.36
+          P4A_PATCH="${GITHUB_WORKSPACE}/mobile/patches/p4a-venv-pip-fallback.patch"
+          if [ -f "$P4A_PATCH" ] && [ -d "$CLONED_P4A" ]; then
+            echo "Applying p4a venv-pip-fallback patch:"
+            git -C "$CLONED_P4A" apply -v "$P4A_PATCH" \
+              && echo "Patch applied." \
+              || { echo "Patch failed (already applied or context changed); continuing." >&2; }
+          fi
+          set +e
+          buildozer android release > /tmp/buildozer-vulkan-pass2.log 2>&1
+          PASS2_EXIT=$?
+          set -e
+          tail -60 /tmp/buildozer-vulkan-pass2.log || true
+          if [ "$PASS2_EXIT" -ne 0 ]; then
+            echo "Vulkan APK build failed; re-running to surface the real error." >&2
+            cat /tmp/buildozer-vulkan-pass2.log >&2
+            buildozer android release
+          fi
+      - name: Collect build logs
+        if: always()
+        run: |
+          mkdir -p android-build-logs
+          cp /tmp/buildozer-vulkan-pass1.log /tmp/buildozer-vulkan-pass2.log android-build-logs/ 2>/dev/null || true
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: android-vulkan-build-logs
+          path: android-build-logs/
+          if-no-files-found: ignore
+      - name: Prepare APK artifact
+        run: |
+          mkdir -p artifacts
+          APK_PATH=""
+          for candidate in mobile/bin/*-release.apk mobile/bin/*.apk; do
+            if [ -f "$candidate" ]; then
+              APK_PATH="$candidate"
+              break
+            fi
+          done
+          if [ -z "$APK_PATH" ]; then
+            echo "No APK build artifact found in mobile/bin" >&2
+            exit 1
+          fi
+          cp "$APK_PATH" artifacts/momentum-android-vulkan.apk
+          python mobile/scripts/verify_coach_apk.py artifacts/momentum-android-vulkan.apk --vulkan
+      - name: Upload Android artifact (Vulkan)
+        uses: actions/upload-artifact@v5
+        with:
+          name: momentum-android-vulkan
+          path: |
+            artifacts/momentum-android-vulkan.apk
+
   release:
-    needs: [build, build-apk]
+    needs: [build, build-apk, build-apk-vulkan]
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
@@ -513,6 +758,7 @@ jobs:
         uses: actions/download-artifact@v5
         with:
           path: release-assets
+          pattern: momentum-*
           merge-multiple: true
 
       - name: Create release
@@ -529,6 +775,7 @@ jobs:
             - **macOS**: `momentum-macos`
             - **Windows**: `momentum-windows.exe`
             - **Android sideload**: `momentum-android.apk`
+            - **Android Vulkan (GPU) sideload**: `momentum-android-vulkan.apk`
             - **Android Play upload**: `momentum-android.aab`
           files: release-assets/*
           draft: false

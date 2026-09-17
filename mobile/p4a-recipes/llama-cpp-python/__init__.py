@@ -13,8 +13,11 @@ is the in-recipe fallback: PyProjectRecipe checks the index first and only falls
 back to this source build when no prebuilt wheel matches. The build must succeed
 with llama-cpp-python included -- no fallback to a build without on-device inference.
 
-The build is CPU-only (no CUDA/Metal/Vulkan/OpenCL), matching the desktop
-default. The model itself is NOT bundled -- it is downloaded on first use only
+The default build is CPU-only (no CUDA/Metal/Vulkan/OpenCL), matching the
+desktop default. Vulkan (GPU) inference is opt-in: set the env var
+``GGML_VULKAN=ON`` to enable the Vulkan backend, which forces a source build
+because the prebuilt wheels in the yidaki53/p4a-wheels index are CPU-only.
+The model itself is NOT bundled -- it is downloaded on first use only
 when the user opts in, keeping the APK small.
 
 Build-system notes
@@ -36,6 +39,7 @@ environment from `get_recipe_env`.
 """
 
 import glob
+import os
 import sh
 from os.path import join, isfile, realpath, basename
 
@@ -63,7 +67,7 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
 
     _GGML_CMAKE_ARGS = [
         "-DGGML_NATIVE=OFF", "-DGGML_OPENMP=OFF", "-DGGML_BLAS=OFF",
-        "-DGGML_CUDA=OFF", "-DGGML_METAL=OFF", "-DGGML_VULKAN=OFF",
+        "-DGGML_CUDA=OFF", "-DGGML_METAL=OFF",
         "-DGGML_OPENCL=OFF", "-DGGML_SYCL=OFF", "-DGGML_RPC=OFF",
         "-DLLAMA_BUILD=ON", "-DLLAVA_BUILD=OFF", "-DBUILD_SHARED_LIBS=ON",
         "-DCMAKE_BUILD_TYPE=Release",
@@ -79,6 +83,15 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
             "-DANDROID_PLATFORM=android-{}".format(self.ctx.ndk_api),
             "-DANDROID_NDK={}".format(ndk_dir),
         ]
+        # Vulkan (GPU) inference is opt-in. Default OFF keeps the CPU-only
+        # production path; the dedicated CI job sets GGML_VULKAN=ON to build the
+        # Vulkan APK artifact, and build_arch skips the prebuilt CPU wheel below.
+        vulkan = os.environ.get("GGML_VULKAN", "OFF")
+        if str(vulkan).upper() in ("ON", "1", "TRUE"):
+            cmake_args.append("-DGGML_VULKAN=ON")
+            env["VULKAN_SDK"] = join(ndk_dir, "sources", "third_party", "vulkan")
+        else:
+            cmake_args.append("-DGGML_VULKAN=OFF")
         existing = env.get("CMAKE_ARGS", "")
         if existing:
             # bootstrap cmake args are space-separated -D flags; merge into a
@@ -103,7 +116,12 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
         # key must be replaced, not appended to. All other behaviour -- prebuilt
         # short-circuit, hostpython prerequisites, env from get_recipe_env, and
         # install_wheel -- is unchanged from upstream.
-        if self.check_prebuilt(arch, "skipping build_arch"):
+        # Prebuilt wheels in the yidaki53/p4a-wheels index are CPU-only
+        # (-DGGML_VULKAN=OFF); a Vulkan build must skip the prebuilt short-circuit
+        # and compile llama-cpp-python from source so the Vulkan backend links in.
+        if os.environ.get("GGML_VULKAN", "OFF").upper() in ("ON", "1", "TRUE"):
+            info("Vulkan requested: ignoring prebuilt CPU wheel, building from source")
+        elif self.check_prebuilt(arch, "skipping build_arch"):
             result = self.install_prebuilt_wheel(arch)
             if result:
                 return

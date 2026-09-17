@@ -39,7 +39,7 @@ version = 0.4.0
 # diskcache/jinja2/typing-extensions are llama-cpp-python runtime deps (numpy is
 # already listed); they are pure-Python and must be in the APK or Llama import/use
 # fails on-device.
-requirements = python3,kivy,pillow,matplotlib,numpy==v1.26.4,certifi,llama-cpp-python,diskcache,jinja2,typing-extensions
+requirements = python3,kivy,pillow,matplotlib,numpy==v1.26.4,certifi,llama-cpp-python,diskcache,jinja2,typing-extensions,markupsafe==3.0.3
 
 # Include the core momentum package (via symlink) and data files
 source.include_patterns = main.py,momentum/*.py,momentum/**/*.py,momentum/**/**/*.py,ENCOURAGEMENTS.md,SCIENCE.md,README.md,IMAGES.md
@@ -91,6 +91,8 @@ log_level = 2
 # fell back to pip-installing llama-cpp-python from PyPI, which failed.
 # Local recipes directory for the llama-cpp-python source recipe (see p4a-recipes/).
 p4a.local_recipes = p4a-recipes
+# For local builds, set PIP_FIND_LINKS to the file:// URI of mobile/p4a-wheels.
+# CI sets it for both dependency resolution and installation.
 # Pull a prebuilt android_26 arm64-v8a wheel for llama-cpp-python from our
 # self-hosted PEP 503 index (yidaki53/p4a-wheels, served via GitHub Pages at
 # https://yidaki53.github.io/p4a-wheels/p4a). p4a PR #3280 added prebuilt-wheel
