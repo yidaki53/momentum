@@ -23,16 +23,27 @@ def normalize_version(version: str) -> str:
     cleaned = version.strip()
     if cleaned.startswith("v"):
         cleaned = cleaned[1:]
-    cleaned = cleaned.split("-", 1)[0]
-    parts = cleaned.split(".")
+    # Keep our CI build suffix: successive releases often share a base version.
+    base, separator, suffix = cleaned.partition("-")
+    parts = base.split(".")
     if len(parts) != 3 or any(not part.isdigit() for part in parts):
         raise ValueError(f"Invalid semantic version: {version}")
-    return cleaned
+    if separator and suffix.startswith("build."):
+        build = suffix.removeprefix("build.")
+        if not build.isdigit():
+            raise ValueError(f"Invalid build version: {version}")
+        return f"{base}-build.{int(build)}"
+    return base
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    base, _, suffix = normalize_version(version).partition("-build.")
+    return (*(int(part) for part in base.split(".")), int(suffix or 0))
 
 
 def compare_versions(current: str, other: str) -> int:
-    current_parts = tuple(int(part) for part in normalize_version(current).split("."))
-    other_parts = tuple(int(part) for part in normalize_version(other).split("."))
+    current_parts = _version_key(current)
+    other_parts = _version_key(other)
     if current_parts < other_parts:
         return -1
     if current_parts > other_parts:
