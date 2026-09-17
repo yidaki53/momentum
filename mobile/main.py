@@ -46,6 +46,7 @@ from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.image import Image as KivyImage
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
+from kivy.uix.progressbar import ProgressBar
 from kivy.uix.screenmanager import NoTransition, Screen, ScreenManager
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
@@ -85,6 +86,7 @@ from momentum.assessments import (
     score_stroop,
     should_show_act_support,
 )
+from momentum.build_info import BUILD_VARIANT
 from momentum.encouragement import get_break_message, get_nudge
 from momentum.models import (
     ActJournalEntryCreate,
@@ -173,18 +175,19 @@ def _get_llm_funcs() -> dict | None:
     if _LLM_FUNCS is not None:
         return _LLM_FUNCS
     try:
-        from momentum.llm import SHORT_DISCLAIMER, DISCLAIMER, is_llm_available
+        from momentum.llm import DISCLAIMER, SHORT_DISCLAIMER, is_llm_available
         from momentum.llm.context import build_chat_history, build_user_context
         from momentum.llm.downloader import (
             ensure_model,
             is_model_downloaded,
             model_size_mb,
         )
-        from momentum.llm.engine import get_engine
+        from momentum.llm.engine import LLM_IMPORT_ERROR, get_engine
         from momentum.llm.prompts import build_chat_prompt
 
         _LLM_FUNCS = {
             "is_llm_available": is_llm_available,
+            "import_error": LLM_IMPORT_ERROR,
             "is_model_downloaded": is_model_downloaded,
             "model_size_mb": model_size_mb,
             "ensure_model": ensure_model,
@@ -546,7 +549,6 @@ def _is_play_installed() -> bool:
     if activity is None:
         return False
     try:
-        from jnius import autoclass
 
         pm = activity.getPackageManager()
         installer = pm.getInstallerPackageName(activity.getPackageName())
@@ -568,7 +570,6 @@ def _trigger_apk_download(apk_url: str) -> bool:
     try:
         from jnius import autoclass
 
-        DownloadManager = autoclass("android.app.DownloadManager")
         Request = autoclass("android.app.DownloadManager$Request")
         Environment = autoclass("android.os.Environment")
         Uri = autoclass("android.net.Uri")
@@ -615,7 +616,7 @@ def _show_update_popup(version: str, url: str, assets=()) -> None:
 
     apk_url = None
     for name, dl_url in assets:
-        if name == "momentum-android.apk":
+        if name == ("momentum-android-vulkan.apk" if BUILD_VARIANT == "vulkan" else "momentum-android.apk"):
             apk_url = dl_url
             break
     can_self_update = (
@@ -1086,13 +1087,16 @@ KV = """
         BoxLayout:
             orientation: 'vertical'
             size_hint_y: None
-            height: dp(120)
+            height: self.minimum_height
             padding: [dp(8), dp(4)]
             spacing: dp(4)
             TextInput:
                 id: coach_input
+                size_hint_y: None
+                height: dp(104) * app.font_scale
+                padding: [dp(10), dp(10)]
                 multiline: True
-                font_size: sp(13) * app.font_scale
+                font_size: sp(16) * app.font_scale
                 background_color: app.input_bg_color
                 foreground_color: app.text_color
                 hint_text: 'Type a message to your AI Coach...'
@@ -1102,6 +1106,7 @@ KV = """
                 spacing: dp(6)
                 Button:
                     text: 'Send'
+                    disabled: not root.ready or root.busy
                     background_color: app.accent_color
                     color: app.button_text_color
                     font_size: sp(13) * app.font_scale
@@ -2266,6 +2271,9 @@ class CoachScreen(Screen):
     screen shows an informative message instead of attempting inference.
     """
 
+    ready = BooleanProperty(False)
+    busy = BooleanProperty(False)
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._disclaimer_shown = False
@@ -2275,6 +2283,10 @@ class CoachScreen(Screen):
         return home.conn
 
     def on_enter(self):
+        if self.busy:
+            return
+        self.ready = False
+        self.ids.coach_input.disabled = False
         chat = self.ids.coach_chat
         chat.clear_widgets()
         funcs = _get_llm_funcs()
@@ -2288,13 +2300,14 @@ class CoachScreen(Screen):
         if not funcs["is_model_downloaded"](model_name):
             self._offer_model_download(model_name, funcs)
             return
+        self.ready = True
         self._load_history(funcs)
         if not self._disclaimer_shown:
             self._disclaimer_shown = True
             _show_info_popup("AI Coach", funcs["DISCLAIMER"])
 
     def _show_unavailable(self, funcs) -> None:
-        """Show the graceful-degradation panel and disable the chat input."""
+        """Explain engine failure without blocking drafting or model setup."""
         chat = self.ids.coach_chat
         chat.clear_widgets()
         chat.add_widget(_make_label(
@@ -2312,9 +2325,19 @@ class CoachScreen(Screen):
                 funcs["SHORT_DISCLAIMER"],
                 font_size=sp(11), color=_MUTED,
             ))
-        # Disable the input so the user cannot try to send without a backend.
-        self.ids.coach_input.disabled = True
-        self.ids.coach_disclaimer.text = ""
+        # Keep drafting/selection available; only Send requires a working backend.
+        self.ready = False
+        detail = funcs.get("import_error", "") if funcs else "Could not import the coach modules."
+        chat.add_widget(_make_label(
+            f"Build: {APP_VERSION} ({BUILD_VARIANT})\n{detail}\n"
+            "Downloading a model cannot repair a missing engine. Install a corrected build.",
+            font_size=sp(13), color=_MUTED,
+        ))
+        self.ids.coach_disclaimer.text = "Engine unavailable; you can still draft a message."
+        if funcs is not None:
+            model_name = cfg.load_config().llm_model
+            if not funcs["is_model_downloaded"](model_name):
+                self._offer_model_download(model_name, funcs)
 
     def _offer_model_download(self, model_name: str, funcs) -> None:
         """Prompt the user to opt in to downloading the model (keeps APK small)."""
@@ -2342,10 +2365,13 @@ class CoachScreen(Screen):
         )
         btn_row.add_widget(download_btn)
         chat.add_widget(btn_row)
-        self.ids.coach_input.disabled = True
+        self.ready = False
 
     def _start_model_download(self, model_name: str, funcs) -> None:
         """Run the opt-in model download behind a progress popup."""
+        if self.busy:
+            return
+        self.busy = True
         size_mb = funcs["model_size_mb"](model_name)
         content = BoxLayout(orientation="vertical", padding=10, spacing=10)
         content.add_widget(_make_label(
@@ -2365,13 +2391,12 @@ class CoachScreen(Screen):
         popup.open()
 
         def _update_progress(downloaded: int, total: int) -> None:
-            if total <= 0:
-                return
-            pct = int(downloaded / total * 100)
-            progress.value = pct
-            mb_done = downloaded / (1024 * 1024)
-            mb_total = total / (1024 * 1024)
-            status.text = f"{mb_done:.0f} / {mb_total:.0f} MB ({pct}%)"
+            def _apply(_dt):
+                progress.value = int(downloaded / total * 100) if total > 0 else 0
+                status.text = f"{downloaded / (1024 * 1024):.0f} MB downloaded"
+                if total > 0:
+                    status.text += f" ({progress.value:.0f}%)"
+            Clock.schedule_once(_apply, 0)
 
         def _download() -> None:
             try:
@@ -2381,15 +2406,17 @@ class CoachScreen(Screen):
                 Clock.schedule_once(lambda _dt, e=exc: _error(e))
 
         def _done() -> None:
+            self.busy = False
             popup.dismiss()
             _show_info_popup(
                 "Download complete",
-                f"The {model_name} model is ready to use.",
+                f"The {model_name} model is saved. A working engine is required to chat.",
             )
             self.ids.coach_input.disabled = False
             self.on_enter()
 
         def _error(exc) -> None:
+            self.busy = False
             popup.dismiss()
             _show_error_popup(
                 "Download failed",
@@ -2452,6 +2479,8 @@ class CoachScreen(Screen):
 
     def send_message(self) -> None:
         """Send the current input to the AI Coach and stream the reply."""
+        if self.busy:
+            return
         funcs = _get_llm_funcs()
         if funcs is None or not funcs["is_llm_available"]():
             _show_info_popup("AI Coach", _COACH_UNAVAILABLE_MSG)
@@ -2482,6 +2511,7 @@ class CoachScreen(Screen):
                 messages = funcs["build_chat_prompt"](
                     user_msg, user_context, chat_history
                 )
+                self.busy = True
                 self._show_typing()
                 engine = funcs["get_engine"](model_name)
 
@@ -2511,6 +2541,7 @@ class CoachScreen(Screen):
                     temperature=0.7,
                 )
             except Exception as exc:
+                self.busy = False
                 self._hide_typing()
                 self._add_message(
                     "assistant",
@@ -2539,6 +2570,7 @@ class CoachScreen(Screen):
         self._scroll_to_bottom()
 
     def _finish_reply(self, full_text: str) -> None:
+        self.busy = False
         self._hide_typing()
         text = full_text or getattr(self, "_pending_reply", "")
         self._pending_reply = ""
@@ -2561,6 +2593,7 @@ class CoachScreen(Screen):
             log.debug("Could not persist AI Coach reply", exc_info=True)
 
     def _fail_reply(self, exc) -> None:
+        self.busy = False
         self._hide_typing()
         self._add_message(
             "assistant",
@@ -2570,6 +2603,9 @@ class CoachScreen(Screen):
 
     def clear_chat(self) -> None:
         """Delete all chat history after confirmation."""
+
+        if self.busy:
+            return
 
         def _clear() -> None:
             conn = self._home_conn()
@@ -2609,6 +2645,7 @@ class SettingsScreen(ScrollScreen):
         resolved = cfg.get_db_path()
         db_text = current.db_path if current.db_path else f"{resolved} (default)"
 
+        c.add_widget(_make_label(f"Momentum {APP_VERSION} ({BUILD_VARIANT})", font_size=sp(14), color=muted))
         c.add_widget(_make_label("Settings", font_size=sp(20), bold=True, color=accent))
         c.add_widget(Widget(size_hint_y=None, height=dp(8)))
 
@@ -3870,6 +3907,9 @@ class MomentumApp(App):
         self.reduce_visual_load = _APP_CFG.accessibility_reduce_visual_load
 
     def build(self):
+        from kivy.core.window import Window
+
+        Window.softinput_mode = "below_target"
         self.reload_palette()
         Builder.load_string(KV)
         sm = ScreenManager()
