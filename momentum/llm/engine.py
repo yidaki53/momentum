@@ -14,15 +14,18 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
-try:  # Native dependency; absent on Android builds without the recipe.
+from momentum.build_info import BUILD_VARIANT
+from momentum.llm.downloader import ensure_model
+
+LLM_IMPORT_ERROR = ""
+try:  # Native loaders can raise RuntimeError/OSError as well as ImportError.
     from llama_cpp import Llama
 
     LLM_AVAILABLE = True
-except ImportError:  # pragma: no cover - exercised on Android/no-native builds
+except (ImportError, OSError, RuntimeError) as exc:
     Llama = None
     LLM_AVAILABLE = False
-
-from momentum.llm.downloader import ensure_model
+    LLM_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +74,7 @@ class LlmEngine:
             model_path=str(self._model_path),
             n_ctx=self._n_ctx,
             n_threads=self._n_threads,
+            n_gpu_layers=-1 if BUILD_VARIANT == "vulkan" else 0,
             verbose=self._verbose,
         )
         log.info("Model loaded successfully")

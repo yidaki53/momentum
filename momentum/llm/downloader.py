@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from momentum.config import app_data_root
+from momentum.ui.update_check import certifi_ssl_context
 
 log = logging.getLogger(__name__)
 
@@ -76,7 +77,9 @@ def _download_file(
         tmp_path = Path(tmp.name)
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Momentum/0.1"})
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(
+                req, timeout=30, context=certifi_ssl_context()
+            ) as resp:
                 total = int(resp.headers.get("Content-Length", 0))
                 downloaded = 0
                 while True:
@@ -85,8 +88,13 @@ def _download_file(
                         break
                     tmp.write(chunk)
                     downloaded += len(chunk)
-                    if progress_callback and total > 0:
+                    if progress_callback:
                         progress_callback(downloaded, total)
+            if total > 0 and downloaded != total:
+                raise OSError(
+                    f"Incomplete model download: {downloaded} of {total} bytes"
+                )
+            tmp.flush()
             shutil.move(tmp_path, dest)
             log.info("Download complete: %s", dest)
         except Exception:
