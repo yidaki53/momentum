@@ -62,15 +62,10 @@ mobile-deps: ## Install Buildozer and Kivy dependencies for Android builds
 	@echo "See: https://buildozer.readthedocs.io/en/latest/installation.html"
 
 mobile-apk: ## Build Android APK (requires buildozer + SDK)
-	cd mobile && buildozer android debug
+	$(PYTHON) mobile/scripts/build_android.py
 
 mobile-aab: ## Build Android AAB release artifact for Play upload
-	cd mobile && cp buildozer.spec buildozer.spec.bak && \
-		sed -i 's|^android.release_artifact.*|android.release_artifact = aab|' buildozer.spec && \
-		buildozer android release; \
-	status=$$?; \
-	mv buildozer.spec.bak buildozer.spec; \
-	exit $$status
+	$(PYTHON) mobile/scripts/build_android.py --aab
 
 # ---------------------------------------------------------------------------
 # Housekeeping
