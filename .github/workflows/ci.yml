@@ -571,11 +571,14 @@ jobs:
           "$glslc_path" --version | head -2
 
           # VULKAN_SDK points at the NDK's Vulkan sources, so the matching
-          # vulkan/vulkan.h must exist for the cross-compile. Accept any
-          # installed NDK, then the distro headers, so bumping android.ndk does
-          # not break this check.
+          # vulkan/vulkan.h must exist for the cross-compile. NDK r25 ships it
+          # under sources/third_party/, but newer NDKs (r27+, which GH runners
+          # preinstall) only carry it inside the sysroot - accept both, then
+          # the distro headers, so bumping android.ndk does not break this
+          # check.
           header=""
           for candidate in "$ANDROID_HOME"/ndk/*/sources/third_party/vulkan/src/include/vulkan/vulkan.h \
+                           "$ANDROID_HOME"/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/vulkan/vulkan.h \
                            /usr/include/vulkan/vulkan.h; do
             if [ -f "$candidate" ]; then
               header="$candidate"
