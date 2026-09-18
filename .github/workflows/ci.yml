@@ -533,6 +533,58 @@ jobs:
           sudo apt-get install -y build-essential libffi-dev libssl-dev \
             autoconf automake libtool libltdl-dev pkg-config zlib1g-dev \
             unzip zip
+      - name: Install Vulkan shader tooling (glslc + headers)
+        run: |
+          sudo apt-get update
+          # glslang-tools provides the distro glslc fallback. vulkan-headers is
+          # only the last-resort source of vulkan/vulkan.h for the header check
+          # below; the recipe points CMake at the NDK's own copy via VULKAN_SDK.
+          sudo apt-get install -y glslang-tools
+          sudo apt-get install -y vulkan-headers libvulkan-dev || true
+
+          # llama.cpp's Vulkan backend compiles its compute shaders with glslc.
+          # Prefer the NDK-bundled shader-tools copy (it matches the NDK that
+          # buildozer cross-compiles with), then fall back to the distro glslc
+          # installed above. The recipe runs the same discovery for the build
+          # environment, so failing here only fails fast.
+          glslc_path=""
+          for candidate in "$ANDROID_HOME"/ndk/*/shader-tools/linux-x86_64/glslc; do
+            if [ -x "$candidate" ]; then
+              echo "$(dirname "$candidate")" >> "$GITHUB_PATH"
+              glslc_path="$candidate"
+              break
+            fi
+          done
+          if [ -z "$glslc_path" ] && command -v glslc >/dev/null 2>&1; then
+            glslc_path="$(command -v glslc)"
+          fi
+          if [ -z "$glslc_path" ]; then
+            echo "glslc missing: cannot compile llama.cpp Vulkan shaders" >&2
+            exit 1
+          fi
+          echo "Using glslc: $glslc_path"
+          "$glslc_path" --version | head -2
+
+          # VULKAN_SDK points at the NDK's Vulkan sources, so the matching
+          # vulkan/vulkan.h must exist for the cross-compile. Accept any
+          # installed NDK, then the distro headers, so bumping android.ndk does
+          # not break this check.
+          header=""
+          for candidate in "$ANDROID_HOME"/ndk/*/sources/third_party/vulkan/src/include/vulkan/vulkan.h \
+                           /usr/include/vulkan/vulkan.h; do
+            if [ -f "$candidate" ]; then
+              header="$candidate"
+              break
+            fi
+          done
+          if [ -z "$header" ]; then
+            echo "NDK Vulkan headers missing" >&2
+            exit 1
+          fi
+          echo "Using Vulkan headers: $header"
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
       - name: Install buildozer, Cython, and python-for-android
         run: |
@@ -737,8 +789,13 @@ jobs:
             artifacts/momentum-android-vulkan.apk
 
   release:
+    # The Vulkan APK is experimental: a Vulkan-only compile failure must not
+    # block publishing the tested CPU artifacts. build-apk-vulkan stays
+    # visible in CI but is advisory via allow-failure semantics below.
     needs: [build, build-apk, build-apk-vulkan]
-    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    if: >
+      github.ref == 'refs/heads/master' && github.event_name == 'push' &&
+      (needs.build.result == 'success' && needs.build-apk.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

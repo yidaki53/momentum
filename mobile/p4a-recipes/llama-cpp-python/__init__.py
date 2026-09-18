@@ -41,6 +41,7 @@ environment from `get_recipe_env`.
 import glob
 import os
 import sh
+import shutil
 from os.path import join, isfile, realpath, basename
 
 from pythonforandroid.util import current_directory, ensure_dir
@@ -89,6 +90,29 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
         vulkan = os.environ.get("GGML_VULKAN", "OFF")
         if str(vulkan).upper() in ("ON", "1", "TRUE"):
             cmake_args.append("-DGGML_VULKAN=ON")
+            # VULKAN_SDK must point at a directory whose parent contains a
+            # usable glslc: llama.cpp's CMake looks for glslc under
+            # ``$VULKAN_SDK/../bin`` and ``$VULKAN_SDK/bin``. The NDK's Vulkan
+            # sources have no bin/ sibling, so prefer an explicit GLSLC
+            # location: NDK shader-tools first, then distro glslc. Without a
+            # compiler on PATH the Vulkan build fails deep in CMake instead of
+            # here with a clear message.
+            ndk_glslc_dir = join(ndk_dir, "shader-tools", "linux-x86_64")
+            ndk_glslc = join(ndk_glslc_dir, "glslc")
+            distro_glslc = shutil.which("glslc")
+            if os.path.isfile(ndk_glslc) and os.access(ndk_glslc, os.X_OK):
+                env["PATH"] = ndk_glslc_dir + os.pathsep + env.get("PATH", "")
+                env["GLSLC"] = ndk_glslc
+                info("Using NDK-bundled glslc: " + ndk_glslc)
+            elif distro_glslc:
+                env["GLSLC"] = distro_glslc
+                info("Using distro glslc: " + distro_glslc)
+            else:
+                raise RuntimeError(
+                    "GGML_VULKAN=ON requires glslc (NDK shader-tools or "
+                    "glslang-tools package); refusing to start a doomed "
+                    "Vulkan source build."
+                )
             env["VULKAN_SDK"] = join(ndk_dir, "sources", "third_party", "vulkan")
         else:
             cmake_args.append("-DGGML_VULKAN=OFF")

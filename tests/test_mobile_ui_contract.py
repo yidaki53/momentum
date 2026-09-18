@@ -158,10 +158,30 @@ def test_self_update_wiring_is_present() -> None:
 
 
 def test_buildozer_spec_grants_install_packages() -> None:
-    spec = (
-        Path(__file__).resolve().parent.parent / "mobile" / "buildozer.spec"
-    ).read_text(encoding="utf-8")
+    root = Path(__file__).resolve().parent.parent
+    spec = (root / "mobile" / "buildozer.spec").read_text(encoding="utf-8")
     assert "REQUEST_INSTALL_PACKAGES" in spec
+
+    # Vulkan shader compilation needs glslc: the Vulkan CI job installs
+    # glslang-tools, the recipe prefers the NDK-bundled copy and fails fast
+    # with a clear error when neither is available (instead of dying deep
+    # inside CMake).
+    ci = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "glslang-tools" in ci
+    assert "Install Vulkan shader tooling (glslc + headers)" in ci
+    assert "NDK Vulkan headers missing" in ci
+    # Exactly one tooling step: a duplicated copy previously existed and the
+    # two drifted apart, which is how the missing glslc wiring went unnoticed.
+    assert ci.count("Install Vulkan shader tooling (glslc + headers)") == 1
+
+    recipe_src = (
+        root / "mobile" / "p4a-recipes" / "llama-cpp-python" / "__init__.py"
+    ).read_text(encoding="utf-8")
+    # The recipe exports GLSLC to the CMake environment and refuses to start a
+    # doomed Vulkan source build without a shader compiler.
+    assert "GLSLC" in recipe_src
+    assert "requires glslc" in recipe_src
+    assert "-DGGML_VULKAN=ON" in recipe_src
 
 
 def test_buildozer_spec_enables_backup_and_llama_recipe() -> None:
@@ -250,3 +270,8 @@ def test_ci_requires_llama_build_to_succeed_and_uploads_logs() -> None:
     assert "android-build-logs" in ci
     assert "/tmp/buildozer-pass2.log" in ci
     assert "if: always()" in ci
+
+    # Releases publish when CPU artifacts succeed; the experimental Vulkan job
+    # stays visible but must not gate the release.
+    assert "needs.build.result" in ci
+    assert "needs.build-apk.result" in ci
