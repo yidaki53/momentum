@@ -514,6 +514,11 @@ jobs:
     # additional sideload artifact alongside the release APK/AAB).
     needs: test
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    # Advisory: the Vulkan variant only adds a sideload artifact, so a
+    # Vulkan-only failure must not fail the workflow. Without this, that
+    # failure makes the release job's implicit success() check false and the
+    # release is skipped outright (seen on run 71), stopping every publish.
+    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -789,11 +794,14 @@ jobs:
             artifacts/momentum-android-vulkan.apk
 
   release:
-    # The Vulkan APK is experimental: a Vulkan-only compile failure must not
-    # block publishing the tested CPU artifacts. build-apk-vulkan stays
-    # visible in CI but is advisory via allow-failure semantics below.
+    # Publishing gates on the tested CPU artifacts (build, build-apk) only.
+    # build-apk-vulkan is advisory: it sets continue-on-error so its failure
+    # result is not 'failure', but GitHub also ANDs an implicit success() over
+    # every entry in needs, so always() is required here to keep an advisory
+    # Vulkan failure from skipping the release and silently freezing updates.
     needs: [build, build-apk, build-apk-vulkan]
     if: >
+      always() &&
       github.ref == 'refs/heads/master' && github.event_name == 'push' &&
       (needs.build.result == 'success' && needs.build-apk.result == 'success')
     runs-on: ubuntu-latest

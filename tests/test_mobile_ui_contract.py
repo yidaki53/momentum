@@ -275,3 +275,9 @@ def test_ci_requires_llama_build_to_succeed_and_uploads_logs() -> None:
     # stays visible but must not gate the release.
     assert "needs.build.result" in ci
     assert "needs.build-apk.result" in ci
+    # A Vulkan-only failure previously skipped the release job (run 71), which
+    # silently stopped all publishes and froze the in-app update check. The job
+    # is therefore marked advisory and the release condition is forced to
+    # evaluate despite a dependency failure.
+    assert "always() &&" in ci
+    assert "continue-on-error: true" in ci
