@@ -144,12 +144,34 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
                     distro_vulkan_inc = _cand
                     break
             if distro_vulkan_inc:
-                cmake_args.append(
-                    "-DVulkan_INCLUDE_DIR={}".format(distro_vulkan_inc))
-                cmake_args.append(
-                    "-DCMAKE_INCLUDE_PATH={}".format(distro_vulkan_inc))
-                info("Vulkan C++ headers (vulkan/vulkan.hpp): "
-                     + distro_vulkan_inc)
+                # CMake HARD-CODES /usr/include as an implicit include dir and
+                # refuses to emit -I for it (cmLocalGenerator.cxx:
+                # "implicitExclude.emplace(\"/usr/include\")"). So handing CMake
+                # -DVulkan_INCLUDE_DIR=/usr/include is accepted by
+                # find_package(Vulkan) but the resulting -I/usr/include is
+                # silently dropped -- and the aarch64 build, which uses the NDK
+                # --sysroot instead of the host /usr/include, still dies with
+                # "'vulkan/vulkan.hpp' file not found" at ggml-vulkan.cpp:8.
+                #
+                # Fix: stage ONLY the Vulkan C++ headers (vulkan/*.hpp: the
+                # Vulkan-Hpp header plus its sibling *.hpp includes) into a
+                # directory that is NOT /usr/include, then point
+                # Vulkan_INCLUDE_DIR at that stage so CMake emits -I<stage>.
+                # Copying only the .hpp files keeps the C API header
+                # (<vulkan/vulkan.h>, pulled in by vulkan.hpp) resolving from
+                # the NDK sysroot -- ABI-correct for the target -- instead of
+                # dragging in the host's glibc/vulkan.h and breaking --sysroot.
+                stage_inc = join(self.get_build_dir(arch.arch),
+                                 "vulkan-hpp-include")
+                stage_vulkan = join(stage_inc, "vulkan")
+                ensure_dir(stage_vulkan)
+                for _hpp in glob.glob(
+                        join(distro_vulkan_inc, "vulkan", "*.hpp")):
+                    shutil.copy2(_hpp, join(stage_vulkan, basename(_hpp)))
+                cmake_args.append("-DVulkan_INCLUDE_DIR={}".format(stage_inc))
+                cmake_args.append("-DCMAKE_INCLUDE_PATH={}".format(stage_inc))
+                info("Vulkan C++ headers staged {} -> {}".format(
+                    distro_vulkan_inc, stage_inc))
             else:
                 warning("vulkan/vulkan.hpp not found in /usr/include or "
                         "/usr/local/include; ggml-vulkan.cpp will fail to "
