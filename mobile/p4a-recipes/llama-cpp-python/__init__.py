@@ -153,21 +153,28 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
                 # --sysroot instead of the host /usr/include, still dies with
                 # "'vulkan/vulkan.hpp' file not found" at ggml-vulkan.cpp:8.
                 #
-                # Fix: stage ONLY the Vulkan C++ headers (vulkan/*.hpp: the
-                # Vulkan-Hpp header plus its sibling *.hpp includes) into a
-                # directory that is NOT /usr/include, then point
-                # Vulkan_INCLUDE_DIR at that stage so CMake emits -I<stage>.
-                # Copying only the .hpp files keeps the C API header
-                # (<vulkan/vulkan.h>, pulled in by vulkan.hpp) resolving from
-                # the NDK sysroot -- ABI-correct for the target -- instead of
-                # dragging in the host's glibc/vulkan.h and breaking --sysroot.
+                # Fix: stage the distro Vulkan headers into a directory that is
+                # NOT /usr/include, then point Vulkan_INCLUDE_DIR at that stage
+                # so CMake emits -isystem <stage> for the ggml-vulkan target.
+                #
+                # Stage the ENTIRE Vulkan-Headers set (.h AND .hpp), not just the
+                # .hpp files. vulkan.hpp carries
+                #     static_assert( VK_HEADER_VERSION == <N>, ... )
+                # for its OWN header version. If its <vulkan/vulkan.h> falls
+                # through to the NDK sysroot it gets a DIFFERENT, older version
+                # (NDK r25b ships 203 while the runner's distro Vulkan-Hpp is
+                # 275), so the static_assert fires and every type added after 203
+                # (VkVideoProfileInfoKHR, ...) is unknown -- that was the run-80
+                # failure. Copying the whole set keeps vulkan.hpp and vulkan.h
+                # version-consistent (both from the distro) and, since the distro
+                # set is >= the sysroot's, a superset of what llama.cpp needs.
                 stage_inc = join(self.get_build_dir(arch.arch),
-                                 "vulkan-hpp-include")
+                                 "vulkan-headers-stage")
                 stage_vulkan = join(stage_inc, "vulkan")
                 ensure_dir(stage_vulkan)
-                for _hpp in glob.glob(
-                        join(distro_vulkan_inc, "vulkan", "*.hpp")):
-                    shutil.copy2(_hpp, join(stage_vulkan, basename(_hpp)))
+                for _hdr in glob.glob(join(distro_vulkan_inc, "vulkan", "*")):
+                    if isfile(_hdr):
+                        shutil.copy2(_hdr, join(stage_vulkan, basename(_hdr)))
                 cmake_args.append("-DVulkan_INCLUDE_DIR={}".format(stage_inc))
                 cmake_args.append("-DCMAKE_INCLUDE_PATH={}".format(stage_inc))
                 info("Vulkan C++ headers staged {} -> {}".format(
