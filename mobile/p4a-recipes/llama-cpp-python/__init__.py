@@ -122,7 +122,38 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
                     "glslang-tools package); refusing to start a doomed "
                     "Vulkan source build."
                 )
+                                    # The NDK's Vulkan sources (sources/third_party/vulkan) ship only the
+            # C header ``vulkan/vulkan.h`` -- used by llama.cpp's
+            # vulkan-shaders-gen HOST tool at configure, and correctly ABI-matched
+            # for the cross-compile. The target build, however, compiles
+            # ggml-vulkan.cpp which does ``#include <vulkan/vulkan.hpp>`` (the
+            # C++ Vulkan-Hpp header from the vulkan-headers package). CMake's
+            # find_package(Vulkan) resolves the loader lib (libvulkan.so from the
+            # NDK sysroot) but does NOT add the vulkan.hpp-bearing include dir, so
+            # the target build dies with "fatal error: 'vulkan/vulkan.hpp' file
+            # not found" once it reaches ggml-vulkan.cpp (~[9/45]).
+            #
+            # Fix: keep VULKAN_SDK pointing at the NDK (for the loader lib) but
+            # also hand llama.cpp's CMake the distro Vulkan-Headers include dir
+            # via -DVulkan_INCLUDE_DIR, and add it to the cross-compile search
+            # path so the C++ header is visible to the aarch64 target build.
             env["VULKAN_SDK"] = join(ndk_dir, "sources", "third_party", "vulkan")
+            distro_vulkan_inc = None
+            for _cand in ("/usr/include", "/usr/local/include"):
+                if os.path.isfile(join(_cand, "vulkan", "vulkan.hpp")):
+                    distro_vulkan_inc = _cand
+                    break
+            if distro_vulkan_inc:
+                cmake_args.append(
+                    "-DVulkan_INCLUDE_DIR={}".format(distro_vulkan_inc))
+                cmake_args.append(
+                    "-DCMAKE_INCLUDE_PATH={}".format(distro_vulkan_inc))
+                info("Vulkan C++ headers (vulkan/vulkan.hpp): "
+                     + distro_vulkan_inc)
+            else:
+                warning("vulkan/vulkan.hpp not found in /usr/include or "
+                        "/usr/local/include; ggml-vulkan.cpp will fail to "
+                        "compile. Install the vulkan-headers package.")
 
             # --- Vulkan host-toolchain link fix ---
             # scikit-build-core builds llama.cpp's vulkan-shaders-gen HOST tool
