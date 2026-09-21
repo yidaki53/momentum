@@ -123,6 +123,31 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
                     "Vulkan source build."
                 )
             env["VULKAN_SDK"] = join(ndk_dir, "sources", "third_party", "vulkan")
+
+            # --- Vulkan host-toolchain link fix ---
+            # scikit-build-core builds llama.cpp's vulkan-shaders-gen HOST tool
+            # (a tiny C program) with the system gcc via a generated
+            # host-toolchain.cmake, and llama.cpp drives it through an
+            # ExternalProject_Add -- a *separate* CMake configure that the
+            # `--config-setting cmake.args=...` above (which only reaches
+            # scikit-build-core's main configure) cannot reach.
+            #
+            # p4a's LDFLAGS still carries the *target* (aarch64) Python link
+            # flags from the python3 recipe (`-L.../python3/.../android-build`
+            # `-lpython3.14`). CMake injects LDFLAGS into the host compiler-ABI
+            # check's link line, so the host gcc tries to link the aarch64
+            # libpython3.14.so and aborts "incompatible with elf64-x86-64"
+            # (cmTC_0d23b -> "Check for working C compiler: ... - broken").
+            #
+            # llama.cpp's CMake outputs (libllama.so + the ggml backends) never
+            # reference any Python symbol and so never need -lpython<ver> on the
+            # link line; strip it so the host tool's compiler check links cleanly
+            # with libc. CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY can't be
+            # exported via env (CMake ignores it there), so the only lever that
+            # reaches the nested host configure is LDFLAGS itself.
+            ldflags = env.get("LDFLAGS", "").split()
+            ldflags = [f for f in ldflags if not f.startswith("-lpython")]
+            env["LDFLAGS"] = " ".join(ldflags)
         else:
             cmake_args.append("-DGGML_VULKAN=OFF")
         existing = env.get("CMAKE_ARGS", "")
