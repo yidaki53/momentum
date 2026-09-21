@@ -717,6 +717,17 @@ jobs:
           fi
           cd mobile
           ANDROID_NUMERIC_VERSION=$((100000000 + GITHUB_RUN_NUMBER))
+          # The GitHub Actions ubuntu-22.04 runner does not ship libvulkan-dev,
+          # so /usr/include/vulkan/vulkan.hpp is absent at recipe runtime. Without
+          # it, the llama-cpp-python recipe's vulkan.hpp detection (get_recipe_env)
+          # prints "vulkan/vulkan.hpp not found" and skips adding
+          # -DVulkan_INCLUDE_DIR / -DCMAKE_INCLUDE_PATH to cmake.args, and then
+          # ggml-vulkan.cpp fails with "fatal error: 'vulkan/vulkan.hpp' file not
+          # found" when it reaches the aarch64 target compile. Installing the distro
+          # package makes the C++ Vulkan-Hpp header available so the recipe can hand
+          # the include dir to CMake via the cmake.args config-setting.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libvulkan-dev
           sed -i 's|^build_dir.*|build_dir = /tmp/buildozer-build-vulkan|' buildozer.spec
           sed -i 's|^android.release_artifact.*|android.release_artifact = apk|' buildozer.spec
           sed -i "s|^android.numeric_version.*|android.numeric_version = ${ANDROID_NUMERIC_VERSION}|" buildozer.spec
