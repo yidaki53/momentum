@@ -198,10 +198,26 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
         # scikit-build-core config-setting path is the most reliable carrier for
         # -D flags through `python -m build`. The extra_build_args list is appended
         # to the --config-setting build-dir=... args in build_arch, so these join
-        # the same invocation. (GGML_VULKAN is already set in the cmake_args list
-        # above; only the host try-compile safeguard and build type are repeated here.)
+        # the same invocation. CRITICAL: the config-setting carries ALL flags that
+        # the nested CMake configures need, including the vulkan-specific ones
+        # (-DGGML_VULKAN=ON, -DVulkan_INCLUDE_DIR, -DCMAKE_INCLUDE_PATH) which are
+        # NOT reliably delivered via CMAKE_ARGS env var (scikit-build-core emits
+        # "Unsupported CMAKE_ARGS ignored" for each -D flag in that env var).
+        #
+        # Build the cmake.args string from the same cmake_args list used for
+        # CMAKE_ARGS, plus the static-library try-compile safeguard (which must
+        # reach the nested host-toolchain configure too). Note: CMake_TRY_COMPILE
+        # flags are CMAKE_ARGS-style and won't be read from cmake.args by the
+        # host tool config, but we pass them anyway as belt-and-suspenders; the
+        # LDFLAGS strip (above) is the real mechanism that fixes the host tool
+        # link failure.
         self.extra_build_args = [
-            "--config-setting", "cmake.args=-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY;-DCMAKE_BUILD_TYPE=Release",
+            "--config-setting",
+            "cmake.args=" + ";".join(
+                existing_flags + cmake_args + [
+                    "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
+                ]
+            ),
         ]
 
         env["ANDROID_NDK_HOME"] = ndk_dir
