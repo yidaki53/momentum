@@ -72,6 +72,15 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
         "-DGGML_OPENCL=OFF", "-DGGML_SYCL=OFF", "-DGGML_RPC=OFF",
         "-DLLAMA_BUILD=ON", "-DLLAVA_BUILD=OFF", "-DBUILD_SHARED_LIBS=ON",
         "-DCMAKE_BUILD_TYPE=Release",
+        # Cross-compile safeguard: scikit-build-core runs a secondary CMake
+        # configure with the *host* compiler, and p4a injects the target
+        # (aarch64) Python into the link flags (-L<python3 android-build> -lpython3.14).
+        # The host C-compiler test then links the aarch64 libpython3.14.so with the
+        # host linker and aborts with "incompatible with elf64-x86-64". Forcing
+        # try_compiles to produce static archives (compile-only, no link) makes the
+        # compiler test pass; the real aarch64 libs are still built with the NDK
+        # toolchain (the active ninja invocations target aarch64-none-linux-android).
+        "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
     ]
 
     def get_recipe_env(self, arch, **kwargs):
@@ -125,6 +134,20 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
         else:
             existing_flags = []
         env["CMAKE_ARGS"] = " ".join(existing_flags + cmake_args)
+
+        # Also pass the CMake flags through `--config-setting` so scikit-build-core
+        # (which p4a invokes via `python -m build` in build_arch) receives them via
+        # the supported PEP 517 mechanism. llama-cpp-python reads CMAKE_ARGS (env)
+        # AND config-settings; p4a sets CMAKE_ARGS in get_recipe_env, but the
+        # scikit-build-core config-setting path is the most reliable carrier for
+        # -D flags through `python -m build`. The extra_build_args list is appended
+        # to the --config-setting build-dir=... args in build_arch, so these join
+        # the same invocation. (GGML_VULKAN is already set in the cmake_args list
+        # above; only the host try-compile safeguard and build type are repeated here.)
+        self.extra_build_args = [
+            "--config-setting", "cmake.args=-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY;-DCMAKE_BUILD_TYPE=Release",
+        ]
+
         env["ANDROID_NDK_HOME"] = ndk_dir
         env["ANDROID_NDK"] = ndk_dir
         env["ANDROID_NDK_ROOT"] = ndk_dir
