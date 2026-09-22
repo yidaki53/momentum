@@ -731,6 +731,19 @@ jobs:
           sed -i 's|^build_dir.*|build_dir = /tmp/buildozer-build-vulkan|' buildozer.spec
           sed -i 's|^android.release_artifact.*|android.release_artifact = apk|' buildozer.spec
           sed -i "s|^android.numeric_version.*|android.numeric_version = ${ANDROID_NUMERIC_VERSION}|" buildozer.spec
+          # ggml-vulkan links against Vulkan 1.1 entry points
+          # (vkEnumerateInstanceVersion, vkGetPhysicalDeviceProperties2,
+          # vkGetPhysicalDeviceFeatures2, vkResetQueryPool). The NDK r25b
+          # libvulkan.so import library only exports Vulkan 1.0 for
+          # android-26, so the final link of libggml-vulkan.so fails with
+          # "undefined symbol" when minapi/ndk_api is 26. Vulkan 1.1 landed
+          # in Android 8.1 (API 27), so raise minapi for the Vulkan variant
+          # only: buildozer derives android.ndk_api from android.minapi,
+          # which the recipe forwards as -DANDROID_PLATFORM=android-<api>,
+          # and the APK manifest then correctly declares minSdk 27 (an
+          # API 26 device cannot load the .so anyway). The CPU job keeps 26.
+          sed -i 's|^android.minapi.*|android.minapi = 27|' buildozer.spec
+          grep -E '^android\.(minapi|api)' buildozer.spec
           # Pass 1: clones p4a + numpy (v1.26.4 pin) and builds hostpython3.
           # Expected to fail when numpy compiles (hostpython3 lacks Cython).
           buildozer android release > /tmp/buildozer-vulkan-pass1.log 2>&1 || true
