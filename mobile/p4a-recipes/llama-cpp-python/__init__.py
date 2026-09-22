@@ -170,11 +170,23 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
                 # set is >= the sysroot's, a superset of what llama.cpp needs.
                 stage_inc = join(self.get_build_dir(arch.arch),
                                  "vulkan-headers-stage")
-                stage_vulkan = join(stage_inc, "vulkan")
-                ensure_dir(stage_vulkan)
-                for _hdr in glob.glob(join(distro_vulkan_inc, "vulkan", "*")):
-                    if isfile(_hdr):
-                        shutil.copy2(_hdr, join(stage_vulkan, basename(_hdr)))
+                ensure_dir(stage_inc)
+                # The Vulkan-Headers install lays out TWO sibling include dirs:
+                #   <root>/vulkan/*.h,*.hpp      <root>/vk_video/*.h
+                # vulkan_core.h pulls the video codec headers from the sibling
+                # vk_video/ dir (e.g.
+                # #include "vk_video/vulkan_video_codec_h264std.h"), so BOTH
+                # must be staged or the target build dies with
+                # "'vk_video/vulkan_video_codec_h264std.h' file not found".
+                for _sub in ("vulkan", "vk_video"):
+                    _src = join(distro_vulkan_inc, _sub)
+                    if not os.path.isdir(_src):
+                        continue
+                    _dst = join(stage_inc, _sub)
+                    ensure_dir(_dst)
+                    for _hdr in glob.glob(join(_src, "*")):
+                        if isfile(_hdr):
+                            shutil.copy2(_hdr, join(_dst, basename(_hdr)))
                 cmake_args.append("-DVulkan_INCLUDE_DIR={}".format(stage_inc))
                 cmake_args.append("-DCMAKE_INCLUDE_PATH={}".format(stage_inc))
                 info("Vulkan C++ headers staged {} -> {}".format(
