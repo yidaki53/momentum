@@ -731,22 +731,25 @@ jobs:
           sed -i 's|^build_dir.*|build_dir = /tmp/buildozer-build-vulkan|' buildozer.spec
           sed -i 's|^android.release_artifact.*|android.release_artifact = apk|' buildozer.spec
           sed -i "s|^android.numeric_version.*|android.numeric_version = ${ANDROID_NUMERIC_VERSION}|" buildozer.spec
-          # ggml-vulkan links against Vulkan 1.1 entry points
-          # (vkEnumerateInstanceVersion, vkGetPhysicalDeviceProperties2,
-          # vkGetPhysicalDeviceFeatures2, vkResetQueryPool). The NDK r25b
-          # libvulkan.so import library only exports Vulkan 1.0 symbols for
-          # android-26 and android-27 (the Vulkan 1.1 entrypoints are guarded
-          # by __ANDROID_API__ >= 28 at the header level and only appear in
-          # the import stub starting at API 28), so the final link of
-          # libggml-vulkan.so fails with "undefined symbol" when minapi is
-          # 26/27. Vulkan 1.1 fully landed in the NDK import library at API 28
-          # (Android 9), so raise minapi for the Vulkan variant only:
-          # buildozer derives android.ndk_api from android.minapi, which the
-          # recipe forwards as -DANDROID_PLATFORM=android-<api>, and the APK
-          # manifest then correctly declares minSdk 28 (an API 26/27 device
-          # cannot run a Vulkan 1.1 loader anyway). The CPU job keeps 26
-          # (prebuilt android_26 wheel).
-          sed -i 's|^android.minapi.*|android.minapi = 28|' buildozer.spec
+          # ggml-vulkan links against Vulkan 1.1 entry points. The NDK r25b
+          # libvulkan.so import stub grows these incrementally:
+          #   android-26/27 -> missing vkEnumerateInstanceVersion,
+          #     vkGetPhysicalDeviceProperties2, vkGetPhysicalDeviceFeatures2,
+          #     vkResetQueryPool;
+          #   android-28     -> the first three resolve, but vkResetQueryPool
+          #     is STILL absent (verified empirically on runs at minapi 28:
+          #     "ld: error: undefined symbol: vkResetQueryPool");
+          #   android-31     -> AOSP libvulkan.map.txt contains
+          #     "vkResetQueryPool; # introduced=31" (absent from the API 29
+          #     and 30 maps), so the android-31 stub finally exports it.
+          # Raise minapi for the Vulkan variant only so the final
+          # libggml-vulkan.so link resolves every symbol: buildozer derives
+          # android.ndk_api from android.minapi, the recipe forwards it as
+          # -DANDROID_PLATFORM=android-<api>, and the APK manifest then
+          # declares minSdk 31 (the Vulkan APK needs Android 12+; older
+          # devices use the CPU APK). android.api is 34 so 31 <= api holds.
+          # The CPU job keeps 26 (prebuilt android_26 wheel).
+          sed -i 's|^android.minapi.*|android.minapi = 31|' buildozer.spec
           grep -E '^android\.(minapi|api)' buildozer.spec
           # Pass 1: clones p4a + numpy (v1.26.4 pin) and builds hostpython3.
           # Expected to fail when numpy compiles (hostpython3 lacks Cython).
