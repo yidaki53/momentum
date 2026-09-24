@@ -1,0 +1,11 @@
+download_steps.png:60 frames, 448x252, 8 columns, 60 fps
+icon_act.png:192x192
+icon_coach.png:192x192
+icon_download.png:192x192
+icon_error.png:192x192
+icon_folder.png:192x192
+icon_info.png:192x192
+icon_result.png:192x192
+icon_stroop.png:192x192
+icon_task.png:192x192
+icon_update.png:192x192

@@ -42,7 +42,7 @@ version = 0.4.0
 requirements = python3,kivy,pillow,matplotlib,numpy==v1.26.4,certifi,llama-cpp-python,diskcache,jinja2,typing-extensions,markupsafe==3.0.3
 
 # Include the core momentum package (via symlink) and data files
-source.include_patterns = main.py,momentum/*.py,momentum/**/*.py,momentum/**/**/*.py,ENCOURAGEMENTS.md,SCIENCE.md,README.md,IMAGES.md
+source.include_patterns = main.py,momentum/*.py,momentum/**/*.py,momentum/**/**/*.py,assets/art/*.png,ENCOURAGEMENTS.md,SCIENCE.md,README.md,IMAGES.md
 
 # App icon and presplash
 icon.filename = icon.png
