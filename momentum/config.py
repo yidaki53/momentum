@@ -5,14 +5,18 @@ from __future__ import annotations
 import dataclasses
 import enum
 import json
+import logging
 import os
+import re
 import shutil
 import sys
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
-from momentum.models import AppConfig, ThemeMode, TimerCycleMode
+from momentum.models import AppConfig, ThemeMode, TimerCycleMode, WindowPosition
+
+log = logging.getLogger(__name__)
 
 
 def _is_android() -> bool:
@@ -193,16 +197,133 @@ def _cloud_candidates(provider: str) -> list[Path]:
     return candidates
 
 
+# Per-field expected types for lenient config loading. Anything not listed
+# here falls through to a best-effort assignment guarded by AppConfig's own
+# __post_init__ coercion.
+_ENUM_FIELDS = {
+    "window_position": WindowPosition,
+    "theme_mode": ThemeMode,
+    "timer_cycle_mode": TimerCycleMode,
+}
+_BOOL_FIELDS = {
+    "accessibility_large_text",
+    "accessibility_high_contrast",
+    "accessibility_reduce_visual_load",
+    "check_updates_at_startup",
+    "show_llm_welcome",
+    "llm_enabled",
+}
+_INT_FIELDS = {"last_update_check_unix"}
+_STR_FIELDS = {"llm_model"}
+_OPTIONAL_STR_FIELDS = {"db_path"}
+
+
+def _backup_corrupt_config() -> None:
+    """Preserve an unreadable config next to the original (config.json.bak).
+
+    The old loader silently discarded the file's *contents* on any parse
+    error, which could throw away a custom ``db_path`` and make the app open
+    a fresh empty database while the user's real data sat untouched at the
+    old path. The .bak copy guarantees the raw bytes always survive.
+    """
+    try:
+        bak = _CONFIG_FILE.with_name(_CONFIG_FILE.name + ".bak")
+        if not bak.exists():
+            shutil.copy2(_CONFIG_FILE, bak)
+            log.warning("Config unreadable; preserved original at %s", bak)
+    except OSError:
+        log.warning("Could not back up corrupt config at %s", _CONFIG_FILE)
+
+
+def _salvage_db_path(raw: str) -> Optional[str]:
+    """Extract ``db_path`` from raw (possibly corrupt) config text.
+
+    Last-resort regex salvage so a hard JSON parse failure still cannot lose
+    the pointer to the user's database.
+    """
+    m = re.search(r'"db_path"\s*:\s*(null|"((?:[^"\\]|\\.)*)")', raw)
+    if not m:
+        return None
+    if m.group(1) == "null":
+        return None
+    try:
+        value = json.loads('"' + m.group(2) + '"')
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def _load_config_lenient(data: dict) -> AppConfig:
+    """Build an AppConfig keeping every valid field, dropping only bad ones.
+
+    ``AppConfig(**data)`` raises ``TypeError`` on unknown keys and
+    ``ValueError`` on invalid enum values — previously either turned into a
+    *total* config reset. Now one bad field only loses that field.
+    """
+    known = {f.name for f in dataclasses.fields(AppConfig)}
+    kwargs: dict = {}
+    for key, value in data.items():
+        if key not in known:
+            continue
+        if key in _ENUM_FIELDS:
+            enum_cls = _ENUM_FIELDS[key]
+            if isinstance(value, enum_cls):
+                kwargs[key] = value
+            else:
+                try:
+                    kwargs[key] = enum_cls(value)
+                except (ValueError, KeyError, TypeError):
+                    log.warning(
+                        "Config field %s has invalid value %r; using default",
+                        key,
+                        value,
+                    )
+        elif key in _BOOL_FIELDS:
+            if isinstance(value, bool):
+                kwargs[key] = value
+            else:
+                log.warning("Config field %s is not a bool; using default", key)
+        elif key in _INT_FIELDS:
+            if isinstance(value, int) and not isinstance(value, bool):
+                kwargs[key] = value
+        elif key in _STR_FIELDS:
+            if isinstance(value, str):
+                kwargs[key] = value
+        elif key in _OPTIONAL_STR_FIELDS:
+            if value is None or isinstance(value, str):
+                kwargs[key] = value
+        else:
+            kwargs[key] = value
+    return AppConfig(**kwargs)
+
+
 def load_config() -> AppConfig:
-    """Load config from disk, returning defaults if none exists."""
+    """Load config from disk, returning defaults if none exists.
+
+    Never silently discards a partially-valid file: unknown keys and invalid
+    values fall back to defaults field-by-field, and a totally unreadable
+    file is preserved as ``config.json.bak`` while any salvageable
+    ``db_path`` is still honoured.
+    """
     _migrate_legacy_file(_CONFIG_FILE, _LEGACY_CONFIG_FILES)
-    if _CONFIG_FILE.exists():
-        try:
-            data = json.loads(_CONFIG_FILE.read_text())
-            return AppConfig(**data)
-        except (json.JSONDecodeError, Exception):
-            pass
-    return AppConfig()
+    if not _CONFIG_FILE.exists():
+        return AppConfig()
+    try:
+        raw = _CONFIG_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return AppConfig()
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise json.JSONDecodeError("config root is not an object", "<config>", 0)
+        return _load_config_lenient(data)
+    except json.JSONDecodeError:
+        _backup_corrupt_config()
+        salvaged = _salvage_db_path(raw)
+        if salvaged:
+            log.warning("Recovered db_path from corrupt config: %s", salvaged)
+            return AppConfig(db_path=salvaged)
+        return AppConfig()
 
 
 def save_config(config: AppConfig) -> Path:
@@ -335,5 +456,13 @@ def set_check_updates_at_startup(enabled: bool) -> AppConfig:
     """Persist update check preference."""
     config = load_config()
     config.check_updates_at_startup = enabled
+    save_config(config)
+    return config
+
+
+def set_llm_enabled(enabled: bool) -> AppConfig:
+    """Persist whether the optional AI Coach is enabled."""
+    config = load_config()
+    config.llm_enabled = bool(enabled)
     save_config(config)
     return config

@@ -82,8 +82,26 @@ def _get_db_path() -> Path:
 
 
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
-    """Open a connection and ensure the schema exists."""
+    """Open a connection and ensure the schema exists.
+
+    When *db_path* is not given (the default-path case), run the once-per-
+    process orphaned-database adoption first: if the default DB is empty but
+    a richer Momentum database exists at a legacy/custom location (e.g. after
+    an update changed the storage layout), adopt it instead of silently
+    starting from scratch.
+    """
     path = db_path or _get_db_path()
+    if db_path is None:
+        try:
+            from momentum import recovery
+
+            recovery.recover_default_db(path)
+        except Exception:  # never let recovery break the app's first open
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Database recovery scan failed", exc_info=True
+            )
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")

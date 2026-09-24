@@ -209,6 +209,7 @@ class AppConfig:
     check_updates_at_startup: bool = True
     last_update_check_unix: int = 0
     show_llm_welcome: bool = True
+    llm_enabled: bool = True
     llm_model: str = "tinyllama"
 
     def __post_init__(self) -> None:

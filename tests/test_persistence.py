@@ -79,6 +79,7 @@ def _write_realistic_dataset() -> None:
             check_updates_at_startup=False,
             last_update_check_unix=1700000000,
             show_llm_welcome=False,
+            llm_enabled=False,
             llm_model="qwen",
         )
     )
@@ -171,6 +172,7 @@ def test_user_data_survives_an_update_on_android(tmp_path: Path) -> None:
         assert cfg.check_updates_at_startup is False
         assert cfg.last_update_check_unix == 1700000000
         assert cfg.show_llm_welcome is False
+        assert cfg.llm_enabled is False
         assert cfg.llm_model == "qwen"
 
         conn = db.get_connection()

@@ -221,6 +221,13 @@ jobs:
           ln -sfn ../README.md README.md
           ln -sfn ../IMAGES.md IMAGES.md
 
+      # NEVER change the signing keystore/alias for this app. Android refuses
+      # to install an update whose signature differs from the installed one,
+      # forcing users to uninstall first — which wipes app-private data
+      # (tasks, test results) unless Google's Auto Backup happens to restore
+      # it. Every APK/AAB ever shipped must keep signing with this same key.
+      # (Both build-apk and build-apk-vulkan must use the identical keystore.)
+
       - name: Prepare Android signing keystore
         env:
           ANDROID_UPLOAD_KEYSTORE_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_B64 }}

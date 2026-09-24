@@ -166,6 +166,13 @@ This is also available in the GUI via Menu > Settings.
 
 By default, data is stored in `~/.local/share/momentum/momentum.db` (SQLite). This can be changed with `momentum config`. Tasks carry over between days -- there is no guilt for unfinished items.
 
+**Data survives updates.** On Android, the database and config live in the app's private storage, which the OS preserves across app updates. Two extra safety nets:
+
+- **Startup recovery** -- if the current database is empty but a Momentum database with tasks/results exists at a legacy or custom location (for example after an update changed the storage layout), the app adopts it automatically instead of starting from scratch.
+- **Export / Restore** -- Settings → Data Management has *Export backup* (saves the database + config as files you control) and *Restore backup* (brings a backup back; the previous database is kept as `momentum.db.pre-restore`).
+
+**Do not uninstall to "fix" an install problem without exporting first** -- uninstalling deletes app-private data (desktop is unaffected: it always uses `~/.local/share/momentum`). Android Auto Backup may restore data after a reinstall, but that is best-effort and can lag; an exported backup is guaranteed.
+
 ## Mobile (Android)
 
 A full-featured Kivy-based Android app is in `mobile/`. It mirrors desktop capabilities with touch-focused navigation and includes:

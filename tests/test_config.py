@@ -16,6 +16,7 @@ from momentum.config import (
     set_check_updates_at_startup,
     set_cloud_sync,
     set_db_path,
+    set_llm_enabled,
     set_theme_mode,
     set_timer_cycle_mode,
 )
@@ -59,8 +60,56 @@ class TestLoadSaveConfig:
             cfg_dir = tmp_path / "config"
             cfg_dir.mkdir(parents=True, exist_ok=True)
             (cfg_dir / "config.json").write_text("not valid json{{{")
+
             config = load_config()
             assert config.db_path is None  # falls back to default
+            # The unreadable bytes are preserved, never silently discarded.
+            assert (cfg_dir / "config.json.bak").exists()
+
+    def test_corrupt_file_salvages_db_path(self, tmp_path: Path) -> None:
+        """Even hard JSON corruption must not lose the pointer to the DB."""
+        p1, p2 = _patch_config_paths(tmp_path)
+        with p1, p2:
+            cfg_dir = tmp_path / "config"
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            (cfg_dir / "config.json").write_text(
+                '{"db_path": "/data/custom/real.db", theme_mode BROKEN{{{'
+            )
+            config = load_config()
+            assert config.db_path == "/data/custom/real.db"
+            assert (cfg_dir / "config.json.bak").exists()
+
+    def test_unknown_keys_do_not_reset_config(self, tmp_path: Path) -> None:
+        """Forward-compat: a field from a future version must not wipe db_path."""
+        p1, p2 = _patch_config_paths(tmp_path)
+        with p1, p2:
+            cfg_dir = tmp_path / "config"
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            (cfg_dir / "config.json").write_text(
+                '{"db_path": "/keep/me.db", "some_future_field": {"x": 1}}'
+            )
+            config = load_config()
+            assert config.db_path == "/keep/me.db"
+
+    def test_invalid_enum_value_keeps_other_fields(self, tmp_path: Path) -> None:
+        p1, p2 = _patch_config_paths(tmp_path)
+        with p1, p2:
+            cfg_dir = tmp_path / "config"
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            (cfg_dir / "config.json").write_text(
+                '{"db_path": "/keep/me.db", "theme_mode": "sepia-not-a-theme"}'
+            )
+            config = load_config()
+            assert config.db_path == "/keep/me.db"
+            assert config.theme_mode == ThemeMode.DARK  # default, not a crash
+
+    def test_llm_enabled_roundtrips(self, tmp_path: Path) -> None:
+        p1, p2 = _patch_config_paths(tmp_path)
+        with p1, p2:
+            set_llm_enabled(False)
+            assert load_config().llm_enabled is False
+            set_llm_enabled(True)
+            assert load_config().llm_enabled is True
 
     def test_load_migrates_legacy_android_config(self, tmp_path: Path) -> None:
         p1, p2 = _patch_config_paths(tmp_path)
