@@ -9,7 +9,10 @@ backend is missing.
 
 from __future__ import annotations
 
+import ctypes
 import logging
+import os
+import sys
 import threading
 from pathlib import Path
 from typing import Callable, Optional
@@ -17,17 +20,106 @@ from typing import Callable, Optional
 from momentum.build_info import BUILD_VARIANT
 from momentum.llm.downloader import ensure_model
 
+
+def _android_native_dir() -> Optional[Path]:
+    try:
+        from jnius import autoclass  # type: ignore[import-not-found]
+
+        activity = autoclass("org.kivy.android.PythonActivity").mActivity
+        if activity is None:
+            return None
+        native_dir = activity.getApplicationInfo().nativeLibraryDir
+        return Path(native_dir) if native_dir else None
+    except Exception:
+        log.debug("Could not locate Android nativeLibraryDir", exc_info=True)
+        return None
+
+
+def _preload_android_libraries(native_dir: Path) -> None:
+    """Load llama/ggml dependencies globally before importing llama_cpp.
+
+    ``llama_cpp.py`` uses ``LLAMA_CPP_LIB_PATH`` for libllama, while
+    ``_ggml.py`` uses ``llama_cpp/lib`` for libggml.  On Android both copies
+    can be present, but the dynamic loader still needs the dependency chain
+    registered globally.  Loading the known names in dependency order avoids
+    the intermittent ``undefined symbol``/``cannot locate`` import failure.
+    """
+    names = ("c++_shared", "ggml-base", "ggml-cpu", "ggml", "llama")
+    if BUILD_VARIANT == "vulkan":
+        names = ("c++_shared", "ggml-base", "ggml-cpu", "ggml-vulkan", "ggml", "llama")
+    mode = getattr(ctypes, "RTLD_GLOBAL", 0)
+    for name in names:
+        path = native_dir / f"lib{name}.so"
+        if not path.exists():
+            continue
+        try:
+            ctypes.CDLL(str(path), mode=mode)
+        except OSError as exc:
+            log.debug("Could not preload %s: %s", path, exc)
+
+
+def _prefer_android_native_lib_dir() -> None:
+    """Configure llama-cpp-python's native loader on Android.
+
+    The Python package contains its own ``llama_cpp/lib`` directory in the
+    APK bundle. Prefer that complete directory for both llama and ggml, and
+    preload the staged APK copies as dependencies. The APK native directory
+    remains the fallback for builds that do not retain package-side libraries.
+
+    Do not trust an inherited ``LLAMA_CPP_LIB_PATH`` blindly: p4a/launcher
+    environments have been observed to provide a stale or incomplete path.
+    Replace it on Android when the package-side directory is complete.
+    """
+    on_android = "ANDROID_ARGUMENT" in os.environ or hasattr(sys, "getandroidapilevel")
+    if not on_android:
+        return
+
+    package_root = Path(__file__).resolve().parent.parent.parent / "llama_cpp" / "lib"
+    package_complete = (package_root / "libllama.so").exists() and (
+        package_root / "libggml.so"
+    ).exists()
+    existing = os.environ.get("LLAMA_CPP_LIB_PATH")
+    if existing and Path(existing) == package_root and package_complete:
+        return
+    if package_complete:
+        os.environ["LLAMA_CPP_LIB_PATH"] = str(package_root)
+        _preload_android_libraries(package_root)
+    else:
+        native_dir = _android_native_dir()
+        if native_dir is not None and (native_dir / "libllama.so").exists():
+            os.environ["LLAMA_CPP_LIB_PATH"] = str(native_dir)
+            _preload_android_libraries(native_dir)
+    log.debug("llama native path configured: %s", os.environ.get("LLAMA_CPP_LIB_PATH"))
+
+
+log = logging.getLogger(__name__)
+
+_prefer_android_native_lib_dir()
+
 LLM_IMPORT_ERROR = ""
-try:  # Native loaders can raise RuntimeError/OSError as well as ImportError.
+try:  # Native loaders can raise several platform-specific exception types.
     from llama_cpp import Llama
 
     LLM_AVAILABLE = True
-except (ImportError, OSError, RuntimeError) as exc:
+except Exception as exc:  # keep the coach UI usable and expose the cause
     Llama = None
     LLM_AVAILABLE = False
     LLM_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
-log = logging.getLogger(__name__)
+
+def native_diagnostics() -> dict[str, object]:
+    """Return non-secret loader details for the Settings diagnostics panel."""
+    package_root = Path(__file__).resolve().parent.parent.parent / "llama_cpp" / "lib"
+    configured = os.environ.get("LLAMA_CPP_LIB_PATH")
+    return {
+        "available": LLM_AVAILABLE,
+        "import_error": LLM_IMPORT_ERROR,
+        "configured_path": configured or "",
+        "package_path": str(package_root),
+        "package_libllama": (package_root / "libllama.so").exists(),
+        "package_libggml": (package_root / "libggml.so").exists(),
+    }
+
 
 _engine_instance: Optional[LlmEngine] = None
 _engine_lock = threading.Lock()
@@ -249,6 +341,7 @@ __all__ = [
     "get_engine",
     "reset_engine",
     "is_llm_available",
+    "native_diagnostics",
     "LLM_AVAILABLE",
 ]
 

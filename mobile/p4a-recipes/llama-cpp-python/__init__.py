@@ -40,13 +40,13 @@ environment from `get_recipe_env`.
 
 import glob
 import os
-import sh
 import shutil
-from os.path import join, isfile, realpath, basename
+from os.path import basename, isfile, join, realpath
 
-from pythonforandroid.util import current_directory, ensure_dir
+import sh
+from pythonforandroid.logger import info, shprint, warning
 from pythonforandroid.recipe import PyProjectRecipe
-from pythonforandroid.logger import warning, shprint, info
+from pythonforandroid.util import current_directory, ensure_dir
 
 
 class LlamaCppPythonRecipe(PyProjectRecipe):
