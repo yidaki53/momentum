@@ -49,19 +49,51 @@ from momentum.assessments import (
 )
 from momentum.encouragement import get_break_message, get_nudge
 
-# LLM is optional on mobile; desktop always has it via pyproject.toml
+# LLM is optional on mobile; desktop normally has it via pyproject.toml.
 try:
-    from momentum.llm import DISCLAIMER, SHORT_DISCLAIMER
+    from momentum.llm import (
+        DISCLAIMER,
+        SHORT_DISCLAIMER,
+        clear_assistance_cache,
+        delete_model,
+    )
     from momentum.llm.context import build_chat_history, build_user_context
     from momentum.llm.downloader import ensure_model, is_model_downloaded, model_size_mb
-    from momentum.llm.engine import get_engine
+    from momentum.llm.engine import (
+        get_engine,
+        is_llm_available,
+        native_diagnostics,
+        reset_engine,
+    )
     from momentum.llm.prompts import build_chat_prompt, build_encouragement_prompt
 
     _LLM_AVAILABLE = True
 except ImportError:
     _LLM_AVAILABLE = False
-    DISCLAIMER = "AI Coach provides general support strategies — not professional medical advice. Consult your GP if needed."
+    DISCLAIMER = (
+        "AI Coach provides general support strategies — not professional medical "
+        "advice. Consult your GP if needed."
+    )
     SHORT_DISCLAIMER = DISCLAIMER
+
+    def clear_assistance_cache() -> None:
+        return None
+
+    def delete_model(_name: str) -> bool:
+        return False
+
+    def is_llm_available() -> bool:
+        return False
+
+    def native_diagnostics() -> dict[str, object]:
+        return {
+            "available": False,
+            "import_error": "LLM module unavailable",
+        }
+
+    def reset_engine() -> None:
+        return None
+
 
 from momentum.models import (
     ActJournalEntryCreate,
@@ -464,8 +496,8 @@ class MomentumApp:
         tests_menu.add_command(label="View Results", command=self._on_view_results)
         menubar.add_cascade(label="Tests", menu=tests_menu)
 
-        # --- AI Coach menu (opt-in; hidden if LLM unavailable) ---
-        if _LLM_AVAILABLE:
+        # --- AI Coach menu (opt-in; hidden if LLM unavailable or disabled) ---
+        if _LLM_AVAILABLE and getattr(self._config, "llm_enabled", True):
             coach_menu = tk.Menu(
                 menubar,
                 tearoff=0,
@@ -1280,6 +1312,29 @@ class MomentumApp:
         coach_frame = ttk.Frame(win)
         coach_frame.pack(fill=tk.X, padx=12)
 
+        enable_coach_var = tk.BooleanVar(value=getattr(current, "llm_enabled", True))
+
+        def _set_enable_coach():
+            val = enable_coach_var.get()
+            cfg.set_llm_enabled(val)
+            self._config.llm_enabled = val
+            clear_assistance_cache()
+            if not val:
+                reset_engine()
+
+        tk.Checkbutton(
+            coach_frame,
+            text="Enable AI Coach features",
+            variable=enable_coach_var,
+            command=_set_enable_coach,
+            bg=self._palette["bg"],
+            fg=self._palette["fg"],
+            activebackground=self._palette["bg"],
+            activeforeground=self._palette["fg"],
+            selectcolor=inputs["radio_select"],
+            font=("sans-serif", self._font_size(10)),
+        ).pack(anchor=tk.W)
+
         show_welcome_var = tk.BooleanVar(value=current.show_llm_welcome)
 
         def _set_show_welcome():
@@ -1304,11 +1359,71 @@ class MomentumApp:
         model_status = (
             "Downloaded" if is_model_downloaded(current.llm_model) else "Not downloaded"
         )
-        ttk.Label(
+        model_label = ttk.Label(
             coach_frame,
             text=f"Model: {current.llm_model} ({model_status})",
             style="Nudge.TLabel",
-        ).pack(anchor=tk.W, pady=(2, 0))
+        )
+        model_label.pack(anchor=tk.W, pady=(2, 0))
+
+        btn_row = ttk.Frame(coach_frame)
+        btn_row.pack(anchor=tk.W, pady=(4, 2))
+
+        def _delete_model():
+            if messagebox.askyesno(
+                "Delete Model",
+                f"Delete downloaded model {current.llm_model}? Engine libraries remain intact.",
+                parent=win,
+            ):
+                reset_engine()
+                deleted = delete_model(current.llm_model)
+                clear_assistance_cache()
+                model_label.configure(
+                    text=f"Model: {current.llm_model} (Not downloaded)"
+                )
+                messagebox.showinfo(
+                    "Model Deleted",
+                    "The downloaded model file has been removed."
+                    if deleted
+                    else "No model was found.",
+                    parent=win,
+                )
+
+        def _clear_chat():
+            if messagebox.askyesno(
+                "Clear Chat", "Delete all AI Coach conversation history?", parent=win
+            ):
+                count = db.delete_all_llm_chat_messages(self.conn)
+                messagebox.showinfo(
+                    "Chat Cleared", f"Deleted {count} message(s).", parent=win
+                )
+
+        def _remove_all():
+            if messagebox.askyesno(
+                "Remove All AI Data",
+                "Delete downloaded model AND clear all chat history?",
+                parent=win,
+            ):
+                reset_engine()
+                delete_model(current.llm_model)
+                clear_assistance_cache()
+                db.delete_all_llm_chat_messages(self.conn)
+                model_label.configure(
+                    text=f"Model: {current.llm_model} (Not downloaded)"
+                )
+                messagebox.showinfo(
+                    "Removed", "Model and conversation history removed.", parent=win
+                )
+
+        ttk.Button(btn_row, text="Delete model", command=_delete_model).pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        ttk.Button(btn_row, text="Clear chat", command=_clear_chat).pack(
+            side=tk.LEFT, padx=4
+        )
+        ttk.Button(btn_row, text="Remove all AI data", command=_remove_all).pack(
+            side=tk.LEFT, padx=4
+        )
 
         ttk.Label(
             coach_frame,
@@ -1472,16 +1587,25 @@ class MomentumApp:
     # ------------------------------------------------------------------
 
     def _on_help(self) -> None:
-        """Show the README in a scrollable window with rendered markdown."""
+        """Show How to Use with Quick Start at top, followed by README."""
+        quick_start = (
+            "# How to Use Momentum\n\n"
+            "A quick path through the app. You do not have to do everything at once.\n\n"
+            "1. **Add one task**: Keep it small enough to picture starting.\n"
+            "2. **Break down**: If a task feels stuck, add one or two sub-steps.\n"
+            "3. **Focus timer**: Start a short 15m focus block. Any progress counts.\n"
+            "4. **Take tests gently**: Assess when curious, not to grade yourself.\n"
+            "5. **Read the advice**: Each result provides concrete, gentle next steps.\n"
+            "6. **Reset**: Use ACT check-in or a short break when overwhelmed.\n\n"
+            "---\n\n"
+            "# Reference Guide\n\n"
+        )
         readme_path = Path(__file__).resolve().parent.parent / "README.md"
         if readme_path.exists():
-            content = readme_path.read_text(encoding="utf-8")
+            content = quick_start + readme_path.read_text(encoding="utf-8")
         else:
             content = (
-                "# Momentum\n\n"
-                "A gentle tool for executive dysfunction support.\n\n"
-                "## Commands\n\n"
-                "- **Add task** -- add something you need to do\n"
+                quick_start + "- **Add task** -- add something you need to do\n"
                 "- **Complete** -- mark a selected task as done\n"
                 "- **Break down** -- split a task into smaller steps\n"
             )
