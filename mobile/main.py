@@ -19,6 +19,7 @@ import threading
 import time as _time
 import urllib.request
 import webbrowser
+from datetime import date
 from pathlib import Path
 from typing import Callable
 
@@ -30,6 +31,7 @@ if str(_project_root) not in sys.path:
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.image import Image as CoreImage
+from kivy.graphics.texture import TextureRegion
 from kivy.lang import Builder
 from kivy.metrics import dp, sp
 from kivy.properties import (
@@ -176,25 +178,45 @@ def _get_llm_funcs() -> dict | None:
         return _LLM_FUNCS
     try:
         from momentum.llm import DISCLAIMER, SHORT_DISCLAIMER, is_llm_available
+        from momentum.llm.assist import (
+            clear_cache,
+            is_enabled,
+            is_ready,
+            request_assistance,
+        )
         from momentum.llm.context import build_chat_history, build_user_context
         from momentum.llm.downloader import (
+            delete_model,
             ensure_model,
             is_model_downloaded,
             model_size_mb,
         )
-        from momentum.llm.engine import LLM_IMPORT_ERROR, get_engine
-        from momentum.llm.prompts import build_chat_prompt
+        from momentum.llm.engine import (
+            LLM_IMPORT_ERROR,
+            get_engine,
+            native_diagnostics,
+            reset_engine,
+        )
+        from momentum.llm.prompts import build_chat_prompt, build_encouragement_prompt
 
         _LLM_FUNCS = {
             "is_llm_available": is_llm_available,
             "import_error": LLM_IMPORT_ERROR,
+            "native_diagnostics": native_diagnostics,
             "is_model_downloaded": is_model_downloaded,
             "model_size_mb": model_size_mb,
             "ensure_model": ensure_model,
             "get_engine": get_engine,
+            "reset_engine": reset_engine,
+            "delete_model": delete_model,
+            "clear_assistance_cache": clear_cache,
+            "is_assistance_enabled": is_enabled,
+            "is_assistance_ready": is_ready,
+            "request_assistance": request_assistance,
             "build_user_context": build_user_context,
             "build_chat_history": build_chat_history,
             "build_chat_prompt": build_chat_prompt,
+            "build_encouragement_prompt": build_encouragement_prompt,
             "SHORT_DISCLAIMER": SHORT_DISCLAIMER,
             "DISCLAIMER": DISCLAIMER,
         }
@@ -202,6 +224,107 @@ def _get_llm_funcs() -> dict | None:
         log.debug("LLM module unavailable on this runtime", exc_info=True)
         _LLM_FUNCS = None
     return _LLM_FUNCS
+
+def _coach_ready() -> bool:
+    """Return whether optional AI snippets can be generated right now."""
+    funcs = _get_llm_funcs()
+    return bool(
+        funcs
+        and funcs["is_assistance_enabled"]()
+        and funcs["is_assistance_ready"]()
+    )
+
+
+def _request_ai_text(
+    instruction: str,
+    *,
+    conn=None,
+    cache_key: str,
+    on_done,
+    on_error=None,
+) -> bool:
+    """Start one optional AI request and marshal callbacks to Kivy's UI thread."""
+    funcs = _get_llm_funcs()
+    if not _coach_ready() or funcs is None:
+        return False
+
+    def _done(text: str) -> None:
+        Clock.schedule_once(lambda _dt: on_done(text), 0)
+
+    def _error(exc: Exception) -> None:
+        if on_error is not None:
+            Clock.schedule_once(lambda _dt, error=exc: on_error(error), 0)
+
+    funcs["request_assistance"](
+        instruction,
+        conn=conn,
+        cache_key=cache_key,
+        on_done=_done,
+        on_error=_error,
+        max_tokens=180,
+        temperature=0.6,
+    )
+    return True
+
+
+def _add_ai_insight(
+    container: BoxLayout,
+    instruction: str,
+    *,
+    conn,
+    cache_key: str,
+    title: str = "Coach perspective",
+) -> None:
+    """Add an optional, non-blocking AI insight control to a screen/popup."""
+    if not _coach_ready():
+        return
+    panel = BoxLayout(
+        orientation="vertical",
+        size_hint_y=None,
+        spacing=dp(6),
+        padding=[dp(8), dp(8)],
+    )
+    panel.bind(minimum_height=panel.setter("height"))
+    panel.add_widget(_make_label(title, font_size=sp(14), bold=True, color=_ACCENT))
+    output = _make_label(
+        "The coach can add a personalised next step here.",
+        font_size=sp(12),
+        color=_MUTED,
+    )
+    panel.add_widget(output)
+    button = Button(
+        text="Get coach perspective",
+        size_hint_y=None,
+        height=dp(40),
+        background_color=list(_ACCENT),
+        color=list(_BUTTON_TEXT),
+        font_size=sp(12),
+    )
+
+    def _request(_):
+        button.disabled = True
+        output.text = "The coach is thinking about your Momentum data..."
+        started = _request_ai_text(
+            instruction,
+            conn=conn,
+            cache_key=cache_key,
+            on_done=lambda text: (
+                setattr(output, "text", text),
+                setattr(button, "disabled", False),
+            ),
+            on_error=lambda exc: (
+                setattr(output, "text", "The coach could not add a perspective yet."),
+                setattr(button, "disabled", False),
+            ),
+        )
+        if not started:
+            button.disabled = False
+            output.text = "The coach is not ready yet."
+
+    button.bind(on_release=_request)
+    panel.add_widget(button)
+    container.add_widget(panel)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -475,6 +598,91 @@ def _render_markdown(container, md_text):
             _add_line_with_links(s)
 
 
+def _art_asset(name: str) -> Path:
+    """Locate a bundled popup asset on desktop and Android."""
+    candidates = [
+        Path(os.environ.get("ANDROID_PRIVATE", ".")) / "assets" / "art" / name,
+        Path(__file__).resolve().parent / "assets" / "art" / name,
+        _project_root / "mobile" / "assets" / "art" / name,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+class PopupArt(KivyImage):
+    """A small popup illustration, optionally animated from a frame atlas."""
+
+    def __init__(self, kind: str = "info", *, animated: bool = False, **kwargs):
+        self.kind = kind
+        self._atlas = None
+        self._frame = 0
+        self._event = None
+        super().__init__(
+            source=str(_art_asset(f"icon_{kind}.png")),
+            allow_stretch=True,
+            keep_ratio=True,
+            **kwargs,
+        )
+        atlas = _art_asset("download_steps.png")
+        if animated and atlas.exists():
+            try:
+                self._atlas = CoreImage(str(atlas))
+                self.texture = self._texture_region(0)
+                self._event = Clock.schedule_interval(self._advance, 1 / 60)
+            except Exception:
+                log.debug("Could not load popup animation", exc_info=True)
+                self._atlas = None
+
+    def _texture_region(self, frame: int):
+        assert self._atlas is not None
+        cols = HERO_ATLAS_COLS
+        rows = HERO_ATLAS_FRAMES // cols
+        x = (frame % cols) * HERO_FRAME_WIDTH / self._atlas.width
+        y = (rows - 1 - frame // cols) * HERO_FRAME_HEIGHT / self._atlas.height
+        return TextureRegion(
+            self._atlas.texture,
+            x,
+            y,
+            HERO_FRAME_WIDTH / self._atlas.width,
+            HERO_FRAME_HEIGHT / self._atlas.height,
+        )
+
+    def _advance(self, _dt: float) -> None:
+        if self._atlas is None:
+            return
+        self._frame = (self._frame + 1) % HERO_ATLAS_FRAMES
+        self.texture = self._texture_region(self._frame)
+
+    def stop(self, *_args) -> None:
+        if self._event is not None:
+            self._event.cancel()
+            self._event = None
+
+
+HERO_ATLAS_COLS = 8
+HERO_ATLAS_FRAMES = 60
+HERO_FRAME_WIDTH = 448
+HERO_FRAME_HEIGHT = 252
+
+
+def _add_popup_art(
+    content: BoxLayout,
+    kind: str,
+    *,
+    animated: bool = False,
+    height: int | None = None,
+) -> PopupArt | None:
+    """Add a visual to a popup, respecting reduced-motion preferences."""
+    app = App.get_running_app()
+    if app is not None and app.reduce_visual_load:
+        animated = False
+    art = PopupArt(kind, animated=animated, size_hint_y=None, height=height or dp(88))
+    content.add_widget(art)
+    return art
+
+
 def _show_error_popup(title: str, text: str) -> None:
     """Display a consistent error popup for recoverable UI callback failures."""
     app = App.get_running_app()
@@ -482,6 +690,7 @@ def _show_error_popup(title: str, text: str) -> None:
     accent = list(app.accent_color) if app else list(_ACCENT)
     button_text = list(app.button_text_color) if app else list(_BUTTON_TEXT)
     content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+    art = _add_popup_art(content, "error")
     label = Label(text=text, font_size=sp(13), color=fg, text_size=(dp(240), None), size_hint_y=None)
     label.bind(texture_size=lambda inst, val: setattr(inst, 'height', val[1]))
     content.add_widget(label)
@@ -492,7 +701,9 @@ def _show_error_popup(title: str, text: str) -> None:
         background_color=accent,
         color=button_text,
     )
-    popup = Popup(title=title, content=content, size_hint=(0.86, None), height=dp(220))
+    popup = Popup(title=title, content=content, size_hint=(0.86, None), height=dp(320))
+    if art is not None:
+        popup.bind(on_dismiss=art.stop)
     close.bind(on_release=lambda _: popup.dismiss())
     content.add_widget(close)
     popup.open()
@@ -505,6 +716,7 @@ def _show_info_popup(title: str, text: str) -> None:
     accent = list(app.accent_color) if app else list(_ACCENT)
     button_text = list(app.button_text_color) if app else list(_BUTTON_TEXT)
     content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+    art = _add_popup_art(content, "info")
     label = Label(text=text, font_size=sp(13), color=fg, text_size=(dp(240), None), size_hint_y=None)
     label.bind(texture_size=lambda inst, val: setattr(inst, 'height', val[1]))
     content.add_widget(label)
@@ -519,9 +731,11 @@ def _show_info_popup(title: str, text: str) -> None:
         title=title,
         content=content,
         size_hint=(0.86, None),
-        height=dp(220),
+        height=dp(320),
         auto_dismiss=True,
     )
+    if art is not None:
+        popup.bind(on_dismiss=art.stop)
     close.bind(on_release=lambda _: popup.dismiss())
     content.add_widget(close)
     popup.open()
@@ -601,6 +815,7 @@ def _show_update_popup(version: str, url: str, assets=()) -> None:
     secondary = list(app.secondary_button_color) if app else [0.4, 0.4, 0.6, 1]
     button_text = list(app.button_text_color) if app else list(_BUTTON_TEXT)
     content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+    art = _add_popup_art(content, "update", height=dp(64))
     label = Label(
         text=(
             f"Momentum {version} is available.\n\n"
@@ -674,8 +889,10 @@ def _show_update_popup(version: str, url: str, assets=()) -> None:
     buttons.add_widget(close_btn)
     content.add_widget(buttons)
     popup = Popup(
-        title="Update available", content=content, size_hint=(0.92, None), height=dp(260)
+        title="Update available", content=content, size_hint=(0.92, None), height=dp(360)
     )
+    if art is not None:
+        popup.bind(on_dismiss=art.stop)
     popup.open()
 
 
@@ -1032,7 +1249,9 @@ KV = """
         Button:
             text: 'AI Coach'
             size_hint_y: None
-            height: dp(44)
+            height: dp(44) if app.llm_enabled else dp(0)
+            opacity: 1 if app.llm_enabled else 0
+            disabled: not app.llm_enabled
             background_color: app.accent_color
             color: app.button_text_color
             font_size: sp(14) * app.font_scale
@@ -1095,11 +1314,17 @@ KV = """
                 size_hint_y: None
                 height: dp(104) * app.font_scale
                 padding: [dp(10), dp(10)]
+                is_focusable: True
+                input_type: 'text'
+                keyboard_suggestions: True
+                allow_copy: True
+                write_tab: False
                 multiline: True
                 font_size: sp(16) * app.font_scale
                 background_color: app.input_bg_color
                 foreground_color: app.text_color
                 hint_text: 'Type a message to your AI Coach...'
+                on_touch_down: root.focus_coach_input()
             BoxLayout:
                 size_hint_y: None
                 height: dp(44)
@@ -1437,6 +1662,7 @@ class HomeScreen(Screen):
         self._selected_task_id = None
         self._auto_cycle_task_id = None
         self._banner_loaded = False
+        self._ai_nudge_requested = False
 
     def on_enter(self):
         def _load() -> None:
@@ -1444,6 +1670,7 @@ class HomeScreen(Screen):
                 self.conn = db.get_connection()
             self._refresh_profile_ui()
             self.nudge_text = personalised_nudge(get_nudge(), self._profile())
+            Clock.schedule_once(lambda _dt: self._refresh_ai_nudge(), 0)
             Clock.schedule_once(lambda _dt: self.refresh_all(), 0)
             self._sync_global_timer_state()
             if not self._banner_loaded:
@@ -1457,6 +1684,24 @@ class HomeScreen(Screen):
                     threading.Thread(target=self._fetch_banner, daemon=True).start()
 
         _run_ui_action(_load, prefix="Could not load the home screen.")
+
+    def _refresh_ai_nudge(self) -> None:
+        """Replace the static home nudge with a local, personalised one when ready."""
+        if self._ai_nudge_requested or self.conn is None or not _coach_ready():
+            return
+        self._ai_nudge_requested = True
+
+        def _done(text: str) -> None:
+            self.nudge_text = text
+
+        _request_ai_text(
+            "Write two or three warm, concrete sentences of personalised encouragement "
+            "for the user's current Momentum tasks, streak and recent activity. "
+            "Offer one tiny next step if that feels useful. Do not use markdown.",
+            conn=self.conn,
+            cache_key=f"home-nudge:{date.today().isoformat()}",
+            on_done=_done,
+        )
 
     def _profile(self):
         latest_bisbas = db.list_assessments(
@@ -1708,11 +1953,14 @@ class HomeScreen(Screen):
             data={"conn_set": self.conn is not None},
         )
         content = BoxLayout(orientation="vertical", spacing=10, padding=10)
+        art = _add_popup_art(content, "task", height=dp(64))
         ti = TextInput(hint_text="What do you need to do?", multiline=False,
                        size_hint_y=None, height=dp(44))
         content.add_widget(ti)
         btn_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=8)
-        popup = Popup(title="Add task", content=content, size_hint=(0.9, 0.3))
+        popup = Popup(title="Add task", content=content, size_hint=(0.9, 0.4))
+        if art is not None:
+            popup.bind(on_dismiss=art.stop)
 
         def on_add(_):
             title = ti.text.strip()
@@ -1748,12 +1996,22 @@ class HomeScreen(Screen):
         if task is None:
             return
         content = BoxLayout(orientation="vertical", spacing=10, padding=10)
-        content.add_widget(Label(text=f'Breaking down: "{task.title}"', font_size=sp(14)))
+        content.add_widget(_make_label(f'Breaking down: "{task.title}"', font_size=sp(14)))
         ti = TextInput(hint_text="Add a sub-step", multiline=False,
                        size_hint_y=None, height=dp(44))
         content.add_widget(ti)
+        ai_placeholder = Widget(size_hint_y=None, height=dp(0))
+        content.add_widget(ai_placeholder)
+        _add_ai_insight(
+            content,
+            f"Suggest two or three tiny, realistic first steps for breaking down the task: {task.title}. "
+            "Keep each step concrete and short.",
+            conn=self.conn,
+            cache_key=f"task-breakdown:{task.id}:{task.title}",
+            title="Coach suggestion",
+        )
         btn_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=8)
-        popup = Popup(title="Break down", content=content, size_hint=(0.9, 0.35))
+        popup = Popup(title="Break down", content=content, size_hint=(0.9, 0.55))
 
         def on_add(_):
             step = ti.text.strip()
@@ -2055,6 +2313,7 @@ class HomeScreen(Screen):
             app = App.get_running_app()
             button_text = list(app.button_text_color)
             content = BoxLayout(orientation="vertical", spacing=8, padding=10)
+            act_art = _add_popup_art(content, "act", height=dp(64))
             content.add_widget(_make_label(
                 "ACT Momentum Reset",
                 font_size=sp(15),
@@ -2110,6 +2369,8 @@ class HomeScreen(Screen):
                 size_hint=(0.94, 0.92),
                 auto_dismiss=False,
             )
+            if act_art is not None:
+                popup.bind(on_dismiss=act_art.stop)
 
             def _save(_btn) -> None:
                 values = {k: v.text.strip() for k, v in fields.items()}
@@ -2218,6 +2479,7 @@ class HomeScreen(Screen):
                     inner.add_widget(Widget(size_hint_y=None, height=dp(8)))
             scroll.add_widget(inner)
             content = BoxLayout(orientation="vertical", padding=10, spacing=8)
+            history_art = _add_popup_art(content, "act", height=dp(64))
             content.add_widget(scroll)
             close = Button(text="Close", size_hint_y=None, height=dp(44))
             popup = Popup(
@@ -2225,6 +2487,8 @@ class HomeScreen(Screen):
                 content=content,
                 size_hint=(0.94, 0.88),
             )
+            if history_art is not None:
+                popup.bind(on_dismiss=history_art.stop)
             close.bind(on_release=lambda _: popup.dismiss())
             content.add_widget(close)
             popup.open()
@@ -2281,6 +2545,12 @@ class CoachScreen(Screen):
     def _home_conn(self):
         home = self.manager.get_screen("home")
         return home.conn
+
+    def focus_coach_input(self, *_args) -> None:
+        """Make the draft field explicitly focusable on Android/touch builds."""
+        text_input = self.ids.coach_input
+        if not text_input.disabled:
+            text_input.focus = True
 
     def on_enter(self):
         if self.busy:
@@ -2374,6 +2644,7 @@ class CoachScreen(Screen):
         self.busy = True
         size_mb = funcs["model_size_mb"](model_name)
         content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+        art = _add_popup_art(content, "download", animated=True, height=dp(116))
         content.add_widget(_make_label(
             f"Downloading {model_name} model (~{size_mb} MB)...",
             font_size=sp(13),
@@ -2385,9 +2656,11 @@ class CoachScreen(Screen):
         popup = Popup(
             title="Downloading AI Model",
             content=content,
-            size_hint=(0.9, 0.4),
+            size_hint=(0.9, 0.55),
             auto_dismiss=False,
         )
+        if art is not None:
+            popup.bind(on_dismiss=art.stop)
         popup.open()
 
         def _update_progress(downloaded: int, total: int) -> None:
@@ -2780,6 +3053,69 @@ class SettingsScreen(ScrollScreen):
         for cb in _access_cbs:
             cb.bind(active=_apply_accessibility)
 
+        c.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        c.add_widget(_make_label("AI Coach", font_size=sp(16), bold=True, color=accent))
+        coach_row, coach_cb = _make_check_row(
+            "Enable AI Coach",
+            active=bool(getattr(current, "llm_enabled", True)),
+            font_size=sp(13),
+        )
+        c.add_widget(coach_row)
+        coach_status = _get_llm_funcs()
+        if coach_status is None:
+            status_text = "Coach modules unavailable on this build."
+        else:
+            state = {
+                "enabled": coach_status["is_assistance_enabled"](),
+                "engine": coach_status["is_llm_available"](),
+                "downloaded": coach_status["is_model_downloaded"](current.llm_model),
+            }
+            if not state["enabled"]:
+                status_text = "Disabled. The coach button and suggestions are hidden."
+            elif not state["engine"]:
+                status_text = "Engine unavailable. Install a build with the native coach engine."
+            elif not state["downloaded"]:
+                status_text = "Engine ready; download the model from the coach screen to begin."
+            else:
+                status_text = "Ready. Suggestions use only local data on this device."
+        c.add_widget(_make_label(status_text, font_size=sp(11), color=muted))
+        coach_actions = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        delete_model_btn = Button(
+            text="Delete model",
+            font_size=sp(11) * font_scale,
+            background_color=list(neutral),
+            color=list(button_text),
+        )
+        delete_model_btn.bind(on_release=lambda _: self._delete_model())
+        clear_chat_btn = Button(
+            text="Clear chat",
+            font_size=sp(11) * font_scale,
+            background_color=list(neutral),
+            color=list(button_text),
+        )
+        clear_chat_btn.bind(on_release=lambda _: self._clear_coach_chat())
+        coach_actions.add_widget(delete_model_btn)
+        coach_actions.add_widget(clear_chat_btn)
+        c.add_widget(coach_actions)
+        remove_ai_btn = Button(
+            text="Remove all AI data",
+            size_hint_y=None,
+            height=dp(40),
+            background_color=list(danger),
+            color=list(button_text),
+            font_size=sp(11) * font_scale,
+        )
+        remove_ai_btn.bind(on_release=lambda _: self._remove_all_ai_data())
+        c.add_widget(remove_ai_btn)
+        c.add_widget(_make_label(
+            "Turning the coach off hides its button and suggestions. The native "
+            "engine remains inside the APK, but no model is loaded or used.",
+            font_size=sp(11), color=muted,
+        ))
+
+        for cb in [coach_cb]:
+            cb.bind(active=lambda inst, val: self._set_llm_enabled(val))
+
         # -- Updates --
         c.add_widget(Widget(size_hint_y=None, height=dp(12)))
         c.add_widget(_make_label("Updates", font_size=sp(16), bold=True, color=accent))
@@ -2853,6 +3189,33 @@ class SettingsScreen(ScrollScreen):
         del_row.add_widget(btn_del_results)
         c.add_widget(del_row)
 
+        # -- Backup & restore --
+        c.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        backup_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        btn_export = Button(
+            text="Export backup",
+            font_size=sp(11) * font_scale,
+            background_color=list(accent),
+            color=list(button_text),
+        )
+        btn_export.bind(on_release=lambda _: self._export_backup())
+        backup_row.add_widget(btn_export)
+        btn_restore = Button(
+            text="Restore backup",
+            font_size=sp(11) * font_scale,
+            background_color=list(neutral),
+            color=list(button_text),
+        )
+        btn_restore.bind(on_release=lambda _: self._restore_backup())
+        backup_row.add_widget(btn_restore)
+        c.add_widget(backup_row)
+        c.add_widget(_make_label(
+            "Export saves your tasks, results and settings as files you control. "
+            "Restore brings them back (your current data is kept as "
+            "momentum.db.pre-restore).",
+            font_size=sp(11), color=muted,
+        ))
+
         # -- Browse & delete individual entries --
         c.add_widget(Widget(size_hint_y=None, height=dp(8)))
         c.add_widget(_make_label(
@@ -2889,6 +3252,106 @@ class SettingsScreen(ScrollScreen):
         c.add_widget(reset_btn)
         c.add_widget(Widget(size_hint_y=None, height=dp(20)))
 
+    def _set_llm_enabled(self, enabled: bool) -> None:
+        cfg.set_llm_enabled(enabled)
+        app = App.get_running_app()
+        if app is not None:
+            app.llm_enabled = enabled
+        funcs = _get_llm_funcs()
+        if funcs is not None:
+            funcs["clear_assistance_cache"]()
+            if not enabled:
+                funcs["reset_engine"]()
+        self._refresh_home_runtime_state()
+
+    def _delete_model(self) -> None:
+        funcs = _get_llm_funcs()
+        if funcs is None:
+            self._show_msg("Coach unavailable", "The coach modules are not available.")
+            return
+        app = App.get_running_app()
+        danger = list(app.danger_button_color) if app else [0.55, 0.35, 0.35, 1]
+        content = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
+        content.add_widget(_make_label(
+            "Delete the downloaded coach model? Native engine libraries remain in the APK.",
+            font_size=sp(13),
+        ))
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+        no = Button(text="Cancel")
+        yes = Button(text="Delete model", background_color=danger)
+        row.add_widget(no)
+        row.add_widget(yes)
+        content.add_widget(row)
+        popup = Popup(title="Delete coach model", content=content, size_hint=(0.9, 0.35), auto_dismiss=False)
+
+        def _delete(_):
+            popup.dismiss()
+            funcs["reset_engine"]()
+            deleted = funcs["delete_model"](cfg.load_config().llm_model)
+            funcs["clear_assistance_cache"]()
+            self._show_msg("Model deleted", "The downloaded model was removed." if deleted else "No downloaded model was present.")
+
+        no.bind(on_release=lambda _: popup.dismiss())
+        yes.bind(on_release=_delete)
+        popup.open()
+
+    def _clear_coach_chat(self) -> None:
+        home = self.manager.get_screen("home")
+        if home.conn is None:
+            return
+        content = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
+        content.add_widget(_make_label("Delete all saved coach conversations?", font_size=sp(13)))
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+        no = Button(text="Cancel")
+        app = App.get_running_app()
+        danger = list(app.danger_button_color) if app else [0.55, 0.35, 0.35, 1]
+        yes = Button(text="Clear chat", background_color=danger)
+        row.add_widget(no)
+        row.add_widget(yes)
+        content.add_widget(row)
+        popup = Popup(title="Clear coach chat", content=content, size_hint=(0.9, 0.35), auto_dismiss=False)
+
+        def _clear(_):
+            popup.dismiss()
+            count = db.delete_all_llm_chat_messages(home.conn)
+            self._show_msg("Chat cleared", f"Deleted {count} coach message(s).")
+
+        no.bind(on_release=lambda _: popup.dismiss())
+        yes.bind(on_release=_clear)
+        popup.open()
+
+    def _remove_all_ai_data(self) -> None:
+        content = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
+        content.add_widget(_make_label(
+            "Delete the downloaded model and all coach conversations? This cannot be undone.",
+            font_size=sp(13),
+        ))
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+        no = Button(text="Cancel")
+        app = App.get_running_app()
+        danger = list(app.danger_button_color) if app else [0.55, 0.35, 0.35, 1]
+        yes = Button(text="Remove all", background_color=danger)
+        row.add_widget(no)
+        row.add_widget(yes)
+        content.add_widget(row)
+        popup = Popup(title="Remove AI data", content=content, size_hint=(0.9, 0.4), auto_dismiss=False)
+
+        def _remove(_):
+            popup.dismiss()
+            funcs = _get_llm_funcs()
+            home = self.manager.get_screen("home")
+            if funcs is not None:
+                funcs["reset_engine"]()
+                funcs["delete_model"](cfg.load_config().llm_model)
+                funcs["clear_assistance_cache"]()
+            if home.conn is not None:
+                db.delete_all_llm_chat_messages(home.conn)
+            self._show_msg("AI data removed", "The model and coach conversations were deleted.")
+
+        no.bind(on_release=lambda _: popup.dismiss())
+        yes.bind(on_release=_remove)
+        popup.open()
+
     def _sync(self, provider):
         result = cfg.set_cloud_sync(provider)
         if result is None:
@@ -2900,6 +3363,106 @@ class SettingsScreen(ScrollScreen):
         self._db_label.text = result.db_path or ""
         self._reconnect()
         self._show_msg("Sync Configured", f"Database: {result.db_path}")
+
+    def _export_backup(self):
+        """Copy DB + config to a user-chosen folder (dir chooser)."""
+        from momentum import recovery
+
+        initial = Path("/storage/emulated/0") if Path("/storage/emulated/0").exists() else cfg.get_db_path().parent
+        chooser = FileChooserListView(path=str(initial), dirselect=True, multiselect=False)
+        content = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(8))
+        content.add_widget(chooser)
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        cancel = Button(text="Cancel")
+        confirm = Button(text="Export here", background_color=list(_ACCENT))
+        row.add_widget(cancel)
+        row.add_widget(confirm)
+        content.add_widget(row)
+        popup = Popup(title="Export Backup", content=content, size_hint=(0.94, 0.82))
+
+        def _do(_):
+            dest = Path(chooser.selection[0] if chooser.selection else chooser.path)
+            popup.dismiss()
+            try:
+                saved = recovery.export_backup(dest)
+                self._show_msg("Export complete", f"Backup saved to:\n{saved}")
+            except Exception as exc:
+                _show_error_popup("Export failed", str(exc))
+
+        cancel.bind(on_release=lambda _: popup.dismiss())
+        confirm.bind(on_release=_do)
+        popup.open()
+
+    def _restore_backup(self):
+        """Pick a previously exported .db file and restore over the current DB."""
+        from momentum import recovery
+
+        app = App.get_running_app()
+        danger = list(app.danger_button_color) if app else [0.55, 0.35, 0.35, 1]
+
+        def _open():
+            initial = Path("/storage/emulated/0") if Path("/storage/emulated/0").exists() else cfg.get_db_path().parent
+            chooser = FileChooserListView(path=str(initial), dirselect=False, multiselect=False,
+                                          filters=["momentum-backup-*.db", "*.db"])
+            content = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(8))
+            content.add_widget(chooser)
+            row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+            cancel = Button(text="Cancel")
+            confirm = Button(text="Restore this file", background_color=list(_ACCENT))
+            row.add_widget(cancel)
+            row.add_widget(confirm)
+            content.add_widget(row)
+            popup = Popup(title="Restore Backup", content=content, size_hint=(0.94, 0.82))
+
+            def _do(_):
+                selection = chooser.selection[0] if chooser.selection else None
+                popup.dismiss()
+                if not selection:
+                    self._show_msg("Nothing selected", "Tap a backup file first.")
+                    return
+                _confirm_restore(Path(selection))
+
+            cancel.bind(on_release=lambda _: popup.dismiss())
+            confirm.bind(on_release=_do)
+            popup.open()
+
+        def _confirm_restore(path: Path):
+            confirm_content = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(10))
+            confirm_content.add_widget(_make_label(
+                f"Replace your current tasks and results with:\n{path.name}\n\n"
+                "Your current data is saved as momentum.db.pre-restore first.",
+                font_size=sp(13),
+            ))
+            btns = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+            no = Button(text="Cancel")
+            yes = Button(text="Restore", background_color=list(danger))
+            btns.add_widget(no)
+            btns.add_widget(yes)
+            confirm_content.add_widget(btns)
+            confirm_popup = Popup(title="Confirm Restore", content=confirm_content,
+                                  size_hint=(0.9, 0.4), auto_dismiss=False)
+            no.bind(on_release=lambda _: confirm_popup.dismiss())
+
+            def _really(_):
+                confirm_popup.dismiss()
+                try:
+                    recovery.restore_backup(path)
+                except ValueError as exc:
+                    _show_error_popup("Restore failed", str(exc))
+                    return
+                except Exception as exc:
+                    _show_error_popup("Restore failed", f"{exc}")
+                    return
+                self._reconnect()
+                self._show_msg(
+                    "Restore complete",
+                    "Your backup has been restored. Previous data was kept as momentum.db.pre-restore.",
+                )
+
+            yes.bind(on_release=_really)
+            confirm_popup.open()
+
+        _run_ui_action(_open, prefix="Could not open the restore picker.")
 
     def _browse_custom_path(self):
         initial = self._path_input.text.strip()
@@ -3119,6 +3682,36 @@ class HowToScreen(ScrollScreen):
     def on_enter(self):
         c = self.ids.content
         c.clear_widgets()
+        c.add_widget(_make_label("How to use Momentum", font_size=sp(21), bold=True, color=_ACCENT))
+        c.add_widget(_make_label(
+            "A quick path through the app. You do not have to do everything at once.",
+            font_size=sp(12), color=_MUTED,
+        ))
+        steps = (
+            "1. Add one task. Keep it small enough to picture starting.",
+            "2. Select the task and choose Break down if the next step is unclear.",
+            "3. Start a short focus block. A completed step is still progress.",
+            "4. Take a test only when you want a fresh picture, not as a grade.",
+            "5. Read the plain-language result, then choose one next move.",
+            "6. Use ACT, the coach, or a break when you need a reset.",
+        )
+        for step in steps:
+            c.add_widget(_make_label(step, font_size=sp(13), color=_TEXT))
+            c.add_widget(Widget(size_hint_y=None, height=dp(4)))
+        home = self.manager.get_screen("home")
+        if home.conn is None:
+            home.conn = db.get_connection()
+        _add_ai_insight(
+            c,
+            "Based on the user's current Momentum data, give two or three practical "
+            "first steps for using the app today. Be kind, concrete, and brief.",
+            conn=home.conn,
+            cache_key=f"help-personalised:{date.today().isoformat()}",
+            title="Personalised guidance",
+        )
+        c.add_widget(Widget(size_hint_y=None, height=dp(10)))
+        c.add_widget(_make_label("Reference guide", font_size=sp(16), bold=True, color=_ACCENT))
+        c.add_widget(Widget(size_hint_y=None, height=dp(6)))
         _render_markdown(c, _find_md("README.md"))
 
 
@@ -3363,8 +3956,17 @@ class BdefsScreen(Screen):
             advice = domain_advice(d, s, n_qs * 4)
             inner.add_widget(_make_label(d, font_size=sp(13), bold=True, color=_ACCENT))
             inner.add_widget(_make_label(advice, font_size=sp(11), color=_MUTED))
+        _add_ai_insight(
+            inner,
+            f"Explain the user's BDEFS result of {saved.score}/{saved.max_score} in plain "
+            "language. Mention one realistic next step and do not diagnose them.",
+            conn=home.conn,
+            cache_key=f"assessment:bdefs:{saved.id}",
+            title="Coach perspective on this result",
+        )
         scroll.add_widget(inner)
         content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+        result_art = _add_popup_art(content, "result", height=dp(64))
         chart_funcs = _get_chart_funcs()
         if chart_funcs is not None:
             try:
@@ -3387,6 +3989,8 @@ class BdefsScreen(Screen):
         content.add_widget(scroll)
         close = Button(text="Close", size_hint_y=None, height=dp(44))
         popup = Popup(title="Assessment Result", content=content, size_hint=(0.9, 0.75))
+        if result_art is not None:
+            popup.bind(on_dismiss=result_art.stop)
         close.bind(on_release=lambda _: popup.dismiss())
         content.add_widget(close)
         popup.open()
@@ -3520,9 +4124,18 @@ class BisbasScreen(Screen):
             font_size=sp(12),
             color=_MUTED,
         ))
+        _add_ai_insight(
+            inner,
+            f"Explain the user's BIS/BAS result of {saved.score}/{saved.max_score} in plain "
+            "language, connect it to their current tasks, and suggest one small next step.",
+            conn=home.conn,
+            cache_key=f"assessment:bisbas:{saved.id}",
+            title="Coach perspective on this result",
+        )
         scroll.add_widget(inner)
 
         content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+        result_art = _add_popup_art(content, "result", height=dp(64))
         chart_funcs = _get_chart_funcs()
         if chart_funcs is not None:
             try:
@@ -3544,6 +4157,8 @@ class BisbasScreen(Screen):
         content.add_widget(scroll)
         close = Button(text="Close", size_hint_y=None, height=dp(44))
         popup = Popup(title="BIS/BAS Result", content=content, size_hint=(0.9, 0.75))
+        if result_art is not None:
+            popup.bind(on_dismiss=result_art.stop)
         close.bind(on_release=lambda _: popup.dismiss())
         content.add_widget(close)
         popup.open()
@@ -3671,9 +4286,21 @@ class StroopScreen(Screen):
         self.option_4_text = ""
 
         content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+        result_art = _add_popup_art(content, "stroop", height=dp(64))
         content.add_widget(_make_label(msg, font_size=sp(13)))
+        _add_ai_insight(
+            content,
+            f"Explain this Stroop result ({saved.score}/{saved.max_score}, {result.accuracy_pct:.0f}% "
+            f"accuracy, {avg_ms} ms average response) without medical claims, then suggest a "
+            "gentle next step for attention or task initiation.",
+            conn=home.conn,
+            cache_key=f"assessment:stroop:{saved.id}",
+            title="Coach perspective on this result",
+        )
         close = Button(text="Close", size_hint_y=None, height=dp(44))
-        popup = Popup(title="Stroop Result", content=content, size_hint=(0.9, 0.5))
+        popup = Popup(title="Stroop Result", content=content, size_hint=(0.9, 0.75))
+        if result_art is not None:
+            popup.bind(on_dismiss=result_art.stop)
 
         def _close(_):
             popup.dismiss()
@@ -3707,6 +4334,15 @@ class ResultsScreen(ScrollScreen):
             RESULTS_GUIDE, font_size=sp(11), color=_MUTED,
         ))
         c.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        _add_ai_insight(
+            c,
+            "Review the user's recent tasks, focus sessions, and assessment history. "
+            "Identify one useful pattern and suggest one small, realistic next step. "
+            "Do not diagnose or invent details that are not in the data.",
+            conn=home.conn,
+            cache_key=f"history-insight:{len(results)}:{results[0].id if results else 0}",
+            title="Coach insight on your history",
+        )
 
         if not results:
             c.add_widget(_make_label(
@@ -3871,6 +4507,7 @@ class MomentumApp(App):
     secondary_button_color = ListProperty(list(_PALETTE["secondary_button"]))
     danger_button_color = ListProperty(list(_PALETTE["danger_button"]))
     font_scale = NumericProperty(1.0)
+    llm_enabled = BooleanProperty(True)
     reduce_visual_load = BooleanProperty(False)
     timer_active = BooleanProperty(False)
     active_timer_label = StringProperty("Focus")
@@ -3905,6 +4542,7 @@ class MomentumApp(App):
         self.danger_button_color = list(_PALETTE["danger_button"])
         self.font_scale = 1.35 if _APP_CFG.accessibility_large_text else 1.0
         self.reduce_visual_load = _APP_CFG.accessibility_reduce_visual_load
+        self.llm_enabled = _APP_CFG.llm_enabled
 
     def build(self):
         from kivy.core.window import Window
