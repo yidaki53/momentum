@@ -388,6 +388,14 @@ jobs:
           mkdir -p "$HP_SITE"
           pip install --target="$HP_SITE" Cython==0.29.36
 
+          # Compile momentum's *own* Cython extensions for the target ABI. p4a only
+          # cythonizes recipe sources, so without this the APK ships pure Python and
+          # silently falls back in scoring.py / ui.charts.py. Non-fatal: the
+          # fallbacks stay in place if the toolchain or headers are unavailable.
+          python scripts/build_android_ext.py \
+            --build-dir /tmp/buildozer-build/android/platform \
+            --arch arm64-v8a --min-api 26 || true
+
           # Patch the cloned p4a: make the recipe venv's `pip install -U pip`
           # upgrade non-fatal. A partially-upgraded pip (mixed dist-infos) raises
           # ImportError and aborts the build here; the bundled pip is still usable.
@@ -782,6 +790,13 @@ jobs:
           HP_SITE="/tmp/buildozer-build-vulkan/android/platform/build-arm64-v8a/build/other_builds/hostpython3/desktop/hostpython3/native-build/Lib/site-packages"
           mkdir -p "$HP_SITE"
           pip install --target="$HP_SITE" Cython==0.29.36
+
+          # Compile momentum's own Cython extensions for the target ABI (see the
+          # Build APK step). Non-fatal, so a missing toolchain or header leaves the
+          # pure-Python fallbacks in place instead of failing the build.
+          python scripts/build_android_ext.py \
+            --build-dir /tmp/buildozer-build-vulkan/android/platform \
+            --arch arm64-v8a --min-api 26 || true
           P4A_PATCH="${GITHUB_WORKSPACE}/mobile/patches/p4a-venv-pip-fallback.patch"
           if [ -f "$P4A_PATCH" ] && [ -d "$CLONED_P4A" ]; then
             echo "Applying p4a venv-pip-fallback patch:"

@@ -3,9 +3,18 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 build/
-*.c  # Cython-generated C files
-*.so  # Cython-compiled shared objects (Linux/macOS)
-*.pyd  # Cython-compiled shared objects (Windows)
+
+# Cython build artefacts.
+#
+# NOTE: gitignore has no inline-comment syntax -- a "#" on the same line is part
+# of the pattern, so the previous "*.so  # Cython-compiled shared objects" style
+# rules matched nothing and build output showed up as untracked noise. The
+# generated .c files stay committed on purpose (CI compiles the committed copy
+# when a checkout's .pyx/.c timestamps are equal), so these rules only stop *new*
+# build output from being added by accident.
+*.c
+*.so
+*.pyd
 
 # PyInstaller artifacts (but allow dist/momentum via LFS)
 dist/*

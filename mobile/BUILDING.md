@@ -20,6 +20,30 @@ For the default CPU build this generated directory is
 The next build recreates it. The pip-upgrade fallback patch is not a repair
 for an already-corrupt pip; do not keep retrying the same failed environment.
 
+## Cython extensions in the APK
+
+`momentum/_assessments_cy`, `momentum/_charts_cy`, and `momentum/_timer_cy` are
+compiled into the app by `mobile/scripts/build_android_ext.py` from the
+Cython-generated `.c` files committed alongside the `.pyx` sources.
+python-for-android only cythonizes *recipe* sources, so an app's own `.pyx` files
+are never built; without this step the APK quietly uses the pure-Python fallbacks
+in `domain/assessments/scoring.py` and `ui/charts.py`.
+
+CI runs the script between buildozer's two passes, once pass 1 has produced the
+target CPython headers. To inspect what it would do in a local build:
+
+```bash
+python3 mobile/scripts/build_android_ext.py \
+  --build-dir /tmp/buildozer-build/android/platform \
+  --arch arm64-v8a --min-api 26 --dry-run
+```
+
+`--dry-run` prints the clang command lines and is the quickest way to confirm the
+target headers, `EXT_SUFFIX`, and NDK driver were all discovered. The script
+reports and skips instead of failing, so a build without the toolchain keeps
+working on the pure-Python paths. `source.include_exts` in `buildozer.spec` lists
+`so` so the compiled modules survive buildozer's source filter.
+
 After building, run `python3 mobile/scripts/verify_coach_apk.py <apk>`.
 This checks package contents, not Android imports or inference. A USB device
 must appear as `device` in `adb devices -l` (enable USB debugging and authorize

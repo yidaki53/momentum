@@ -5,7 +5,12 @@ title = Momentum
 package.name = momentum
 package.domain = dev.momentum
 source.dir = .
-source.include_exts = py,png,jpg,kv,atlas,md
+# ``so`` carries the Cython extensions that mobile/scripts/build_android_ext.py
+# cross-compiles for the target ABI (python-for-android only cythonizes recipe
+# sources, never the app's own .pyx files). Without ``so`` here buildozer's
+# source filter would drop them and the APK would silently run the pure-Python
+# fallbacks in domain/assessments/scoring.py and ui/charts.py.
+source.include_exts = py,png,jpg,kv,atlas,md,so
 version = 0.4.0
 
 # Note: The AI Coach chat UI ships in every APK and degrades gracefully: when
