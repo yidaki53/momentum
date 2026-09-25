@@ -45,7 +45,9 @@ working on the pure-Python paths. `source.include_exts` in `buildozer.spec` list
 `so` so the compiled modules survive buildozer's source filter.
 
 After building, run `python3 mobile/scripts/verify_coach_apk.py <apk>`.
-This checks package contents, not Android imports or inference. A USB device
+This checks package contents, not Android imports or inference. Add
+`--require-cython` to also fail when the cross-compiled Cython modules are
+missing from the bundle. A USB device
 must appear as `device` in `adb devices -l` (enable USB debugging and authorize
 the computer) before runtime validation. A debug-signed APK may not update a
 release-signed installation; do not uninstall the app to work around this
