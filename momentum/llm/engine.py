@@ -14,8 +14,9 @@ import logging
 import os
 import sys
 import threading
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 from momentum.build_info import BUILD_VARIANT
 from momentum.llm.downloader import ensure_model
@@ -44,9 +45,16 @@ def _preload_android_libraries(native_dir: Path) -> None:
     registered globally.  Loading the known names in dependency order avoids
     the intermittent ``undefined symbol``/``cannot locate`` import failure.
     """
-    names = ("c++_shared", "ggml-base", "ggml-cpu", "ggml", "llama")
+    names: tuple[str, ...] = ("c++_shared", "ggml-base", "ggml-cpu", "ggml", "llama")
     if BUILD_VARIANT == "vulkan":
-        names = ("c++_shared", "ggml-base", "ggml-cpu", "ggml-vulkan", "ggml", "llama")
+        names = (
+            "c++_shared",
+            "ggml-base",
+            "ggml-cpu",
+            "ggml-vulkan",
+            "ggml",
+            "llama",
+        )
     mode = getattr(ctypes, "RTLD_GLOBAL", 0)
     for name in names:
         path = native_dir / f"lib{name}.so"
@@ -97,14 +105,70 @@ log = logging.getLogger(__name__)
 _prefer_android_native_lib_dir()
 
 LLM_IMPORT_ERROR = ""
-try:  # Native loaders can raise several platform-specific exception types.
-    from llama_cpp import Llama
 
+# ``Llama`` is the llama-cpp-python class when the native backend imports, and
+# ``None`` when it does not. Declaring it as ``Any`` lets both bindings
+# type-check; the ``Optional[Any]`` annotations below are the consequence.
+Llama: Any
+try:  # Native loaders can raise several platform-specific exception types.
+    from llama_cpp import Llama as _LlamaImpl
+
+    Llama = _LlamaImpl
     LLM_AVAILABLE = True
 except Exception as exc:  # keep the coach UI usable and expose the cause
     Llama = None
     LLM_AVAILABLE = False
     LLM_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+
+
+def _first_choice(payload: Any) -> Optional[Mapping[str, Any]]:
+    """Return the first choice mapping in a chat-completion payload, or None.
+
+    llama-cpp-python returns a plain dict, but ``choices`` is missing on a
+    malformed payload and empty when generation stops immediately, so callers
+    must not index it unguarded.
+    """
+    if not isinstance(payload, Mapping):
+        return None
+    choices = payload.get("choices")
+    if not isinstance(choices, Sequence) or isinstance(choices, (str, bytes)):
+        return None
+    if not choices:
+        return None
+    first = choices[0]
+    return first if isinstance(first, Mapping) else None
+
+
+def _message_text(response: Any) -> str:
+    """Extract assistant text from a non-streaming completion.
+
+    ``content`` is ``None`` when the model stops on a tool call or the context
+    fills before emitting text, so it must be coerced rather than ``.strip()``ed.
+    """
+    choice = _first_choice(response)
+    if choice is None:
+        return ""
+    message = choice.get("message")
+    if not isinstance(message, Mapping):
+        return ""
+    content = message.get("content")
+    return content if isinstance(content, str) else ""
+
+
+def _delta_text(chunk: Any) -> str:
+    """Extract incremental text from a streaming chunk (``""`` when absent).
+
+    The first chunk of a real llama-cpp-python stream carries only
+    ``{"role": "assistant", "content": None}``; every other field is optional.
+    """
+    choice = _first_choice(chunk)
+    if choice is None:
+        return ""
+    delta = choice.get("delta")
+    if not isinstance(delta, Mapping):
+        return ""
+    content = delta.get("content")
+    return content if isinstance(content, str) else ""
 
 
 def native_diagnostics() -> dict[str, object]:
@@ -144,7 +208,7 @@ class LlmEngine:
         self._n_ctx = n_ctx
         self._n_threads = n_threads or max(1, _guess_cpu_threads())
         self._verbose = verbose
-        self._llama: Optional[Llama] = None
+        self._llama: Optional[Any] = None
         self._lock = threading.Lock()
 
     def load(self) -> None:
@@ -213,7 +277,7 @@ class LlmEngine:
 
         with self._lock:
             response = self._llama.create_chat_completion(
-                messages=messages,
+                messages=cast("Any", messages),
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
@@ -223,23 +287,13 @@ class LlmEngine:
             )
 
         if stream:
-            # For streaming, accumulate chunks
+            # For streaming, accumulate chunks. ``_delta_text`` tolerates the
+            # role-only and content-less chunks llama-cpp-python emits.
             full_text = ""
-            for chunk in response:
-                delta = chunk.get("choices", [{}])[0].get("delta", {})
-                content = delta.get("content", "")
-                if content:
-                    full_text += content
+            for chunk in cast("Iterable[Any]", response):
+                full_text += _delta_text(chunk)
             return full_text.strip()
-        else:
-            # ``response`` is Any (llama-cpp-python has no stubs); coerce to str
-            # so the declared return type holds.
-            return str(
-                response.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                .strip()
-            )
+        return _message_text(response).strip()
 
     def generate_async(
         self,
@@ -272,15 +326,14 @@ class LlmEngine:
 
                 with self._lock:
                     response = self._llama.create_chat_completion(
-                        messages=messages,
+                        messages=cast("Any", messages),
                         max_tokens=max_tokens,
                         temperature=temperature,
                         stream=True,
                     )
 
-                for chunk in response:
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    content = delta.get("content", "")
+                for chunk in cast("Iterable[Any]", response):
+                    content = _delta_text(chunk)
                     if content:
                         full_text += content
                         on_token(content)

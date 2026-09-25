@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 
 from momentum import db
 from momentum.assessments import (
@@ -11,7 +12,7 @@ from momentum.assessments import (
     interpret_bdefs,
     interpret_stroop,
 )
-from momentum.models import AssessmentType, TaskStatus
+from momentum.models import AssessmentResult, AssessmentType, TaskStatus
 
 
 def build_user_context(conn: sqlite3.Connection) -> str:
@@ -67,13 +68,13 @@ def build_user_context(conn: sqlite3.Connection) -> str:
             )
         )
 
-    def _history_line(label: str, results: list[object]) -> None:
+    def _history_line(label: str, results: Sequence[AssessmentResult]) -> None:
         if not results:
             return
         values = []
         for result in results[:4]:
-            taken = getattr(result, "taken_at", None)
-            when = taken.strftime("%Y-%m-%d") if taken is not None else "unknown date"
+            taken = result.taken_at
+            when = taken.strftime("%Y-%m-%d")
             values.append(f"{when} {result.score}/{result.max_score}")
         latest = results[0]
         line = f"{label} history: {'; '.join(values)}"

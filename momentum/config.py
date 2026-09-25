@@ -12,7 +12,7 @@ import shutil
 import sys
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from momentum.models import AppConfig, ThemeMode, TimerCycleMode, WindowPosition
 
@@ -253,7 +253,7 @@ def _salvage_db_path(raw: str) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
-def _load_config_lenient(data: dict) -> AppConfig:
+def _load_config_lenient(data: dict[str, Any]) -> AppConfig:
     """Build an AppConfig keeping every valid field, dropping only bad ones.
 
     ``AppConfig(**data)`` raises ``TypeError`` on unknown keys and
@@ -261,7 +261,7 @@ def _load_config_lenient(data: dict) -> AppConfig:
     *total* config reset. Now one bad field only loses that field.
     """
     known = {f.name for f in dataclasses.fields(AppConfig)}
-    kwargs: dict = {}
+    kwargs: dict[str, Any] = {}
     for key, value in data.items():
         if key not in known:
             continue
