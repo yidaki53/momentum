@@ -7,9 +7,27 @@ import io
 import tarfile
 import zipfile
 from pathlib import Path
+from typing import Iterable
+
+# Compiled Cython modules built by mobile/scripts/build_android_ext.py. Their
+# absence is not fatal -- momentum falls back to pure Python -- so the check below
+# is opt-in via --require-cython.
+CYTHON_MODULES = ("_assessments_cy", "_charts_cy")
 
 
-def verify_apk(path: Path, vulkan: bool = False) -> None:
+def missing_cython_modules(members: Iterable[str]) -> list[str]:
+    """Return compiled Cython modules that are absent from a bundle listing."""
+    names = [Path(name).name for name in members]
+    return [
+        module
+        for module in CYTHON_MODULES
+        if not any(
+            name.startswith(f"{module}.") and name.endswith(".so") for name in names
+        )
+    ]
+
+
+def verify_apk(path: Path, vulkan: bool = False, require_cython: bool = False) -> None:
     with zipfile.ZipFile(path) as apk:
         names = set(apk.namelist())
         prefix = "lib/arm64-v8a/"
@@ -22,7 +40,16 @@ def verify_apk(path: Path, vulkan: bool = False) -> None:
                 raise ValueError(f"Missing native library: {name}")
         with tarfile.open(fileobj=io.BytesIO(apk.read(prefix + "libpybundle.so"))) as bundle:
             members = set(bundle.getnames())
+            if require_cython:
+                missing = missing_cython_modules(members)
+                if missing:
+                    raise ValueError(
+                        "Missing compiled Cython module(s): "
+                        + ", ".join(missing)
+                        + " -- run mobile/scripts/build_android_ext.py before packaging"
+                    )
             package_lib_prefix = "site-packages/llama_cpp/lib/"
+
             for library in libraries:
                 if library == "c++_shared":
                     continue
@@ -62,5 +89,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("apk", type=Path)
     parser.add_argument("--vulkan", action="store_true")
+    parser.add_argument(
+        "--require-cython",
+        action="store_true",
+        help="fail when the compiled Cython modules are absent from the bundle",
+    )
     args = parser.parse_args()
-    verify_apk(args.apk, args.vulkan)
+    verify_apk(args.apk, args.vulkan, args.require_cython)
