@@ -1,11 +1,20 @@
-"""Model downloader — fetches GGUF models from Hugging Face on first use."""
+"""Model downloader — fetches GGUF models from Hugging Face on first use.
+
+Models are described by :data:`MODELS`, a registry of dataclass records rather
+than loose module constants. Each entry lists one or more download sources, so
+a single unavailable repository does not break the coach: :func:`ensure_model`
+tries the remaining mirrors in order before giving up.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import shutil
 import tempfile
+import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -14,19 +23,98 @@ from momentum.ui.update_check import certifi_ssl_context
 
 log = logging.getLogger(__name__)
 
-# Default model: TinyLlama 1.1B Chat (GGUF Q4_K_M) — Apache 2.0 licensed
-MODEL_REPO = "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF"
-MODEL_FILENAME = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
-MODEL_URL = f"https://huggingface.co/{MODEL_REPO}/resolve/main/{MODEL_FILENAME}"
-MODEL_SIZE_MB = 720  # approximate
+_HF = "https://huggingface.co"
 
-# Fallback: Qwen2.5-0.5B-Instruct GGUF (Apache 2.0)
-FALLBACK_REPO = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
-FALLBACK_FILENAME = "qwen2.5-0.5b-instruct-q4_k_m.gguf"
-FALLBACK_URL = (
-    f"https://huggingface.co/{FALLBACK_REPO}/resolve/main/{FALLBACK_FILENAME}"
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """A downloadable GGUF model.
+
+    Attributes:
+        name: Stable identifier used in config (``llm_model``).
+        filename: Name the file is cached under locally.
+        size_mb: Approximate download size, for UI estimates only.
+        license: SPDX-ish licence identifier shown in Settings.
+        sources: ``(repo, filename)`` pairs tried in order. The first entry is
+            the canonical source; the rest are mirrors.
+        sha256: Optional expected digest. Verified when present.
+    """
+
+    name: str
+    filename: str
+    size_mb: int
+    license: str
+    sources: tuple[tuple[str, str], ...]
+    sha256: Optional[str] = None
+    blurb: str = field(default="", compare=False)
+
+    @property
+    def url(self) -> str:
+        """Canonical download URL (the first source)."""
+        repo, filename = self.sources[0]
+        return f"{_HF}/{repo}/resolve/main/{filename}"
+
+    def mirror_urls(self) -> list[str]:
+        """Every candidate URL, canonical first."""
+        return [f"{_HF}/{repo}/resolve/main/{fn}" for repo, fn in self.sources]
+
+
+# TinyLlama 1.1B Chat (GGUF Q4_K_M) — Apache 2.0, the default coach model.
+_TINYLLAMA = ModelSpec(
+    name="tinyllama",
+    filename="tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+    size_mb=720,
+    license="Apache-2.0",
+    sources=(
+        (
+            "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+            "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+        ),
+        # Mirror maintained after TheBloke's repos were retired.
+        (
+            "bartowski/TinyLlama-1.1B-Chat-v1.0-GGUF",
+            "TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf",
+        ),
+    ),
+    blurb="TinyLlama 1.1B Chat — fast, well-tuned for its size.",
 )
-FALLBACK_SIZE_MB = 350
+
+# Qwen2.5 0.5B Instruct GGUF (Apache 2.0) — smaller, for low-memory devices.
+_QWEN = ModelSpec(
+    name="qwen",
+    filename="qwen2.5-0.5b-instruct-q4_k_m.gguf",
+    size_mb=350,
+    license="Apache-2.0",
+    sources=(("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "qwen2.5-0.5b-instruct-q4_k_m.gguf"),),
+    blurb="Qwen2.5 0.5B Instruct — smallest footprint.",
+)
+
+MODELS: dict[str, ModelSpec] = {
+    _TINYLLAMA.name: _TINYLLAMA,
+    _QWEN.name: _QWEN,
+}
+
+DEFAULT_MODEL = _TINYLLAMA.name
+
+# Backwards-compatible module constants, kept because the UI and tests read
+# these names directly.
+MODEL_REPO = _TINYLLAMA.sources[0][0]
+MODEL_FILENAME = _TINYLLAMA.filename
+MODEL_URL = _TINYLLAMA.url
+MODEL_SIZE_MB = _TINYLLAMA.size_mb
+FALLBACK_REPO = _QWEN.sources[0][0]
+FALLBACK_FILENAME = _QWEN.filename
+FALLBACK_URL = _QWEN.url
+FALLBACK_SIZE_MB = _QWEN.size_mb
+
+
+def get_spec(model_name: str) -> ModelSpec:
+    """Return the :class:`ModelSpec` for *model_name*, defaulting sensibly.
+
+    Unknown names fall back to the default model rather than raising: the
+    coach is optional and must never take the app down over a stale config.
+    """
+    return MODELS.get(model_name, MODELS[DEFAULT_MODEL])
 
 
 def _models_dir() -> Path:
@@ -43,13 +131,7 @@ def _models_dir() -> Path:
 
 def get_model_path(model_name: str = "tinyllama") -> Path:
     """Return the expected local path for the given model."""
-    models_dir = _models_dir()
-    if model_name == "tinyllama":
-        return models_dir / MODEL_FILENAME
-    elif model_name == "qwen":
-        return models_dir / FALLBACK_FILENAME
-    else:
-        return models_dir / MODEL_FILENAME
+    return _models_dir() / get_spec(model_name).filename
 
 
 def is_model_downloaded(model_name: str = "tinyllama") -> bool:
@@ -59,9 +141,38 @@ def is_model_downloaded(model_name: str = "tinyllama") -> bool:
 
 def model_size_mb(model_name: str = "tinyllama") -> int:
     """Return approximate model size in MB."""
-    if model_name == "qwen":
-        return FALLBACK_SIZE_MB
-    return MODEL_SIZE_MB
+    return get_spec(model_name).size_mb
+
+
+def available_models() -> list[ModelSpec]:
+    """Return every model the app can download, for the Settings picker."""
+    return list(MODELS.values())
+
+
+def _sha256_of(path: Path) -> str:
+    """Return the hex SHA-256 digest of the file at *path*."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def verify_model(path: Path, spec: ModelSpec) -> bool:
+    """Return True when *path* is a valid GGUF for *spec*.
+
+    Without a published digest this can only do cheap structural checks. The
+    GGUF magic and a plausible minimum size catch truncated or HTML error
+    pages, which is what a failed or redirected download actually produces.
+    """
+    if not path.exists() or path.stat().st_size < 1024:
+        return False
+    with path.open("rb") as handle:
+        if handle.read(4) != b"GGUF":
+            return False
+    if spec.sha256:
+        return _sha256_of(path).lower() == spec.sha256.lower()
+    return True
 
 
 def _download_file(
@@ -69,7 +180,12 @@ def _download_file(
     dest: Path,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> None:
-    """Download *url* to *dest* with optional progress reporting."""
+    """Download *url* to *dest* with optional progress reporting.
+
+    Writes to a temporary file first and renames on success, so an interrupted
+    download never leaves a truncated file that ``is_model_downloaded`` would
+    report as complete.
+    """
     log.info("Downloading %s to %s", url, dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -83,7 +199,7 @@ def _download_file(
                 total = int(resp.headers.get("Content-Length", 0))
                 downloaded = 0
                 while True:
-                    chunk = resp.read(8192)
+                    chunk = resp.read(1024 * 256)
                     if not chunk:
                         break
                     tmp.write(chunk)
@@ -106,19 +222,103 @@ def ensure_model(
     model_name: str = "tinyllama",
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> Path:
-    """Download the model if not already cached. Returns the local path."""
+    """Ensure the model is cached locally, downloading it if needed.
+
+    Each mirror is tried in turn, so one dead repository no longer leaves the
+    coach permanently unavailable. The last error is re-raised only once every
+    source has been exhausted.
+    """
+    spec = get_spec(model_name)
     path = get_model_path(model_name)
-    if path.exists():
+    if path.exists() and verify_model(path, spec):
         log.debug("Model already cached at %s", path)
         return path
 
-    if model_name == "qwen":
-        url = FALLBACK_URL
-    else:
-        url = MODEL_URL
+    last_error: Optional[Exception] = None
+    for url in spec.mirror_urls():
+        try:
+            _download_file(url, path, progress_callback)
+        except (urllib.error.URLError, OSError) as exc:
+            log.warning("Model source failed (%s): %s", url, exc)
+            last_error = exc
+            continue
+        if verify_model(path, spec):
+            return path
+        last_error = OSError(f"Downloaded file failed verification: {url}")
+        log.warning("Verification failed for %s", url)
+        path.unlink(missing_ok=True)
 
-    _download_file(url, path, progress_callback)
-    return path
+    raise OSError(
+        f"Could not download model {spec.name!r} from any of "
+        f"{len(spec.mirror_urls())} source(s)"
+    ) from last_error
+
+
+def diagnose_model(
+    model_name: str = "tinyllama", *, load: bool = False
+) -> dict[str, object]:
+    """Return non-secret diagnostics about a model's local availability.
+
+    Args:
+        model_name: Registry key to inspect.
+        load: When True, also construct a real ``llama_cpp.Llama`` to confirm
+            the file parses and allocates. This costs a few seconds and a few
+            hundred MB, so it is opt-in and never runs implicitly.
+
+    ``ok`` is the headline field; ``error`` carries the reason when something
+    is wrong.
+    """
+    spec = get_spec(model_name)
+    path = get_model_path(model_name)
+    report: dict[str, object] = {
+        "ok": False,
+        "model": spec.name,
+        "filename": spec.filename,
+        "size_mb": spec.size_mb,
+        "license": spec.license,
+        "sources": len(spec.mirror_urls()),
+        "path": str(path),
+        "exists": path.exists(),
+        "downloaded": False,
+        "verified": False,
+        "loadable": False,
+        "error": "",
+    }
+
+    if not path.exists():
+        report["error"] = "Not downloaded yet."
+        return report
+
+    report["size_on_disk_mb"] = round(path.stat().st_size / (1024 * 1024), 1)
+    if not verify_model(path, spec):
+        report["error"] = "File is truncated or is not a GGUF model."
+        return report
+
+    report["downloaded"] = True
+    report["verified"] = True
+    if not load:
+        report["ok"] = True
+        return report
+
+    # Imported lazily: a caller may only be probing availability.
+    from momentum.llm.engine import is_llm_available
+
+    if not is_llm_available():
+        report["error"] = "llama-cpp-python is not available on this build."
+        return report
+
+    try:
+        from llama_cpp import Llama
+
+        handle = Llama(model_path=str(path), n_ctx=256, n_threads=1, verbose=False)
+        del handle
+    except Exception as exc:  # native loader errors vary by platform
+        report["error"] = f"{type(exc).__name__}: {exc}"
+        return report
+
+    report["loadable"] = True
+    report["ok"] = True
+    return report
 
 
 def delete_model(model_name: str = "tinyllama") -> bool:
