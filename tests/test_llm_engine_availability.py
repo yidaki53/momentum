@@ -74,6 +74,53 @@ def test_prefer_android_native_lib_dir_sets_env(monkeypatch, tmp_path):
     assert os.environ["LLAMA_CPP_LIB_PATH"] == str(native_dir)
 
 
+def test_prefer_android_ignores_package_dir_missing_the_stl(monkeypatch, tmp_path):
+    """A complete-looking wheel directory must lose to the APK native dir.
+
+    Guards the exact on-device failure: ``llama_cpp/lib`` held every llama/ggml
+    library and so passed the old "is it complete?" test, yet ``libllama.so``
+    additionally needs ``libc++_shared.so``, which is staged only into
+    ``nativeLibraryDir`` and never shipped by the wheel. Preferring the wheel
+    directory made the load fail with ``library "libc++_shared.so" not found``
+    and left the coach permanently unavailable despite correct packaging.
+    """
+    native_dir = tmp_path / "native"
+    native_dir.mkdir()
+    for name in (
+        "libllama.so",
+        "libggml.so",
+        "libggml-base.so",
+        "libggml-cpu.so",
+        "libc++_shared.so",
+    ):
+        (native_dir / name).write_bytes(b"\x7fELF")
+
+    package_lib = tmp_path / "site-packages" / "llama_cpp" / "lib"
+    package_lib.mkdir(parents=True)
+    for name in ("libllama.so", "libggml.so", "libggml-base.so", "libggml-cpu.so"):
+        (package_lib / name).write_bytes(b"\x7fELF")
+
+    fake_activity = type(
+        "A",
+        (),
+        {
+            "getApplicationInfo": staticmethod(
+                lambda: type("I", (), {"nativeLibraryDir": str(native_dir)})()
+            )
+        },
+    )()
+    fake_mod = types.ModuleType("jnius")
+    fake_mod.autoclass = lambda _: type("M", (), {"mActivity": fake_activity})
+
+    monkeypatch.setenv("ANDROID_ARGUMENT", "private=/tmp")
+    monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
+    monkeypatch.setitem(sys.modules, "jnius", fake_mod)
+    monkeypatch.setattr(engine_mod, "_package_lib_dir", lambda: package_lib)
+
+    engine_mod._prefer_android_native_lib_dir()
+    assert os.environ["LLAMA_CPP_LIB_PATH"] == str(native_dir)
+
+
 def test_native_diagnostics_reports_paths(monkeypatch):
     monkeypatch.setenv("LLAMA_CPP_LIB_PATH", "/tmp/llama-lib")
     diag = engine_mod.native_diagnostics()

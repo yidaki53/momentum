@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 import threading
+import traceback
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Callable, Optional, cast
@@ -36,68 +37,123 @@ def _android_native_dir() -> Optional[Path]:
         return None
 
 
-def _preload_android_libraries(native_dir: Path) -> None:
-    """Load llama/ggml dependencies globally before importing llama_cpp.
+_PRELOAD_ORDER: tuple[str, ...] = (
+    "c++_shared",
+    "ggml-base",
+    "ggml-cpu",
+    "ggml-vulkan",
+    "ggml",
+    "llama",
+)
 
-    ``llama_cpp.py`` uses ``LLAMA_CPP_LIB_PATH`` for libllama, while
-    ``_ggml.py`` uses ``llama_cpp/lib`` for libggml.  On Android both copies
-    can be present, but the dynamic loader still needs the dependency chain
-    registered globally.  Loading the known names in dependency order avoids
-    the intermittent ``undefined symbol``/``cannot locate`` import failure.
+# Diagnostics surfaced through ``native_diagnostics()``. Populated while this
+# module imports, i.e. before any caller has a chance to install a log handler.
+NATIVE_PRELOAD_FAILURES: list[str] = []
+NATIVE_LIB_DIR: str = ""
+
+
+def _package_lib_dir() -> Path:
+    """Return the wheel-side directory llama-cpp-python ships libraries in.
+
+    Extracted so tests can point it at a fixture: on a real device this resolves
+    to ``site-packages/llama_cpp/lib`` inside the bundled Python tree.
     """
-    names: tuple[str, ...] = ("c++_shared", "ggml-base", "ggml-cpu", "ggml", "llama")
-    if BUILD_VARIANT == "vulkan":
-        names = (
-            "c++_shared",
-            "ggml-base",
-            "ggml-cpu",
-            "ggml-vulkan",
-            "ggml",
-            "llama",
-        )
+    return Path(__file__).resolve().parent.parent.parent / "llama_cpp" / "lib"
+
+
+def _preload_android_libraries(primary: Path, native_dir: Optional[Path]) -> list[str]:
+    """Load the llama/ggml dependency chain globally before importing llama_cpp.
+
+    ``llama_cpp.llama_cpp`` resolves ``libllama.so`` from
+    ``LLAMA_CPP_LIB_PATH`` with a plain ``ctypes.CDLL`` of the absolute path,
+    so every ``DT_NEEDED`` entry of that library must already be resolvable in
+    this process' linker namespace. The libraries are loaded in dependency
+    order with ``RTLD_GLOBAL`` so the linker finds them by soname instead of
+    having to search for them.
+
+    Each name is looked up in ``primary`` first and then in ``native_dir``,
+    because ``libc++_shared.so`` is staged by p4a into the APK native dir only
+    and never into the wheel's ``llama_cpp/lib``. Returns human-readable
+    descriptions of the libraries that could not be loaded.
+    """
+    directories = [primary]
+    if native_dir is not None and native_dir != primary:
+        directories.append(native_dir)
+
     mode = getattr(ctypes, "RTLD_GLOBAL", 0)
-    for name in names:
-        path = native_dir / f"lib{name}.so"
-        if not path.exists():
-            continue
-        try:
-            ctypes.CDLL(str(path), mode=mode)
-        except OSError as exc:
-            log.debug("Could not preload %s: %s", path, exc)
+    failures: list[str] = []
+    for name in _PRELOAD_ORDER:
+        candidates = [d / "lib{}.so".format(name) for d in directories]
+        candidates = [p for p in candidates if p.exists()]
+        if not candidates:
+            continue  # legitimately absent, e.g. ggml-vulkan in a CPU build
+        for path in candidates:
+            try:
+                ctypes.CDLL(str(path), mode=mode)
+                break
+            except OSError as exc:
+                failures.append("{}: {}".format(path, exc))
+                log.debug("Could not preload %s: %s", path, exc)
+    return failures
 
 
 def _prefer_android_native_lib_dir() -> None:
     """Configure llama-cpp-python's native loader on Android.
 
-    The Python package contains its own ``llama_cpp/lib`` directory in the
-    APK bundle. Prefer that complete directory for both llama and ggml, and
-    preload the staged APK copies as dependencies. The APK native directory
-    remains the fallback for builds that do not retain package-side libraries.
+    The APK native library directory is preferred over the wheel's own
+    ``llama_cpp/lib``. ``llama_cpp`` loads ``libllama.so`` with a single
+    ``ctypes.CDLL`` of an absolute path, and that library's ``DT_NEEDED`` list
+    contains the bare sonames ``libggml.so``, ``libggml-base.so``,
+    ``libggml-cpu.so`` and ``libc++_shared.so`` while carrying no
+    ``DT_RUNPATH``. Android's linker only resolves those bare sonames inside
+    the app's native library directory, and ``libc++_shared.so`` -- staged
+    there by the recipe's ``need_stl_shared`` -- is *never* copied into the
+    wheel directory. Pointing the loader at the wheel directory therefore
+    fails with ``dlopen failed: library "libc++_shared.so" not found`` even
+    though every file appears to be present.
 
-    Do not trust an inherited ``LLAMA_CPP_LIB_PATH`` blindly: p4a/launcher
-    environments have been observed to provide a stale or incomplete path.
-    Replace it on Android when the package-side directory is complete.
+    The wheel directory stays as the fallback for builds that ship the native
+    libraries only there. Do not trust an inherited ``LLAMA_CPP_LIB_PATH``
+    blindly either: p4a launcher environments have been observed to provide a
+    stale or incomplete path.
     """
+    global NATIVE_LIB_DIR
+
     on_android = "ANDROID_ARGUMENT" in os.environ or hasattr(sys, "getandroidapilevel")
     if not on_android:
         return
 
-    package_root = Path(__file__).resolve().parent.parent.parent / "llama_cpp" / "lib"
-    package_complete = (package_root / "libllama.so").exists() and (
+    package_root = _package_lib_dir()
+    native_dir = _android_native_dir()
+
+    native_ok = native_dir is not None and (native_dir / "libllama.so").exists()
+    package_ok = (package_root / "libllama.so").exists() and (
         package_root / "libggml.so"
     ).exists()
-    existing = os.environ.get("LLAMA_CPP_LIB_PATH")
-    if existing and Path(existing) == package_root and package_complete:
-        return
-    if package_complete:
-        os.environ["LLAMA_CPP_LIB_PATH"] = str(package_root)
-        _preload_android_libraries(package_root)
+
+    if native_ok:
+        chosen = native_dir
+    elif package_ok:
+        chosen = package_root
     else:
-        native_dir = _android_native_dir()
-        if native_dir is not None and (native_dir / "libllama.so").exists():
-            os.environ["LLAMA_CPP_LIB_PATH"] = str(native_dir)
-            _preload_android_libraries(native_dir)
-    log.debug("llama native path configured: %s", os.environ.get("LLAMA_CPP_LIB_PATH"))
+        chosen = None
+
+    if chosen is not None:
+        os.environ["LLAMA_CPP_LIB_PATH"] = str(chosen)
+        NATIVE_LIB_DIR = str(chosen)
+
+    # Preload from whichever directory is in play, falling back to the APK
+    # native dir per library so libc++_shared.so is found either way.
+    NATIVE_PRELOAD_FAILURES.extend(
+        _preload_android_libraries(
+            chosen if chosen is not None else package_root, native_dir
+        )
+    )
+    log.debug(
+        "llama native path configured: %s (preload failures: %d)",
+        os.environ.get("LLAMA_CPP_LIB_PATH"),
+        len(NATIVE_PRELOAD_FAILURES),
+    )
 
 
 log = logging.getLogger(__name__)
@@ -105,6 +161,7 @@ log = logging.getLogger(__name__)
 _prefer_android_native_lib_dir()
 
 LLM_IMPORT_ERROR = ""
+LLM_IMPORT_TRACEBACK = ""
 
 # ``Llama`` is the llama-cpp-python class when the native backend imports, and
 # ``None`` when it does not. Declaring it as ``Any`` lets both bindings
@@ -118,7 +175,18 @@ try:  # Native loaders can raise several platform-specific exception types.
 except Exception as exc:  # keep the coach UI usable and expose the cause
     Llama = None
     LLM_AVAILABLE = False
+    # The traceback is what actually identifies a native load failure: a bare
+    # ``type: message`` drops the ``dlopen`` chain that caused it, and on a
+    # release APK nothing else reaches logcat, so keep it for diagnostics.
+    LLM_IMPORT_TRACEBACK = traceback.format_exc()
     LLM_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+    log.warning(
+        "llama_cpp import failed (%s); native dir=%s preload failures=%s",
+        LLM_IMPORT_ERROR,
+        NATIVE_LIB_DIR or "unset",
+        "; ".join(NATIVE_PRELOAD_FAILURES) or "none",
+    )
+    log.debug("llama_cpp import traceback:\n%s", LLM_IMPORT_TRACEBACK)
 
 
 def _first_choice(payload: Any) -> Optional[Mapping[str, Any]]:
@@ -173,15 +241,28 @@ def _delta_text(chunk: Any) -> str:
 
 def native_diagnostics() -> dict[str, object]:
     """Return non-secret loader details for the Settings diagnostics panel."""
-    package_root = Path(__file__).resolve().parent.parent.parent / "llama_cpp" / "lib"
+    package_root = _package_lib_dir()
     configured = os.environ.get("LLAMA_CPP_LIB_PATH")
+    native_dir = _android_native_dir()
+    native_root = Path(native_dir) if native_dir is not None else None
     return {
         "available": LLM_AVAILABLE,
+        "variant": BUILD_VARIANT,
         "import_error": LLM_IMPORT_ERROR,
+        "import_traceback": LLM_IMPORT_TRACEBACK,
         "configured_path": configured or "",
         "package_path": str(package_root),
         "package_libllama": (package_root / "libllama.so").exists(),
         "package_libggml": (package_root / "libggml.so").exists(),
+        "apk_native_path": str(native_root) if native_root is not None else "",
+        "apk_libllama": bool(
+            native_root is not None and (native_root / "libllama.so").exists()
+        ),
+        "apk_libcxx_shared": bool(
+            native_root is not None and (native_root / "libc++_shared.so").exists()
+        ),
+        "selected_dir": NATIVE_LIB_DIR,
+        "preload_failures": list(NATIVE_PRELOAD_FAILURES),
     }
 
 
