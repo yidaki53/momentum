@@ -16,17 +16,15 @@ import pytest
 
 from mobile.scripts.verify_coach_apk import (
     CYTHON_MODULES,
+    ENGINE_REQUIRED_MARKERS,
     missing_cython_modules,
     verify_apk,
 )
 
 _LIBRARIES = ["llama", "ggml", "ggml-base", "ggml-cpu", "c++_shared"]
-_ENGINE_MARKERS = (
-    "LLAMA_CPP_LIB_PATH",
-    "llama_cpp",
-    "package_root",
-    "_preload_android_libraries",
-)
+# Derived from the verifier's own contract so this fixture can never drift from
+# the real requirement (it previously duplicated the list and silently did).
+_ENGINE_MARKERS = tuple(marker.decode() for marker in ENGINE_REQUIRED_MARKERS)
 
 
 def _bundle_members(include_cython: bool) -> list[str]:
@@ -54,12 +52,21 @@ def _bundle_members(include_cython: bool) -> list[str]:
     return members
 
 
-def _write_apk(path: Path, include_cython: bool) -> Path:
+def _write_apk(
+    path: Path, include_cython: bool, engine_payload: "str | None" = None
+) -> Path:
     """Build a minimal APK holding the tar bundle the verifier inspects."""
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as bundle:
         for name in _bundle_members(include_cython):
-            payload = " ".join(_ENGINE_MARKERS) if name.endswith("engine.py") else ""
+            if name.endswith("engine.py"):
+                payload = (
+                    " ".join(_ENGINE_MARKERS)
+                    if engine_payload is None
+                    else engine_payload
+                )
+            else:
+                payload = ""
             data = payload.encode()
             info = tarfile.TarInfo(name)
             info.size = len(data)
@@ -107,3 +114,21 @@ def test_verify_apk_require_cython_accepts_a_bundle_with_extensions(
     verify_apk(
         _write_apk(tmp_path / "momentum.apk", include_cython=True), require_cython=True
     )
+
+
+def test_verify_apk_flags_an_engine_that_never_preloads_the_stl(
+    tmp_path: Path,
+) -> None:
+    """Guard the regression that left the coach unavailable on-device.
+
+    Packaging can be perfect -- every ``.so`` present in the APK -- and the
+    import still fails, because ``libllama.so`` cannot pull ``libc++_shared.so``
+    in from the wheel directory. An engine.py that drops the STL preload must be
+    rejected even though all the libraries above are where they belong.
+    """
+    stripped = " ".join(marker for marker in _ENGINE_MARKERS if marker != "c++_shared")
+    apk = _write_apk(
+        tmp_path / "momentum.apk", include_cython=False, engine_payload=stripped
+    )
+    with pytest.raises(ValueError, match="missing native-lib wiring"):
+        verify_apk(apk)
