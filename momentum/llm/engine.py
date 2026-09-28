@@ -10,6 +10,7 @@ backend is missing.
 from __future__ import annotations
 
 import ctypes
+import importlib.util
 import logging
 import os
 import sys
@@ -55,9 +56,19 @@ NATIVE_LIB_DIR: str = ""
 def _package_lib_dir() -> Path:
     """Return the wheel-side directory llama-cpp-python ships libraries in.
 
-    Extracted so tests can point it at a fixture: on a real device this resolves
-    to ``site-packages/llama_cpp/lib`` inside the bundled Python tree.
+    Resolving this relative to ``__file__`` is wrong on Android: the app's own
+    package is unpacked from ``assets/private.tar`` into the app home, so
+    ``momentum/llm/engine.pyc`` sits nowhere near llama-cpp, while the wheel
+    lives in the bundled ``site-packages`` tree. Asking the import system is
+    correct on both platforms. ``find_spec`` locates the module without
+    executing it, so this cannot trigger the native load it exists to configure.
     """
+    try:
+        spec = importlib.util.find_spec("llama_cpp")
+    except (ImportError, ValueError):  # pragma: no cover - exotic finders
+        spec = None
+    if spec is not None and spec.origin:
+        return Path(spec.origin).resolve().parent / "lib"
     return Path(__file__).resolve().parent.parent.parent / "llama_cpp" / "lib"
 
 

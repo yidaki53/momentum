@@ -121,6 +121,36 @@ def test_prefer_android_ignores_package_dir_missing_the_stl(monkeypatch, tmp_pat
     assert os.environ["LLAMA_CPP_LIB_PATH"] == str(native_dir)
 
 
+def test_package_lib_dir_follows_the_installed_package(monkeypatch, tmp_path):
+    """The wheel directory is taken from the import system, not from ``__file__``.
+
+    On Android the app package is unpacked from ``assets/private.tar`` into the
+    app home, so resolving ``llama_cpp/lib`` relative to ``engine.pyc`` produced a
+    path that cannot exist -- the wheel lives in the bundled site-packages tree.
+    The wrong value made ``package_ok`` permanently false and reported a bogus
+    directory in the very diagnostics the coach screen now shows.
+    """
+    wheel = tmp_path / "site-packages" / "llama_cpp"
+    wheel.mkdir(parents=True)
+    init = wheel / "__init__.pyc"
+    init.write_bytes(b"")
+    spec = types.SimpleNamespace(origin=str(init))
+    monkeypatch.setattr(
+        engine_mod.importlib.util,
+        "find_spec",
+        lambda name: spec if name == "llama_cpp" else None,
+    )
+    assert engine_mod._package_lib_dir() == (wheel / "lib").resolve()
+
+
+def test_package_lib_dir_falls_back_without_the_package(monkeypatch):
+    """A missing llama_cpp must not raise; the diagnostics still want a path."""
+    monkeypatch.setattr(engine_mod.importlib.util, "find_spec", lambda name: None)
+    fallback = engine_mod._package_lib_dir()
+    assert fallback.name == "lib"
+    assert fallback.parent.name == "llama_cpp"
+
+
 def test_native_diagnostics_reports_paths(monkeypatch):
     monkeypatch.setenv("LLAMA_CPP_LIB_PATH", "/tmp/llama-lib")
     diag = engine_mod.native_diagnostics()
@@ -137,7 +167,17 @@ def test_native_diagnostics_reports_import_failure(monkeypatch):
     assert "dlopen failed" in str(diag["import_error"])
 
 
-def test_prefer_android_respects_existing_override(monkeypatch):
+def test_prefer_android_respects_existing_override(monkeypatch, tmp_path):
+    """When nothing usable is found, an already-configured path is left alone.
+
+    Both candidate directories are pinned explicitly: the result otherwise hinges
+    on whether the machine running the tests happens to have llama-cpp-python
+    installed, which let this pass in CI while failing on a development venv that
+    does -- the shape of bug that hides a real regression in noise.
+    """
+    absent_package = tmp_path / "no-wheel-here" / "llama_cpp" / "lib"
+    monkeypatch.setattr(engine_mod, "_package_lib_dir", lambda: absent_package)
+    monkeypatch.setattr(engine_mod, "_android_native_dir", lambda: None)
     monkeypatch.setenv("ANDROID_ARGUMENT", "private=/tmp")
     monkeypatch.setenv("LLAMA_CPP_LIB_PATH", "/already/set")
     engine_mod._prefer_android_native_lib_dir()
