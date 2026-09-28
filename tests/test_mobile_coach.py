@@ -50,6 +50,38 @@ def test_missing_engine_allows_drafting_and_explicit_download(coach, monkeypatch
     assert any("missing dependency" in getattr(w, "text", "") for w in coach.walk())
 
 
+def test_unavailable_screen_quotes_the_loader_decision(coach, monkeypatch):
+    """The engine's own loader report must reach the screen verbatim."""
+    error = "OSError: cannot open shared object file"
+    report = {
+        "available": False,
+        "variant": "vulkan",
+        "selected_dir": "",
+        "apk_native_path": "/data/app/~~abc==/base.apk!/lib/arm64-v8a",
+        "apk_libllama": True,
+        "preload_failures": [
+            'libllama.so: dlopen failed: "libc++_shared.so" not found'
+        ],
+        "import_error": error,
+        "import_traceback": "Traceback (most recent call last):\nOSError: boom",
+    }
+    f = funcs()
+    f["import_error"] = error
+    f["native_diagnostics"] = lambda: report
+    monkeypatch.setattr(main, "_get_llm_funcs", lambda: f)
+    coach.on_enter()
+    joined = "\n".join(getattr(w, "text", "") for w in coach.walk())
+    assert "variant=vulkan" in joined
+    assert "selected_dir=" in joined
+    assert "apk_libllama=True" in joined
+    assert "libc++_shared.so" in joined
+    assert f"import_error={error}" in joined
+    assert "OSError: boom" in joined
+    # One value, one line: the error captured at import and the live report carry
+    # the same text, and printing it twice only crowds out the rest of the proof.
+    assert joined.count(f"import_error={error}") == 1
+
+
 @pytest.mark.parametrize("downloaded", [False, True])
 def test_ready_requires_engine_and_model(coach, monkeypatch, downloaded):
     monkeypatch.setattr(main, "_get_llm_funcs", lambda: funcs(True, downloaded))

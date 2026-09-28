@@ -17,6 +17,7 @@ import ssl
 import sys
 import threading
 import time as _time
+import traceback
 import urllib.request
 import webbrowser
 from datetime import date
@@ -88,7 +89,7 @@ from momentum.assessments import (
     score_stroop,
     should_show_act_support,
 )
-from momentum.build_info import BUILD_VARIANT
+from momentum.build_info import BUILD_NUMBER, BUILD_VARIANT
 from momentum.encouragement import get_break_message, get_nudge
 from momentum.models import (
     ActJournalEntryCreate,
@@ -165,6 +166,12 @@ def _get_chart_funcs() -> tuple | None:
     return _CHART_FUNCS
 
 
+# Traceback of the most recent ``momentum.llm`` import failure. The engine's own
+# diagnostics cannot describe an error that happened before the package was
+# importable, so the Coach screen falls back to this when nothing loaded at all.
+_LLM_IMPORT_TRACEBACK: str = ""
+
+
 def _get_llm_funcs() -> dict | None:
     """Import the AI Coach LLM layer lazily to keep Android startup lightweight.
 
@@ -173,7 +180,7 @@ def _get_llm_funcs() -> dict | None:
     still check ``is_llm_available()`` before attempting inference. Returns None
     only if the momentum.llm package itself is unexpectedly missing.
     """
-    global _LLM_FUNCS
+    global _LLM_FUNCS, _LLM_IMPORT_TRACEBACK
     if _LLM_FUNCS is not None:
         return _LLM_FUNCS
     try:
@@ -221,9 +228,72 @@ def _get_llm_funcs() -> dict | None:
             "DISCLAIMER": DISCLAIMER,
         }
     except Exception:
-        log.debug("LLM module unavailable on this runtime", exc_info=True)
+        # Swallowing this at debug level is what made the coach undiagnosable:
+        # a released APK never surfaces debug records, so a missing module was
+        # indistinguishable from a failed native load. Keep the traceback for
+        # the Coach screen and log it at a level logcat actually carries.
+        _LLM_IMPORT_TRACEBACK = traceback.format_exc()
+        log.warning("AI Coach modules unavailable on this runtime", exc_info=True)
         _LLM_FUNCS = None
     return _LLM_FUNCS
+
+
+# Diagnostic keys worth showing when the coach cannot start, in reading order.
+# ``import_error`` is deliberately absent: it is rendered from the value captured
+# at import time, which is the one the engine module recorded before anything else
+# could overwrite it.
+_COACH_DIAGNOSTIC_KEYS: tuple[str, ...] = (
+    "available",
+    "variant",
+    "selected_dir",
+    "configured_path",
+    "apk_native_path",
+    "apk_libllama",
+    "apk_libcxx_shared",
+    "package_path",
+    "package_libllama",
+    "preload_failures",
+)
+
+
+def _coach_diagnostics_text(funcs: dict | None) -> str:
+    """Return the native-loader report for the unavailable-coach screen.
+
+    The device is the only place the real cause is observable, so the screen
+    prints what the loader actually decided -- variant, chosen library directory,
+    which files exist there, and the failure tail -- instead of a generic
+    apology that told the user nothing and the developer even less.
+
+    Two sources are merged, and neither is required: the ``import_error`` string
+    handed over when the engine module loaded, and the live ``native_diagnostics``
+    report. A build whose diagnostics are themselves broken has to keep talking,
+    so a missing key or a raising probe degrades into one more line of evidence
+    rather than replacing an unhelpful screen with a stack trace.
+    """
+    if funcs is None:
+        return _LLM_IMPORT_TRACEBACK.strip() or "Could not import the coach modules."
+    lines: list[str] = []
+    diag: dict = {}
+    diagnose = funcs.get("native_diagnostics")
+    if callable(diagnose):
+        try:
+            diag = dict(diagnose())
+        except Exception:
+            lines.append(
+                "native_diagnostics() failed:\n" + traceback.format_exc().strip()
+            )
+    else:
+        lines.append("native_diagnostics() unavailable in this build.")
+    lines.extend(f"{key}={diag[key]}" for key in _COACH_DIAGNOSTIC_KEYS if key in diag)
+    import_error = str(funcs.get("import_error") or diag.get("import_error") or "")
+    if import_error.strip():
+        lines.append(f"import_error={import_error.strip()}")
+    tail = str(diag.get("import_traceback") or "").strip()
+    if tail:
+        lines.append("traceback (last lines):")
+        lines.extend(tail.splitlines()[-10:])
+    return "\n".join(lines)
+
 
 def _coach_ready() -> bool:
     """Return whether optional AI snippets can be generated right now."""
@@ -2597,11 +2667,12 @@ class CoachScreen(Screen):
             ))
         # Keep drafting/selection available; only Send requires a working backend.
         self.ready = False
-        detail = funcs.get("import_error", "") if funcs else "Could not import the coach modules."
         chat.add_widget(_make_label(
-            f"Build: {APP_VERSION} ({BUILD_VARIANT})\n{detail}\n"
-            "Downloading a model cannot repair a missing engine. Install a corrected build.",
-            font_size=sp(13), color=_MUTED,
+            f"Build: {APP_VERSION} #{BUILD_NUMBER} ({BUILD_VARIANT})\n"
+            + _coach_diagnostics_text(funcs)
+            + "\nDownloading a model cannot repair a missing engine. "
+            "Install a corrected build.",
+            font_size=sp(11), color=_MUTED,
         ))
         self.ids.coach_disclaimer.text = "Engine unavailable; you can still draft a message."
         if funcs is not None:

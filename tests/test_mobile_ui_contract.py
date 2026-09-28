@@ -116,6 +116,34 @@ def test_ai_coach_screen_is_wired_with_graceful_degradation() -> None:
     assert "db.delete_all_llm_chat_messages" in src
 
 
+def test_ai_coach_screen_reports_its_own_failure_reason() -> None:
+    """The unavailable screen must name the cause, not just apologise.
+
+    Ten releases shipped a coach that said only "bundle the local model engine"
+    while the real reason -- an import traceback, an empty native directory, the
+    chosen library path -- was logged at debug level, which a release APK never
+    surfaces. The device is the only place the truth exists, so it has to be on
+    the screen the user is looking at.
+    """
+    src = _mobile_main_source()
+    # The loader failure is captured and logged at a level logcat carries.
+    assert "_LLM_IMPORT_TRACEBACK = traceback.format_exc()" in src
+    assert 'log.warning("AI Coach modules unavailable' in src
+    assert 'log.debug("LLM module unavailable' not in src
+    # The native loader report is rendered, keyed off the engine's diagnostics.
+    assert "def _coach_diagnostics_text(" in src
+    assert 'funcs.get("native_diagnostics")' in src
+    assert "_COACH_DIAGNOSTIC_KEYS" in src
+    # The captured import error is shown even in a build whose diagnostics probe
+    # is missing or raises: one broken reporter must not silence the other.
+    assert 'funcs.get("import_error")' in src
+    assert 'lines.append(f"import_error={import_error.strip()}")' in src
+    assert 'lines.append("native_diagnostics() unavailable in this build.")' in src
+    # And the build is identifiable, so a screenshot says which APK it came from.
+    assert 'f"Build: {APP_VERSION} #{BUILD_NUMBER} ({BUILD_VARIANT})\\n"' in src
+    assert "_coach_diagnostics_text(funcs)" in src
+
+
 def test_settings_controls_use_black_and_white_checkboxes() -> None:
     src = _mobile_main_source()
     # Checkbox widget is imported and a tick-row helper exists.
