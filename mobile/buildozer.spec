@@ -22,11 +22,7 @@ version = 0.4.0
 # the native lib.
 
 # Dependencies
-# numpy 2.x requires C++17 which breaks on NDK r25b. Pin to 1.26.4.
-# numpy git tags are v-prefixed (v1.26.4), so the pin uses 'v1.26.4' to make
-# p4a run 'git checkout v1.26.4' directly. CI also patches the cloned p4a
-# numpy recipe as a fallback (see .github/workflows/ci.yml, Build APK step).
-# No prebuilt numpy 1.26.4 wheel exists, so numpy builds from source.
+# Charts use PIL; NumPy is required by the on-device Llama inference backend.
 #
 # pydantic is intentionally NOT included: pydantic-core is a Rust crate with
 # no PyPI Android wheel, and p4a's maturin source build fails (ANDROID_API_LEVEL
@@ -41,13 +37,12 @@ version = 0.4.0
 # matches. The build must succeed with llama-cpp-python included -- no fallback
 # to a build without on-device inference. The model downloads on first use only
 # when the user opts in, so the APK stays small.
-# diskcache/jinja2/typing-extensions are llama-cpp-python runtime deps (numpy is
-# already listed); they are pure-Python and must be in the APK or Llama import/use
-# fails on-device.
-requirements = python3,kivy,pillow,matplotlib,numpy==v1.26.4,certifi,llama-cpp-python,diskcache,jinja2,typing-extensions,markupsafe==3.0.3
+# diskcache is a llama-cpp-python runtime dependency.
+requirements = python3,kivy,pillow,certifi,numpy,llama-cpp-python,diskcache,jinja2,markupsafe,typing-extensions
 
 # Include the core momentum package (via symlink) and data files
 source.include_patterns = main.py,momentum/*.py,momentum/**/*.py,momentum/**/**/*.py,assets/art/*.png,ENCOURAGEMENTS.md,SCIENCE.md,README.md,IMAGES.md
+p4a.hook = p4a_hooks.py
 
 # App icon and presplash
 icon.filename = icon.png

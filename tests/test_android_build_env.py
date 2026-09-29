@@ -1,11 +1,68 @@
 from __future__ import annotations
 
+import io
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from mobile import p4a_hooks
 from mobile.scripts import build_android as build
+
+
+def test_bundle_version_tracks_contents_not_archive_timestamp(tmp_path):
+    def write_bundle(path: Path, content: bytes, timestamp: int) -> None:
+        with tarfile.open(path, "w:gz") as tar:
+            entry = tarfile.TarInfo("_python_bundle/site-packages/example.pyc")
+            entry.size = len(content)
+            entry.mtime = timestamp
+            tar.addfile(entry, io.BytesIO(content))
+
+    first = tmp_path / "first.so"
+    rebuilt = tmp_path / "rebuilt.so"
+    changed = tmp_path / "changed.so"
+    write_bundle(first, b"same module", 100)
+    write_bundle(rebuilt, b"same module", 200)
+    write_bundle(changed, b"changed module", 200)
+
+    first_version, entries = p4a_hooks._archive_contents(first)
+    assert entries == 1
+    assert p4a_hooks._archive_contents(rebuilt) == (first_version, entries)
+    assert p4a_hooks._archive_contents(changed)[0] != first_version
+
+
+def test_after_apk_build_uses_current_distribution(tmp_path, monkeypatch):
+    import xml.etree.ElementTree as ET
+
+    monkeypatch.chdir(tmp_path)
+    resources = tmp_path / "src/main/res/values/strings.xml"
+    resources.parent.mkdir(parents=True)
+    resources.write_text(
+        '<resources><string name="private_version">old</string></resources>'
+    )
+    for archive in (
+        tmp_path / "src/main/assets/private.tar",
+        tmp_path / "libs/arm64-v8a/libpybundle.so",
+    ):
+        archive.parent.mkdir(parents=True)
+        with tarfile.open(archive, "w:gz") as tar:
+            entry = tarfile.TarInfo("example")
+            entry.size = 4
+            tar.addfile(entry, io.BytesIO(b"data"))
+    monkeypatch.setattr(
+        p4a_hooks.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0),
+    )
+
+    p4a_hooks.after_apk_build(
+        SimpleNamespace(ctx=SimpleNamespace(dist_dir=tmp_path.parent))
+    )
+
+    root = ET.parse(resources).getroot()
+    assert root.find("string[@name='pybundle_version']") is not None
+    assert root.find("integer[@name='pybundle_entries']").text == "1"
 
 
 def test_environment_repairs_inactive_venv_and_java8(tmp_path, monkeypatch):

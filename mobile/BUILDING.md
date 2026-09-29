@@ -53,5 +53,12 @@ the computer) before runtime validation. A debug-signed APK may not update a
 release-signed installation; do not uninstall the app to work around this
 without backing up data and getting explicit approval.
 
+The p4a hook fingerprints the contents of `private.tar` and `libpybundle.so`
+independently and patches the SDL2 bootstrap to show extraction progress. The
+first install unpacks both archives. On an app-only update, the bootstrap keeps
+the installed Python bundle and its version marker while replacing app files;
+a changed bundle is unpacked again. Check both paths on an update install,
+because a successful APK build alone does not verify the bootstrap behavior.
+
 The local CPU debug APK was built and passed the package verifier. The Vulkan
 variant and release signing still need their own build/runtime validation.

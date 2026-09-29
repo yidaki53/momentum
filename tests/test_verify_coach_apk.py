@@ -37,6 +37,7 @@ _BUNDLE_MEMBERS = [
     "site-packages/llama_cpp/lib/libggml-base.so",
     "site-packages/llama_cpp/lib/libggml-cpu.so",
     "site-packages/llama_cpp/__init__.py",
+    "site-packages/numpy/__init__.py",
     "site-packages/diskcache/__init__.py",
     "site-packages/jinja2/__init__.py",
     "site-packages/markupsafe/__init__.py",
@@ -120,6 +121,22 @@ def test_missing_cython_modules(members: list[str], expected: list[str]) -> None
 def test_verify_apk_ignores_cython_by_default(tmp_path: Path) -> None:
     """The default verification path must not start requiring the extensions."""
     verify_apk(_write_apk(tmp_path / "momentum.apk", include_cython=False))
+
+
+@pytest.mark.parametrize(
+    "module", ["numpy/__init__", "typing_extensions", "jinja2/__init__"]
+)
+def test_verify_apk_rejects_missing_runtime_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module: str
+) -> None:
+    monkeypatch.setattr(
+        __import__(__name__, fromlist=["_BUNDLE_MEMBERS"]),
+        "_BUNDLE_MEMBERS",
+        [name for name in _BUNDLE_MEMBERS if name != f"site-packages/{module}.py"],
+    )
+    apk = _write_apk(tmp_path / "momentum.apk", include_cython=False)
+    with pytest.raises(ValueError, match=f"Missing Python module: {module}"):
+        verify_apk(apk)
 
 
 def test_verify_apk_require_cython_flags_a_missing_extension(tmp_path: Path) -> None:

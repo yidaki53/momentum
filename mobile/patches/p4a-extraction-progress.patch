@@ -1,0 +1,257 @@
+--- a/src/main/java/org/renpy/android/AssetExtract.java
++++ b/src/main/java/org/renpy/android/AssetExtract.java
+@@ -22,16 +22,21 @@
+ 
+     private AssetManager mAssetManager = null;
+ 
++    public interface ProgressListener {
++        void onProgress(int completed);
++    }
++
+     public AssetExtract(Context context) {
+         mAssetManager = context.getAssets();
+     }
+ 
+-    public boolean extractTar(String asset, String target, String method) {
++    public boolean extractTar(String asset, String target, String method, ProgressListener listener) {
+ 
+         byte buf[] = new byte[1024 * 1024];
+ 
+         InputStream assetStream = null;
+         TarInputStream tis = null;
++        int completed = 0;
+ 
+         try {
+             if (method == "private") {
+@@ -74,6 +79,7 @@
+                 }
+                 ;
+ 
++                listener.onProgress(++completed);
+                 continue;
+             }
+ 
+@@ -103,6 +109,7 @@
+ 
+                 out.flush();
+                 out.close();
++                listener.onProgress(++completed);
+             } catch (IOException e) {
+                 Log.e("python", "extracting zip", e);
+                 return false;
+--- a/src/main/java/org/kivy/android/PythonUtil.java
++++ b/src/main/java/org/kivy/android/PythonUtil.java
+@@ -139,7 +139,8 @@
+     }
+ 
+     public static void unpackAsset(
+-            Context ctx, final String resource, File target, boolean cleanup_on_version_update) {
++            Context ctx, final String resource, File target, boolean cleanup_on_version_update,
++            AssetExtract.ProgressListener listener) {
+ 
+         Log.v(TAG, "Unpacking " + resource + " " + target.getName());
+ 
+@@ -173,18 +174,28 @@
+             Log.v(TAG, "Extracting " + resource + " assets.");
+ 
+             if (cleanup_on_version_update) {
+-                recursiveDelete(target);
++                File[] children = target.listFiles();
++                if (children != null) {
++                    for (File child : children) {
++                        String name = child.getName();
++                        if (!name.equals("_python_bundle") && !name.equals("libpybundle.version")) {
++                            recursiveDelete(child);
++                        }
++                    }
++                }
+             }
+             target.mkdirs();
+ 
+             AssetExtract ae = new AssetExtract(ctx);
+-            if (!ae.extractTar(resource + ".tar", target.getAbsolutePath(), "private")) {
++            listener.onProgress(0);
++            if (!ae.extractTar(resource + ".tar", target.getAbsolutePath(), "private", listener)) {
+                 String msg = "Could not extract " + resource + " data.";
+                 if (ctx instanceof Activity) {
+                     toastError((Activity) ctx, msg);
+                 } else {
+                     Log.v(TAG, msg);
+                 }
++                return;
+             }
+ 
+             try {
+@@ -202,12 +213,13 @@
+     }
+ 
+     public static void unpackPyBundle(
+-            Context ctx, final String resource, File target, boolean cleanup_on_version_update) {
++            Context ctx, final String resource, File target, boolean cleanup_on_version_update,
++            AssetExtract.ProgressListener listener) {
+ 
+         Log.v(TAG, "Unpacking " + resource + " " + target.getName());
+ 
+         // The version of data in memory and on disk.
+-        String dataVersion = getResourceString(ctx, "private_version");
++        String dataVersion = getResourceString(ctx, "pybundle_version");
+         String diskVersion = null;
+ 
+         Log.v(TAG, "Data version is " + dataVersion);
+@@ -231,7 +243,7 @@
+             diskVersion = "";
+         }
+ 
+-        if (!dataVersion.equals(diskVersion)) {
++        if (!dataVersion.equals(diskVersion) || !new File(target, "_python_bundle").isDirectory()) {
+             // If the disk data is out of date, extract it and write the version file.
+             Log.v(TAG, "Extracting " + resource + " assets.");
+ 
+@@ -241,13 +253,15 @@
+             target.mkdirs();
+ 
+             AssetExtract ae = new AssetExtract(ctx);
+-            if (!ae.extractTar(resource + ".so", target.getAbsolutePath(), "pybundle")) {
++            listener.onProgress(0);
++            if (!ae.extractTar(resource + ".so", target.getAbsolutePath(), "pybundle", listener)) {
+                 String msg = "Could not extract " + resource + " data.";
+                 if (ctx instanceof Activity) {
+                     toastError((Activity) ctx, msg);
+                 } else {
+                     Log.v(TAG, msg);
+                 }
++                return;
+             }
+ 
+             try {
+--- a/src/main/java/org/kivy/android/PythonActivity.java
++++ b/src/main/java/org/kivy/android/PythonActivity.java
+@@ -14,11 +14,16 @@
+ import android.os.Bundle;
+ import android.os.PowerManager;
+ import android.util.Log;
++import android.view.Gravity;
+ import android.view.SurfaceView;
+ import android.view.View;
+ import android.view.ViewGroup;
+ import android.view.inputmethod.InputMethodManager;
++import android.widget.FrameLayout;
+ import android.widget.ImageView;
++import android.widget.LinearLayout;
++import android.widget.ProgressBar;
++import android.widget.TextView;
+ import android.widget.Toast;
+ import java.io.File;
+ import java.io.FileWriter;
+@@ -33,6 +38,7 @@
+ import java.util.TimerTask;
+ import org.kivy.android.launcher.Project;
+ import org.libsdl.app.SDLActivity;
++import org.renpy.android.AssetExtract;
+ import org.renpy.android.ResourceManager;
+ 
+ public class PythonActivity extends SDLActivity {
+@@ -43,6 +49,9 @@
+     private ResourceManager resourceManager = null;
+     private Bundle mMetaData = null;
+     private PowerManager.WakeLock mWakeLock = null;
++    private View extractionOverlay;
++    private ProgressBar extractionProgress;
++    private TextView extractionStatus;
+ 
+     public String getAppRoot() {
+         String app_root = getFilesDir().getAbsolutePath() + "/app";
+@@ -60,6 +69,25 @@
+ 
+         this.mActivity = this;
+         this.showLoadingScreen(this.getLoadingScreen());
++        LinearLayout indicator = new LinearLayout(this);
++        indicator.setOrientation(LinearLayout.VERTICAL);
++        int padding = (int) (16 * getResources().getDisplayMetrics().density);
++        indicator.setPadding(padding, padding, padding, padding);
++        indicator.setBackgroundColor(Color.argb(230, 24, 32, 34));
++        extractionStatus = new TextView(this);
++        extractionStatus.setTextColor(Color.WHITE);
++        indicator.addView(extractionStatus);
++        extractionProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
++        extractionProgress.setMax(100);
++        indicator.addView(extractionProgress,
++                new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
++                        ViewGroup.LayoutParams.WRAP_CONTENT));
++        extractionOverlay = indicator;
++        extractionOverlay.setVisibility(View.GONE);
++        FrameLayout.LayoutParams overlayParams = new FrameLayout.LayoutParams(
++                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
++                Gravity.BOTTOM);
++        addContentView(extractionOverlay, overlayParams);
+ 
+         new UnpackFilesTask().execute(getAppRoot());
+     }
+@@ -91,22 +119,55 @@
+         }
+     }
+ 
+-    private class UnpackFilesTask extends AsyncTask<String, Void, String> {
++    private class UnpackFilesTask extends AsyncTask<String, String, String> {
++        private int entryCount(String name) {
++            int id = getResources().getIdentifier(name, "integer", getPackageName());
++            return getResources().getInteger(id);
++        }
++
+         @Override
+         protected String doInBackground(String... params) {
+             File app_root_file = new File(params[0]);
+             Log.v(TAG, "Ready to unpack");
+-            PythonUtil.unpackAsset(mActivity, "private", app_root_file, true);
++            final int privateEntries = entryCount("private_entries");
++            final int bundleEntries = entryCount("pybundle_entries");
++            PythonUtil.unpackAsset(mActivity, "private", app_root_file, true,
++                    new AssetExtract.ProgressListener() {
++                        public void onProgress(int completed) {
++                            publishProgress("Updating app files", completed, privateEntries);
++                        }
++                    });
+             PythonUtil.unpackPyBundle(
+                     mActivity,
+                     getApplicationInfo().nativeLibraryDir + "/" + "libpybundle",
+                     app_root_file,
+-                    false);
++                    false,
++                    new AssetExtract.ProgressListener() {
++                        public void onProgress(int completed) {
++                            publishProgress("Preparing Python runtime", completed, bundleEntries);
++                        }
++                    });
+             return null;
++        }
++
++        private void publishProgress(String stage, int completed, int total) {
++            if (completed == 0 || completed == total || completed % 25 == 0) {
++                publishProgress(stage, Integer.toString(completed), Integer.toString(total));
++            }
++        }
++
++        @Override
++        protected void onProgressUpdate(String... values) {
++            int completed = Integer.parseInt(values[1]);
++            int total = Integer.parseInt(values[2]);
++            extractionOverlay.setVisibility(View.VISIBLE);
++            extractionStatus.setText(values[0] + "  " + completed + "/" + total);
++            extractionProgress.setProgress(total == 0 ? 0 : 100 * completed / total);
+         }
+ 
+         @Override
+         protected void onPostExecute(String result) {
++            extractionOverlay.setVisibility(View.GONE);
+             // Figure out the directory where the game is. If the game was
+             // given to us via an intent, then we use the scheme-specific
+             // part of that intent to determine the file to launch. We
+@@ -208,8 +269,6 @@
+         @Override
+         protected void onPreExecute() {}
+ 
+-        @Override
+-        protected void onProgressUpdate(Void... values) {}
+     }
+ 
+     public static ViewGroup getLayout() {

@@ -61,8 +61,8 @@ class LlamaCppPythonRecipe(PyProjectRecipe):
     version = "0.3.14"
     url = "https://files.pythonhosted.org/packages/source/l/llama-cpp-python/llama_cpp_python-{version}.tar.gz"
     site_packages_name = "llama_cpp"
-    depends = ["python3", "certifi"]
-    python_depends = ["typing-extensions", "diskcache", "jinja2"]
+    depends = ["python3", "certifi", "numpy"]
+    python_depends = ["typing-extensions", "diskcache", "jinja2", "markupsafe"]
     need_stl_shared = True
     call_hostpython_via_targetpython = False
 

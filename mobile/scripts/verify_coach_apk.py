@@ -166,6 +166,7 @@ def verify_apk(path: Path, vulkan: bool = False, require_cython: bool = False) -
             )
         for module in [
             "llama_cpp/__init__",
+            "numpy/__init__",
             "diskcache/__init__",
             "jinja2/__init__",
             "markupsafe/__init__",
