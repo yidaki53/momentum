@@ -48,7 +48,7 @@ def test_coach_chain_end_to_end(tmp_path, monkeypatch) -> None:
     assert "Ship it" in ctx
     assert isinstance(build_chat_history(conn), list)
 
-    conf = AppConfig()
+    conf = AppConfig(llm_enabled=True)
     monkeypatch.setattr(engine, "LLM_AVAILABLE", True)
     monkeypatch.setattr(assist, "is_llm_available", lambda: True)
     monkeypatch.setattr(assist, "is_model_downloaded", lambda *a, **k: True)

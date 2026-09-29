@@ -112,6 +112,34 @@ def test_start_timer_expands_timer_section() -> None:
         home.stop_timer()
 
 
+def test_on_start_defers_debug_llm_probe(monkeypatch):
+    app = MomentumApp()
+    cfg_state = type(
+        "Cfg",
+        (),
+        {"last_update_check_unix": 0, "check_updates_at_startup": False},
+    )()
+    monkeypatch.setattr("mobile.main.cfg.load_config", lambda: cfg_state)
+
+    probe_calls = []
+    monkeypatch.setattr(
+        "mobile.main._maybe_debug_probe_llm", lambda: probe_calls.append("called")
+    )
+
+    scheduled: list[tuple] = []
+
+    def fake_schedule_once(func, delay):
+        scheduled.append((func, delay))
+
+    monkeypatch.setattr("mobile.main.Clock.schedule_once", fake_schedule_once)
+
+    app.on_start()
+
+    assert scheduled
+    assert scheduled[0][1] >= 5.0
+    assert probe_calls == []
+
+
 def test_home_section_markers_stay_ascii() -> None:
     # Keep section markers font-safe across platforms.
     assert "▼" not in KV

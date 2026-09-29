@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+from momentum import gui as desktop_gui
 from momentum.config import (
     detect_cloud_folder,
     get_db_path,
@@ -21,6 +22,42 @@ from momentum.config import (
     set_timer_cycle_mode,
 )
 from momentum.models import AppConfig, ThemeMode, TimerCycleMode, WindowPosition
+
+
+def test_desktop_coach_menu_tracks_opt_in(monkeypatch):
+    app = object.__new__(desktop_gui.MomentumApp)
+    app._config = AppConfig()
+    app._coach_menu = object()
+    app._coach_menu_visible = False
+    events = []
+    app._menubar = type(
+        "Menu",
+        (),
+        {
+            "add_cascade": lambda self, **kwargs: events.append(
+                ("add", kwargs["label"])
+            ),
+            "delete": lambda self, label: events.append(("delete", label)),
+        },
+    )()
+    checks = []
+    monkeypatch.setattr(
+        desktop_gui,
+        "is_llm_available",
+        lambda: checks.append("checked") or True,
+    )
+
+    app._update_coach_menu()
+    assert not checks
+    assert not events
+
+    app._config.llm_enabled = True
+    app._update_coach_menu()
+    assert events == [("add", "AI Coach")]
+
+    app._config.llm_enabled = False
+    app._update_coach_menu()
+    assert events[-1] == ("delete", "AI Coach")
 
 
 def _patch_config_paths(tmp_path: Path):
@@ -106,10 +143,21 @@ class TestLoadSaveConfig:
     def test_llm_enabled_roundtrips(self, tmp_path: Path) -> None:
         p1, p2 = _patch_config_paths(tmp_path)
         with p1, p2:
+            assert load_config().llm_enabled is False
             set_llm_enabled(False)
             assert load_config().llm_enabled is False
             set_llm_enabled(True)
             assert load_config().llm_enabled is True
+
+    def test_legacy_config_without_ai_choice_stays_opted_out(
+        self, tmp_path: Path
+    ) -> None:
+        p1, p2 = _patch_config_paths(tmp_path)
+        with p1, p2:
+            cfg_dir = tmp_path / "config"
+            cfg_dir.mkdir(parents=True)
+            (cfg_dir / "config.json").write_text('{"theme_mode": "dark"}')
+            assert load_config().llm_enabled is False
 
     def test_load_migrates_legacy_android_config(self, tmp_path: Path) -> None:
         p1, p2 = _patch_config_paths(tmp_path)

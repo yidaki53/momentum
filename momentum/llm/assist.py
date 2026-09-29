@@ -29,7 +29,7 @@ _CACHE_LOCK = threading.Lock()
 def is_enabled(config: object | None = None) -> bool:
     """Return whether the user has enabled the optional coach."""
     conf = config if config is not None else cfg.load_config()
-    return bool(getattr(conf, "llm_enabled", True))
+    return bool(getattr(conf, "llm_enabled", False))
 
 
 def is_ready(config: object | None = None) -> bool:

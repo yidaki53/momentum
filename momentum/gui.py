@@ -11,8 +11,10 @@ import time
 import tkinter as tk
 import urllib.request
 import webbrowser
+from importlib import import_module
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
+from types import ModuleType
 from typing import TYPE_CHECKING, Optional
 
 from PIL import Image, ImageDraw, ImageFont, ImageTk
@@ -48,53 +50,6 @@ from momentum.assessments import (
     should_show_act_support,
 )
 from momentum.encouragement import get_break_message, get_nudge
-
-# LLM is optional on mobile; desktop normally has it via pyproject.toml.
-try:
-    from momentum.llm import (
-        DISCLAIMER,
-        SHORT_DISCLAIMER,
-        clear_assistance_cache,
-        delete_model,
-    )
-    from momentum.llm.context import build_chat_history, build_user_context
-    from momentum.llm.downloader import ensure_model, is_model_downloaded, model_size_mb
-    from momentum.llm.engine import (
-        get_engine,
-        is_llm_available,
-        native_diagnostics,
-        reset_engine,
-    )
-    from momentum.llm.prompts import build_chat_prompt, build_encouragement_prompt
-
-    _LLM_AVAILABLE = True
-except ImportError:
-    _LLM_AVAILABLE = False
-    DISCLAIMER = (
-        "AI Coach provides general support strategies — not professional medical "
-        "advice. Consult your GP if needed."
-    )
-    SHORT_DISCLAIMER = DISCLAIMER
-
-    def clear_assistance_cache() -> None:
-        return None
-
-    def delete_model(_name: str) -> bool:
-        return False
-
-    def is_llm_available() -> bool:
-        return False
-
-    def native_diagnostics() -> dict[str, object]:
-        return {
-            "available": False,
-            "import_error": "LLM module unavailable",
-        }
-
-    def reset_engine() -> None:
-        return None
-
-
 from momentum.models import (
     ActJournalEntryCreate,
     AssessmentResult,
@@ -119,6 +74,141 @@ if TYPE_CHECKING:
     from momentum.ui.update_check import ReleaseInfo
 
 log = logging.getLogger(__name__)
+
+# LLM integration is optional and can be heavy to import (native loader,
+# pyjnius). Provide lightweight lazy wrappers so importing ``momentum.gui``
+# doesn't trigger the full LLM dependency chain on mobile startup.
+
+
+def _import_llm() -> Optional[ModuleType]:
+    try:
+        return import_module("momentum.llm")
+    except Exception:
+        return None
+
+
+def _import_submodule(name: str):
+    try:
+        return import_module(f"momentum.llm.{name}")
+    except Exception:
+        return None
+
+
+def clear_assistance_cache() -> None:
+    mod = _import_submodule("assist")
+    if mod and hasattr(mod, "clear_cache"):
+        try:
+            mod.clear_cache()
+        except Exception:
+            pass
+
+
+def delete_model(name: str) -> bool:
+    mod = _import_submodule("downloader")
+    if not mod or not hasattr(mod, "delete_model"):
+        return False
+    try:
+        return bool(mod.delete_model(name))
+    except Exception:
+        return False
+
+
+def is_llm_available() -> bool:
+    mod = _import_submodule("engine")
+    if not mod or not hasattr(mod, "is_llm_available"):
+        return False
+    try:
+        return bool(mod.is_llm_available())
+    except Exception:
+        return False
+
+
+def native_diagnostics() -> dict[str, object]:
+    mod = _import_submodule("engine")
+    if not mod or not hasattr(mod, "native_diagnostics"):
+        return {"available": False, "import_error": "LLM module unavailable"}
+    try:
+        return dict(mod.native_diagnostics())
+    except Exception:
+        return {"available": False, "import_error": "LLM diagnostics failed"}
+
+
+def reset_engine() -> None:
+    mod = _import_submodule("engine")
+    if mod and hasattr(mod, "reset_engine"):
+        try:
+            mod.reset_engine()
+        except Exception:
+            pass
+
+
+def build_chat_history(*args, **kwargs):
+    mod = _import_submodule("context")
+    if mod and hasattr(mod, "build_chat_history"):
+        return mod.build_chat_history(*args, **kwargs)
+    raise ImportError("LLM context unavailable")
+
+
+def build_user_context(*args, **kwargs):
+    mod = _import_submodule("context")
+    if mod and hasattr(mod, "build_user_context"):
+        return mod.build_user_context(*args, **kwargs)
+    raise ImportError("LLM context unavailable")
+
+
+def ensure_model(*args, **kwargs):
+    mod = _import_submodule("downloader")
+    if mod and hasattr(mod, "ensure_model"):
+        return mod.ensure_model(*args, **kwargs)
+    raise ImportError("LLM downloader unavailable")
+
+
+def is_model_downloaded(*args, **kwargs):
+    mod = _import_submodule("downloader")
+    if mod and hasattr(mod, "is_model_downloaded"):
+        return mod.is_model_downloaded(*args, **kwargs)
+    return False
+
+
+def model_size_mb(*args, **kwargs):
+    mod = _import_submodule("downloader")
+    if mod and hasattr(mod, "model_size_mb"):
+        return mod.model_size_mb(*args, **kwargs)
+    return 0
+
+
+def get_engine(*args, **kwargs):
+    mod = _import_submodule("engine")
+    if mod and hasattr(mod, "get_engine"):
+        return mod.get_engine(*args, **kwargs)
+    raise ImportError("LLM engine unavailable")
+
+
+def build_chat_prompt(*args, **kwargs):
+    mod = _import_submodule("prompts")
+    if mod and hasattr(mod, "build_chat_prompt"):
+        return mod.build_chat_prompt(*args, **kwargs)
+    raise ImportError("LLM prompts unavailable")
+
+
+def build_encouragement_prompt(*args, **kwargs):
+    mod = _import_submodule("prompts")
+    if mod and hasattr(mod, "build_encouragement_prompt"):
+        return mod.build_encouragement_prompt(*args, **kwargs)
+    raise ImportError("LLM prompts unavailable")
+
+
+def _get_disclaimer() -> str:
+    mod = _import_submodule("disclaimer")
+    if mod:
+        return getattr(mod, "DISCLAIMER", "")
+    return "AI Coach provides general support strategies — not professional medical advice. Consult your GP if needed."
+
+
+SHORT_DISCLAIMER = (
+    "AI Coach provides general support strategies — not professional medical advice. "
+    "If you need help, please consult your GP or a mental health professional."
+)
 
 # Small fallback list used when IMAGES.md is missing.
 _FALLBACK_PHOTOS: list[str] = [
@@ -438,6 +528,14 @@ class MomentumApp:
             background=accent,
         )
 
+    def _update_coach_menu(self) -> None:
+        enabled = self._config.llm_enabled and is_llm_available()
+        if enabled and not self._coach_menu_visible:
+            self._menubar.add_cascade(label="AI Coach", menu=self._coach_menu)
+        elif not enabled and self._coach_menu_visible:
+            self._menubar.delete("AI Coach")
+        self._coach_menu_visible = enabled
+
     def _build_ui(self) -> None:
         """Construct all UI elements."""
         pad = {"padx": 10, "pady": 5}
@@ -497,20 +595,21 @@ class MomentumApp:
         menubar.add_cascade(label="Tests", menu=tests_menu)
 
         # --- AI Coach menu (opt-in; hidden if LLM unavailable or disabled) ---
-        if _LLM_AVAILABLE and getattr(self._config, "llm_enabled", True):
-            coach_menu = tk.Menu(
-                menubar,
-                tearoff=0,
-                bg=panel_bg,
-                fg=fg,
-                activebackground=accent,
-                activeforeground=fg,
-            )
-            coach_menu.add_command(label="Open AI Coach", command=self._on_ai_coach)
-            coach_menu.add_command(
-                label="Download Model", command=self._on_download_model
-            )
-            menubar.add_cascade(label="AI Coach", menu=coach_menu)
+        self._menubar = menubar
+        self._coach_menu = tk.Menu(
+            menubar,
+            tearoff=0,
+            bg=panel_bg,
+            fg=fg,
+            activebackground=accent,
+            activeforeground=fg,
+        )
+        self._coach_menu.add_command(label="Open AI Coach", command=self._on_ai_coach)
+        self._coach_menu.add_command(
+            label="Download Model", command=self._on_download_model
+        )
+        self._coach_menu_visible = False
+        self._update_coach_menu()
 
         # --- Peaceful image banner ---
         self._image_label = tk.Label(
@@ -1312,7 +1411,7 @@ class MomentumApp:
         coach_frame = ttk.Frame(win)
         coach_frame.pack(fill=tk.X, padx=12)
 
-        enable_coach_var = tk.BooleanVar(value=getattr(current, "llm_enabled", True))
+        enable_coach_var = tk.BooleanVar(value=getattr(current, "llm_enabled", False))
 
         def _set_enable_coach():
             val = enable_coach_var.get()
@@ -1321,6 +1420,7 @@ class MomentumApp:
             clear_assistance_cache()
             if not val:
                 reset_engine()
+            self._update_coach_menu()
 
         tk.Checkbutton(
             coach_frame,
@@ -2485,7 +2585,7 @@ class MomentumApp:
             self._coach_disclaimer_shown = True
             messagebox.showinfo(
                 "AI Coach",
-                DISCLAIMER + "\n\n"
+                _get_disclaimer() + "\n\n"
                 "Your conversations are stored locally and never leave your device.",
                 parent=self.root,
             )
@@ -2754,7 +2854,7 @@ class MomentumApp:
 
     def _show_llm_welcome(self) -> None:
         """Show the LLM-generated welcome/encouragement popup on startup."""
-        if not self._config.show_llm_welcome:
+        if not self._config.llm_enabled or not self._config.show_llm_welcome:
             return
         if not is_model_downloaded(self._config.llm_model):
             return

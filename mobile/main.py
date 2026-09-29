@@ -184,48 +184,38 @@ def _get_llm_funcs() -> dict | None:
     if _LLM_FUNCS is not None:
         return _LLM_FUNCS
     try:
-        from momentum.llm import DISCLAIMER, SHORT_DISCLAIMER, is_llm_available
-        from momentum.llm.assist import (
-            clear_cache,
-            is_enabled,
-            is_ready,
-            request_assistance,
-        )
-        from momentum.llm.context import build_chat_history, build_user_context
-        from momentum.llm.downloader import (
-            delete_model,
-            ensure_model,
-            is_model_downloaded,
-            model_size_mb,
-        )
-        from momentum.llm.engine import (
-            LLM_IMPORT_ERROR,
-            get_engine,
-            native_diagnostics,
-            reset_engine,
-        )
-        from momentum.llm.prompts import build_chat_prompt, build_encouragement_prompt
+        from importlib import import_module
+
+        disc = import_module("momentum.llm.disclaimer")
+        assist = import_module("momentum.llm.assist")
+        context = import_module("momentum.llm.context")
+        downloader = import_module("momentum.llm.downloader")
+        prompts = import_module("momentum.llm.prompts")
+
+        # Engine is imported only when needed by the coach; it may trigger
+        # native loader activity and is therefore isolated to this lazy path.
+        engine = import_module("momentum.llm.engine")
 
         _LLM_FUNCS = {
-            "is_llm_available": is_llm_available,
-            "import_error": LLM_IMPORT_ERROR,
-            "native_diagnostics": native_diagnostics,
-            "is_model_downloaded": is_model_downloaded,
-            "model_size_mb": model_size_mb,
-            "ensure_model": ensure_model,
-            "get_engine": get_engine,
-            "reset_engine": reset_engine,
-            "delete_model": delete_model,
-            "clear_assistance_cache": clear_cache,
-            "is_assistance_enabled": is_enabled,
-            "is_assistance_ready": is_ready,
-            "request_assistance": request_assistance,
-            "build_user_context": build_user_context,
-            "build_chat_history": build_chat_history,
-            "build_chat_prompt": build_chat_prompt,
-            "build_encouragement_prompt": build_encouragement_prompt,
-            "SHORT_DISCLAIMER": SHORT_DISCLAIMER,
-            "DISCLAIMER": DISCLAIMER,
+            "is_llm_available": getattr(engine, "is_llm_available", lambda: False),
+            "import_error": getattr(engine, "LLM_IMPORT_ERROR", ""),
+            "native_diagnostics": getattr(engine, "native_diagnostics", lambda: {"available": False}),
+            "is_model_downloaded": getattr(downloader, "is_model_downloaded", lambda name: False),
+            "model_size_mb": getattr(downloader, "model_size_mb", lambda name: 0),
+            "ensure_model": getattr(downloader, "ensure_model", lambda *a, **k: None),
+            "get_engine": getattr(engine, "get_engine", lambda *a, **k: None),
+            "reset_engine": getattr(engine, "reset_engine", lambda: None),
+            "delete_model": getattr(downloader, "delete_model", lambda name: False),
+            "clear_assistance_cache": getattr(assist, "clear_cache", lambda: None),
+            "is_assistance_enabled": getattr(assist, "is_enabled", lambda cfg=None: False),
+            "is_assistance_ready": getattr(assist, "is_ready", lambda cfg=None: False),
+            "request_assistance": getattr(assist, "request_assistance", lambda *a, **k: None),
+            "build_user_context": getattr(context, "build_user_context", lambda *a, **k: ""),
+            "build_chat_history": getattr(context, "build_chat_history", lambda *a, **k: []),
+            "build_chat_prompt": getattr(prompts, "build_chat_prompt", lambda *a, **k: []),
+            "build_encouragement_prompt": getattr(prompts, "build_encouragement_prompt", lambda *a, **k: ""),
+            "SHORT_DISCLAIMER": getattr(disc, "SHORT_DISCLAIMER", ""),
+            "DISCLAIMER": getattr(disc, "DISCLAIMER", ""),
         }
     except Exception:
         # Swallowing this at debug level is what made the coach undiagnosable:
@@ -236,6 +226,68 @@ def _get_llm_funcs() -> dict | None:
         log.warning("AI Coach modules unavailable on this runtime", exc_info=True)
         _LLM_FUNCS = None
     return _LLM_FUNCS
+
+
+def _maybe_debug_probe_llm() -> None:
+    """Probe LLM diagnostics when running a debuggable APK.
+
+    This spawns a background thread that imports the lazy LLM modules and
+    writes a small JSON report to the app files directory for `adb pull`.
+    It is best-effort and never raises.
+    """
+    try:
+        on_android = "ANDROID_ARGUMENT" in os.environ or hasattr(sys, "getandroidapilevel")
+        print(f"[LLM-DEBUG] probe invoked android={on_android}", flush=True)
+        if not on_android:
+            return
+        is_debuggable = False
+        try:
+            from jnius import autoclass  # type: ignore[import-not-found]
+
+            activity = autoclass("org.kivy.android.PythonActivity").mActivity
+            appinfo = activity.getApplicationInfo()
+            # ApplicationInfo.FLAG_DEBUGGABLE == 2
+            is_debuggable = bool(int(appinfo.flags) & 0x2)
+        except Exception:
+            is_debuggable = False
+
+        print(f"[LLM-DEBUG] debuggable={is_debuggable}", flush=True)
+        if not is_debuggable:
+            return
+
+        def _probe() -> None:
+            try:
+                funcs = _get_llm_funcs()
+                report: dict = {"ts": int(_time.time()), "have_funcs": bool(funcs)}
+                if funcs:
+                    try:
+                        report["available"] = bool(funcs.get("is_llm_available", lambda: False)())
+                    except Exception:
+                        report["available"] = False
+                    try:
+                        nd = funcs.get("native_diagnostics")
+                        report["native_diagnostics"] = dict(nd() if callable(nd) else {})
+                    except Exception:
+                        report["native_diagnostics_error"] = traceback.format_exc()
+
+                files_dir = None
+                try:
+                    files_dir = activity.getFilesDir().getAbsolutePath()
+                except Exception:
+                    files_dir = str(Path(__file__).resolve().parent.parent / "debug_files")
+                    Path(files_dir).mkdir(parents=True, exist_ok=True)
+
+                out = Path(files_dir) / "llm_debug.json"
+                with open(out, "w", encoding="utf-8") as f:
+                    json.dump(report, f, ensure_ascii=False, indent=2)
+                print(f"[LLM-DEBUG] report={json.dumps(report, ensure_ascii=False)}", flush=True)
+            except Exception:
+                print(f"[LLM-DEBUG] probe error={traceback.format_exc()}", flush=True)
+                log.exception("llm debug probe failed")
+
+        threading.Thread(target=_probe, daemon=True).start()
+    except Exception:
+        print(f"[LLM-DEBUG] setup error={traceback.format_exc()}", flush=True)
 
 
 # Diagnostic keys worth showing when the coach cannot start, in reading order.
@@ -297,6 +349,8 @@ def _coach_diagnostics_text(funcs: dict | None) -> str:
 
 def _coach_ready() -> bool:
     """Return whether optional AI snippets can be generated right now."""
+    if not cfg.load_config().llm_enabled:
+        return False
     funcs = _get_llm_funcs()
     return bool(
         funcs
@@ -1740,7 +1794,7 @@ class HomeScreen(Screen):
                 self.conn = db.get_connection()
             self._refresh_profile_ui()
             self.nudge_text = personalised_nudge(get_nudge(), self._profile())
-            Clock.schedule_once(lambda _dt: self._refresh_ai_nudge(), 0)
+            self._refresh_ai_nudge()
             Clock.schedule_once(lambda _dt: self.refresh_all(), 0)
             self._sync_global_timer_state()
             if not self._banner_loaded:
@@ -1757,21 +1811,29 @@ class HomeScreen(Screen):
 
     def _refresh_ai_nudge(self) -> None:
         """Replace the static home nudge with a local, personalised one when ready."""
-        if self._ai_nudge_requested or self.conn is None or not _coach_ready():
+        if self._ai_nudge_requested or self.conn is None or not cfg.load_config().llm_enabled:
             return
         self._ai_nudge_requested = True
 
         def _done(text: str) -> None:
             self.nudge_text = text
 
-        _request_ai_text(
-            "Write two or three warm, concrete sentences of personalised encouragement "
-            "for the user's current Momentum tasks, streak and recent activity. "
-            "Offer one tiny next step if that feels useful. Do not use markdown.",
-            conn=self.conn,
-            cache_key=f"home-nudge:{date.today().isoformat()}",
-            on_done=_done,
-        )
+        def _send(_dt: float) -> None:
+            if self.conn is not None:
+                _request_ai_text(
+                    "Write two or three warm, concrete sentences of personalised encouragement "
+                    "for the user's current Momentum tasks, streak and recent activity. "
+                    "Offer one tiny next step if that feels useful. Do not use markdown.",
+                    conn=self.conn,
+                    cache_key=f"home-nudge:{date.today().isoformat()}",
+                    on_done=_done,
+                )
+
+        def _check_ready() -> None:
+            if _coach_ready():
+                Clock.schedule_once(_send, 0)
+
+        threading.Thread(target=_check_ready, daemon=True).start()
 
     def _profile(self):
         latest_bisbas = db.list_assessments(
@@ -3128,12 +3190,14 @@ class SettingsScreen(ScrollScreen):
         c.add_widget(_make_label("AI Coach", font_size=sp(16), bold=True, color=accent))
         coach_row, coach_cb = _make_check_row(
             "Enable AI Coach",
-            active=bool(getattr(current, "llm_enabled", True)),
+            active=bool(getattr(current, "llm_enabled", False)),
             font_size=sp(13),
         )
         c.add_widget(coach_row)
-        coach_status = _get_llm_funcs()
-        if coach_status is None:
+        coach_status = _get_llm_funcs() if current.llm_enabled else None
+        if not current.llm_enabled:
+            status_text = "Disabled. The coach button and suggestions are hidden."
+        elif coach_status is None:
             status_text = "Coach modules unavailable on this build."
         else:
             state = {
@@ -3328,7 +3392,7 @@ class SettingsScreen(ScrollScreen):
         app = App.get_running_app()
         if app is not None:
             app.llm_enabled = enabled
-        funcs = _get_llm_funcs()
+        funcs = _get_llm_funcs() if enabled else _LLM_FUNCS
         if funcs is not None:
             funcs["clear_assistance_cache"]()
             if not enabled:
@@ -4578,7 +4642,7 @@ class MomentumApp(App):
     secondary_button_color = ListProperty(list(_PALETTE["secondary_button"]))
     danger_button_color = ListProperty(list(_PALETTE["danger_button"]))
     font_scale = NumericProperty(1.0)
-    llm_enabled = BooleanProperty(True)
+    llm_enabled = BooleanProperty(False)
     reduce_visual_load = BooleanProperty(False)
     timer_active = BooleanProperty(False)
     active_timer_label = StringProperty("Focus")
@@ -4641,6 +4705,14 @@ class MomentumApp(App):
         due = (_time.time() - conf.last_update_check_unix) >= _UPDATE_CHECK_INTERVAL_S
         if conf.check_updates_at_startup and due:
             Clock.schedule_once(lambda _dt: self.trigger_update_check(manual=False), 0.75)
+        # Keep first-render startup snappy: the LLM debug probe can be expensive on
+        # Android because it imports the native llama_cpp stack and writes a report.
+        # Schedule it later rather than doing it inline during App.on_start().
+        try:
+            if conf.llm_enabled:
+                Clock.schedule_once(lambda _dt: _maybe_debug_probe_llm(), 5.0)
+        except Exception:
+            pass
 
     def _home_screen(self) -> HomeScreen | None:
         if self.root is None or not self.root.has_screen("home"):
