@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 import threading
+import time
 import traceback
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
@@ -22,6 +23,8 @@ from typing import Any, Callable, Optional, cast
 
 from momentum.build_info import BUILD_VARIANT
 from momentum.llm.downloader import ensure_model
+
+log = logging.getLogger(__name__)
 
 
 def _android_native_dir() -> Optional[Path]:
@@ -36,6 +39,24 @@ def _android_native_dir() -> Optional[Path]:
     except Exception:
         log.debug("Could not locate Android nativeLibraryDir", exc_info=True)
         return None
+
+
+def _normalize_android_platform() -> None:
+    """Coerce Android CPython's ``sys.platform`` to the Linux loader path.
+
+    On Android, CPython sets ``sys.platform`` to ``"android"``. The upstream
+    ``llama_cpp`` loader treats only the Linux/FreeBSD/Darwin/Windows branches as
+    valid and raises ``RuntimeError("Unsupported platform")`` for Android even
+    when the packaged libraries are present and correctly preloaded. Treating the
+    Android runtime as Linux for this import guard is the minimal fix required to
+    let the native library load proceed on-device.
+    """
+    if sys.platform == "android":
+        sys.platform = "linux"
+        log.debug("normalized sys.platform from android to linux for llama-cpp import")
+
+
+_normalize_android_platform()
 
 
 _PRELOAD_ORDER: tuple[str, ...] = (
@@ -167,9 +188,25 @@ def _prefer_android_native_lib_dir() -> None:
     )
 
 
-log = logging.getLogger(__name__)
+def _instrument_event(msg: str) -> None:
+    """Emit a concise, timestamped import-time message to the standard
+    logger so it appears clearly in logcat when imports happen on-device.
+    """
+    try:
+        ts = time.time()
+        logging.getLogger("momentum.llm.imports").info(
+            "[LLM-IMPORT] %s | ts=%.3f", msg, ts
+        )
+    except Exception:
+        # Best-effort only; do not raise during import.
+        pass
 
+
+_instrument_event("prefer_android_native_lib_dir:start")
 _prefer_android_native_lib_dir()
+_instrument_event(
+    f"prefer_android_native_lib_dir:done preload_failures={len(NATIVE_PRELOAD_FAILURES)} selected={NATIVE_LIB_DIR or 'unset'}"
+)
 
 LLM_IMPORT_ERROR = ""
 LLM_IMPORT_TRACEBACK = ""
@@ -179,10 +216,13 @@ LLM_IMPORT_TRACEBACK = ""
 # type-check; the ``Optional[Any]`` annotations below are the consequence.
 Llama: Any
 try:  # Native loaders can raise several platform-specific exception types.
+    _instrument_event("llama_cpp:import:start")
+    t0 = time.time()
     from llama_cpp import Llama as _LlamaImpl
 
     Llama = _LlamaImpl
     LLM_AVAILABLE = True
+    _instrument_event(f"llama_cpp:import:ok elapsed={time.time() - t0:.3f}s")
 except Exception as exc:  # keep the coach UI usable and expose the cause
     Llama = None
     LLM_AVAILABLE = False
@@ -191,6 +231,9 @@ except Exception as exc:  # keep the coach UI usable and expose the cause
     # release APK nothing else reaches logcat, so keep it for diagnostics.
     LLM_IMPORT_TRACEBACK = traceback.format_exc()
     LLM_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+    _instrument_event(
+        f"llama_cpp:import:fail elapsed={0:.3f}s error={LLM_IMPORT_ERROR}"
+    )
     log.warning(
         "llama_cpp import failed (%s); native dir=%s preload failures=%s",
         LLM_IMPORT_ERROR,

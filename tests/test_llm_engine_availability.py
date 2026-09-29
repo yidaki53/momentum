@@ -8,6 +8,7 @@ clear error when the backend is missing, without touching the real native lib.
 
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 import types
@@ -31,6 +32,29 @@ def test_engine_importable_without_native_lib() -> None:
     assert hasattr(engine_mod, "LlmEngine")
     assert hasattr(engine_mod, "is_llm_available")
     assert hasattr(engine_mod, "LLM_AVAILABLE")
+
+
+def test_android_platform_is_normalized_before_llama_import(monkeypatch):
+    """Android CPython reports ``sys.platform == 'android'`` and must be coerced
+    to the Linux loader path that llama-cpp-python accepts.
+    """
+    original = sys.platform
+    monkeypatch.setattr(sys, "platform", "android")
+    engine_mod._normalize_android_platform()
+    assert sys.platform == "linux"
+    monkeypatch.setattr(sys, "platform", original)
+
+
+def test_android_engine_initial_import_does_not_use_uninitialized_logger(monkeypatch):
+    original = sys.platform
+    try:
+        monkeypatch.setattr(sys, "platform", "android")
+        importlib.reload(engine_mod)
+        assert sys.platform == "linux"
+        assert "NameError" not in engine_mod.LLM_IMPORT_ERROR
+    finally:
+        monkeypatch.setattr(sys, "platform", original)
+        importlib.reload(engine_mod)
 
 
 def test_load_raises_clear_error_when_backend_missing() -> None:
