@@ -54,3 +54,4 @@ mobile/.ci/*.p12
 WARP.md
 AGENTS.md
 CLAUDE.md
+.venv-build
