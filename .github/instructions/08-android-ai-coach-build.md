@@ -45,26 +45,53 @@ Local gate before pushing: `buildozer android debug` from `mobile/`
 - Ensure several GB free (`df`) before launching; the llama.cpp CMake compile
   needs headroom beyond the ~4 GB cache.
 
-## Long-build shell hygiene
-- Launch long builds detached (`setsid`, stdout/stderr to a log file under
-  `/tmp`) and return immediately; never run them in the foreground.
-- Monitor via file reads of the log, not shell `tail`/`grep` pipelines that
-  block on the still-running build process. Clean up stale background jobs
-  (buildozer, gradle daemons, ninja) before relaunching.
+## Local debug builds
+- Use `./mobile/scripts/build_debug.sh` for a local debug build, APK content
+  verification, install, and launch. Wait for its exit status and read the actual
+  error above Buildozer's generic failure trailer before retrying. Never infer
+  deployment success from an old APK filename or a tool call with missing output;
+  check APK timestamp and installed Android version code.
+- The `after_apk_build` p4a hook runs with the distribution as its current working
+  directory; `toolchain.ctx.dist_dir` is the parent `dists` directory. Keep the
+  Java patch in `mobile/patches/`, dry-run it against a clean SDL2 distribution,
+  and fail on an upstream source mismatch. Do not rely on edits made only inside
+  `/tmp/buildozer-build`.
+- Monitor build output without hiding the first compiler or hook error. Clean up
+  stale background jobs (buildozer, gradle daemons, ninja) before relaunching.
 - Buildozer prints "about to run X" markers sequentially, then runs compile
   steps whose output lands later: log order is NOT execution order.
 
+## Archive extraction and updates
+- The SDL2 bootstrap unpacks `assets/private.tar` (app files) and
+  `lib/arm64-v8a/libpybundle.so` (Python runtime and site-packages) before Kivy
+  starts. Activity display timing measures the splash screen, not app readiness.
+- The build hook hashes archive entry names, sizes, and contents separately;
+  a rebuild timestamp alone must not change the Python-bundle marker. Count
+  actual extracted entries for the native splash progress bar. When app files
+  change, preserve `_python_bundle` and `libpybundle.version` during private
+  cleanup; otherwise every app-only update needlessly re-extracts the runtime.
+- Prove both upgrade paths: app-only update changes `private_version` but keeps
+  `pybundle_version` and skips bundle extraction; changed runtime updates the
+  bundle marker and extracts once. Preserve app data and signing lineage during
+  upgrade testing. A first install still needs to unpack both archives.
+
 ## Verifying the APK
-- Expect `mobile/bin/momentum-*-arm64-v8a-debug.apk` (~46 MB).
+- Expect `mobile/bin/momentum-*-arm64-v8a-debug.apk` (size varies with recipes).
 - App code (incl. `momentum/llm/`) ships in `assets/private.tar`.
 - `site-packages` ride inside `lib/arm64-v8a/libpybundle.so`, staged from
   `dists/momentum/_python_bundle__arm64-v8a`. Confirm `llama_cpp` plus the
   native `libggml-*.so` are present: "APK exists" alone does not prove the
   AI coach is bundled.
+- Keep AI Coach opt-in across `AppConfig`, desktop/mobile checkboxes, the home
+  button, debug probes, and background nudges. A saved explicit choice stays
+  saved; absent or invalid settings default off. Smoke tests exercising Coach
+  generation must opt in explicitly instead of relying on the old default.
 
 ## CI relationship and pre-push hygiene
 - CI derives `android.numeric_version` from the run number
-  (`100000000 + GITHUB_RUN_NUMBER`); never bump it by hand.
+  (`100000000 + GITHUB_RUN_NUMBER`); keep the local spec's code monotonic when
+  a user-facing version changes, and ensure the CI-derived release code is
+  greater than the last shipped code before publishing.
 - A local green `debug` build is the gate before pushing for the CI artifact
   build; push only a clean, tested tree.
 - Split renames from behavior fixes (review-friendly commits); delete `/tmp`

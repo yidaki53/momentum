@@ -173,6 +173,9 @@ By default, data is stored in `~/.local/share/momentum/momentum.db` (SQLite). Th
 
 **Do not uninstall to "fix" an install problem without exporting first** -- uninstalling deletes app-private data (desktop is unaffected: it always uses `~/.local/share/momentum`). Android Auto Backup may restore data after a reinstall, but that is best-effort and can lag; an exported backup is guaranteed.
 
+On the first launch after installation, Android prepares Momentum's Python files and shows a progress bar. Updates extract app files again, but keep the Python runtime when its contents have not changed. A changed runtime needs to be prepared once more; subsequent launches reuse it.
+AI Coach is off by default. Enable it in Settings to use local coaching; when off, Momentum does not start the Coach backend for home nudges. This choice does not remove the Python runtime or change the extraction step.
+
 ## Mobile (Android)
 
 A full-featured Kivy-based Android app is in `mobile/`. It mirrors desktop capabilities with touch-focused navigation and includes:

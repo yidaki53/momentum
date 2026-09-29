@@ -25,6 +25,8 @@ Momentum's 15-minute focus timer draws on the principles behind the Pomodoro Tec
 
 Momentum's encouragement messages reflect the principles of self-compassion -- treating yourself with kindness during difficulty rather than self-criticism. A meta-analysis of 56 randomised controlled trials found that self-compassion interventions produced moderate reductions in depressive symptoms (g=0.66) and anxiety (g=0.57). Crucially, self-compassion has been shown to increase behavioural activation: people who are kinder to themselves after setbacks are more motivated to try again, creating a positive feedback loop with task completion.
 
+The app's standard encouragement is available without AI. The optional local AI Coach is off by default and requires an explicit choice in Settings; it is not necessary for the behavioural activation features above.
+
 - [Wilson et al. (2023) -- Self-compassion reduces depression/anxiety meta-analysis, Mindfulness](https://doi.org/10.1007/s12671-023-02148-x)
 - [Ferrari et al. (2019) -- Self-compassion interventions meta-analysis, Mindfulness](https://doi.org/10.1007/s12671-019-01134-6)
 - [Adie et al. (2021) -- Self-compassion, activation and depression, Mindfulness](https://doi.org/10.1007/s12671-021-01637-1)

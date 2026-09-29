@@ -10,6 +10,12 @@
 - Desktop UI settings and mobile app settings must stay behaviorally aligned.
 - Any setting added, removed, renamed, or changed on one surface must be reviewed and updated on the other surface in the same change unless the user explicitly asks for a temporary exception.
 - Treat settings parity as applying to both persistence and visible UI behavior: labels, defaults, effects, and runtime application should match across desktop and mobile.
+- AI Coach is opt-in: missing settings default off; keep visible checkboxes, mobile affordances, background nudges, and debug probes disabled until enabled. Do not import the native backend just to render disabled settings.
+
+## Android startup and build evidence
+- An Android activity displayed on screen may still be the splash window. Confirm Python/Kivy reached its main loop and the home screen is usable; check first-install and upgrade extraction separately using the runtime diagnostics playbook.
+- Keep app and Python-bundle extraction versions independent, and preserve the cached bundle on app-only updates. Use the Android AI-coach build instructions for the p4a hook, patch, and device verification.
+- After a user-visible change, follow the release policy: update semver, Android version code, versioned build helpers, and tests that mock the current release together.
 
 ## Mobile UI learnings
 - On Android/Kivy accordion-style sections, collapsed children must also shrink to zero height and be disabled; hiding only the parent container is not sufficient to keep touch behavior reliable.

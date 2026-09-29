@@ -13,7 +13,15 @@ When version bump is required, update all touchpoints together:
 - `momentum/__init__.py`
 - `mobile/momentum/__init__.py`
 - `mobile/buildozer.spec` (`version`)
+- `mobile/buildozer.spec` (`android.numeric_version`, monotonic for install-over testing)
+- Debug build helpers that name a versioned APK (for example `mobile/scripts/build_debug.sh`)
 - Any CLI/desktop/mobile visible version/about strings
+
+Use a new semantic version for a new user-visible feature or substantial change,
+not a succession of indistinguishable build numbers under the same version.
+Verify APK filename, manifest version, and installed version after building.
+Update CLI/update-check tests that mock the current or next release when semver
+changes; a test's "newer" release must actually be newer than the app.
 
 Release branch policy:
 - Branch naming: `release/MAJOR.MINOR.PATCH`
