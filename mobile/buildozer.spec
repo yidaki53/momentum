@@ -11,7 +11,7 @@ source.dir = .
 # source filter would drop them and the APK would silently run the pure-Python
 # fallbacks in domain/assessments/scoring.py and ui/charts.py.
 source.include_exts = py,png,jpg,kv,atlas,md,so
-version = 0.4.0
+version = 0.5.0
 
 # Note: The AI Coach chat UI ships in every APK and degrades gracefully: when
 # the native llama-cpp-python backend is absent (the default -- see Stage 2 notes
@@ -57,7 +57,7 @@ android.api = 34
 android.minapi = 26
 android.ndk = 25b
 android.accept_sdk_license = True
-android.numeric_version = 100000003
+android.numeric_version = 100000004
 android.release_artifact = apk
 android.debug_artifact = apk
 # v1 ships arm64-v8a only: every API 26+ device is arm64, and a single prebuilt
