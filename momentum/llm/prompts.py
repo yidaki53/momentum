@@ -1,5 +1,7 @@
 """Prompt templates for the AI Coach LLM."""
 
+import re
+
 from momentum.llm.knowledge import (
     ENCOURAGEMENT_KNOWLEDGE,
     EXECUTIVE_DYSFUNCTION_KNOWLEDGE,
@@ -57,11 +59,36 @@ How to reply:
 - Never diagnose or prescribe.
 - If they mention self-harm or crisis, gently encourage contacting emergency services or a crisis helpline now.
 - You are an AI tool, not a replacement for professional help.
-
-Creating tasks: only when the user explicitly asks you to create or add a task, finish your reply with one marker per task on its own line:
-[[task: Write the opening paragraph]]
-Keep each a short next action. Never emit a marker otherwise, and never invent tasks.
 """
+
+_TASK_CREATION_INSTRUCTION = """Creating tasks: the user has asked you to create a task, so finish
+your reply with one marker per task on its own line:
+[[task: Write the opening paragraph]]
+Keep each a short next action, not a project."""
+
+# Small models imitate whatever structured output they are shown. Leaving the
+# marker and a worked example permanently in the system prompt meant a 0.5B
+# model answered "hi" by inventing a task, because that was the only formatted
+# output it had ever been shown. The instruction is attached only when the user
+# has actually asked for a task, so the marker is invisible in every other
+# conversation and cannot be copied unprompted.
+_TASK_REQUEST_RE = re.compile(
+    r"\b(add|create|make|put|remind)\b[^.?!\n]{0,24}\b(task|todo|to-do|reminder)\b"
+    r"|\b(task|todo|to-do)\b[^.?!\n]{0,24}\b(for me|to me|please)\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_task_creation(message: str) -> bool:
+    """Return True when *message* plausibly asks the coach to create a task.
+
+    Erring towards False is deliberate: a false positive puts the marker back
+    in front of the model and it may emit one unprompted, whereas a false
+    negative only means the coach replies in words and the user can ask again
+    more explicitly.
+    """
+    return bool(_TASK_REQUEST_RE.search(message or ""))
+
 
 # Backwards-compatible alias; the public name is still CHAT_SYSTEM_PROMPT.
 CHAT_SYSTEM_PROMPT = _CHAT_SYSTEM_PROMPT
@@ -77,7 +104,16 @@ def build_chat_prompt(
     user_context: str,
     chat_history: list[dict[str, str]],
 ) -> list[dict[str, str]]:
-    """Build a chat-style message list for the LLM."""
+    """Build a chat-style message list for the LLM.
+
+    The user's real app data -- active, pending and completed tasks among it --
+    is injected so the coach reasons about what the user is actually doing.
+
+    The task-marker instruction is appended only when the message actually asks
+    for a task. It is never part of the standing system prompt: a small model
+    shown a worked example of a structured output reproduces it unprompted,
+    which is how "hi" once came back as an invented task.
+    """
     messages: list[dict[str, str]] = [
         {"role": "system", "content": CHAT_SYSTEM_PROMPT},
         {
@@ -85,6 +121,8 @@ def build_chat_prompt(
             "content": f"Here is the user's current context from the app:\n{user_context}",
         },
     ]
+    if asks_for_task_creation(user_message):
+        messages.append({"role": "system", "content": _TASK_CREATION_INSTRUCTION})
     # Add chat history
     for msg in chat_history:
         messages.append(msg)

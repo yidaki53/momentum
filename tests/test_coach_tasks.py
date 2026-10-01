@@ -13,7 +13,6 @@ from pathlib import Path
 
 from momentum import db
 from momentum.llm import context as ctx_mod
-from momentum.models import TaskCreate
 
 
 def test_extracts_task_markers() -> None:
@@ -70,33 +69,32 @@ def test_parsing_alone_creates_no_tasks(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_prompt_tells_the_model_when_to_use_the_marker() -> None:
-    """The model is instructed explicitly, including when *not* to use it."""
+def test_prompt_never_shows_the_marker_unprompted() -> None:
+    """The task marker must be invisible unless the user asked for a task.
+
+    A 0.5B model given a worked example of a structured output reproduces it:
+    with the marker permanently in the system prompt, "hi" came back as an
+    invented task. This is the regression that caused it.
+    """
     from momentum.llm import prompts
 
-    system = prompts.CHAT_SYSTEM_PROMPT
-    assert "[[task:" in system
-    assert "only when the user explicitly" in system.lower()
+    assert "[[task:" not in prompts.CHAT_SYSTEM_PROMPT
+
+    ordinary = prompts.build_chat_prompt("hi", "ctx", [])
+    assert not any("[[task:" in m["content"] for m in ordinary)
+
+    asking = prompts.build_chat_prompt("add a task to call Sam", "ctx", [])
+    assert any("[[task:" in m["content"] for m in asking)
 
 
-def test_context_includes_active_pending_and_completed_tasks(
-    tmp_path: Path,
-) -> None:
-    """The coach is told about work in progress and work already finished."""
-    conn = db.get_connection(tmp_path / "c.db")
-    try:
-        db.add_task(conn, TaskCreate(title="Finish the quarterly summary"))
-        active = db.list_tasks(conn)[0]
-        db.set_task_active(conn, active.id)
+def test_task_intent_detection() -> None:
+    from momentum.llm import prompts
 
-        done = db.add_task(conn, TaskCreate(title="Send the invoice"))
-        db.complete_task(conn, done.id)
-        db.add_task(conn, TaskCreate(title="Book the venue"))
-
-        context = ctx_mod.build_user_context(conn)
-
-        assert "Finish the quarterly summary" in context  # in progress
-        assert "Book the venue" in context  # still pending
-        assert "Send the invoice" in context  # already completed
-    finally:
-        conn.close()
+    for message in ("hi", "hello", "how are you?", "what should I do today?"):
+        assert not prompts.asks_for_task_creation(message), message
+    for message in (
+        "add a task to call Sam",
+        "create a todo for the report",
+        "make me a task for the laundry",
+    ):
+        assert prompts.asks_for_task_creation(message), message

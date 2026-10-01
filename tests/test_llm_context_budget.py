@@ -201,15 +201,18 @@ def test_chat_system_prompt_is_small_enough_for_a_phone() -> None:
     assert headroom > 1000, "not enough room left for history and the reply"
 
 
-def test_chat_prompt_still_carries_the_coaching_rules() -> None:
-    """Compacting the prompt must not drop the safety and behaviour rules."""
+def test_chat_prompt_keeps_the_safety_rules() -> None:
+    """Compacting the prompt must not drop safety or behaviour rules.
+
+    The task marker is covered separately in tests/test_coach_tasks.py, where
+    it is deliberately kept out of the standing prompt.
+    """
     from momentum.llm import prompts
 
     prompt = prompts.CHAT_SYSTEM_PROMPT.lower()
     for required in (
         "executive dysfunction",
         "never diagnose",
-        "[[task:",
         "not a replacement for professional help",
     ):
         assert required in prompt, required
