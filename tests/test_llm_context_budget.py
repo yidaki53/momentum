@@ -178,3 +178,38 @@ def test_android_thread_count_is_capped(monkeypatch) -> None:
     monkeypatch.setattr(engine_mod.os, "sched_getaffinity", lambda _pid: set(range(16)))
 
     assert engine_mod._guess_cpu_threads() <= 4
+
+
+def test_chat_system_prompt_is_small_enough_for_a_phone() -> None:
+    """The chat prompt must stay far below the context window.
+
+    Inlining the whole knowledge base cost ~1750 tokens per turn: prefill alone
+    took 10.8s on device, every decoded token attended over ~1900 tokens, and
+    the reply budget collapsed to 126 tokens -- so the user saw a spinner
+    instead of an answer. A system prompt that dominates the window is a
+    performance bug, not a safety margin.
+    """
+    from momentum.llm import prompts
+
+    tokens = _estimate_prompt_tokens(
+        [{"role": "system", "content": prompts.CHAT_SYSTEM_PROMPT}]
+    )
+    assert tokens < 700, f"chat system prompt is {tokens} tokens; too large"
+
+    # And it must leave room in a 2048 window for an actual conversation.
+    headroom = 2048 - tokens
+    assert headroom > 1000, "not enough room left for history and the reply"
+
+
+def test_chat_prompt_still_carries_the_coaching_rules() -> None:
+    """Compacting the prompt must not drop the safety and behaviour rules."""
+    from momentum.llm import prompts
+
+    prompt = prompts.CHAT_SYSTEM_PROMPT.lower()
+    for required in (
+        "executive dysfunction",
+        "never diagnose",
+        "[[task:",
+        "not a replacement for professional help",
+    ):
+        assert required in prompt, required

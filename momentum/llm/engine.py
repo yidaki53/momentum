@@ -825,10 +825,13 @@ class LlmEngine:
                     chunks = 0
                     for chunk in cast("Iterable[Any]", response):
                         chunks += 1
-                        if chunks == 1:
+                        # A heartbeat every few chunks turns "slow" into a
+                        # measurable rate, which is the difference between a
+                        # device that is merely slow and one that is stuck.
+                        if chunks == 1 or chunks % 5 == 0:
                             _trace(
-                                f"first chunk after {time.time() - started:.2f}s: "
-                                f"{type(chunk).__name__} {_short_repr(chunk)}"
+                                f"chunk {chunks} at {time.time() - started:.2f}s "
+                                f"({_short_repr(chunk, 80)})"
                             )
                         content = _delta_text(chunk)
                         if content:
