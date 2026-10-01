@@ -511,6 +511,33 @@ def _fit_max_tokens(
     return max(1, min(requested, available - 1))
 
 
+# Windows the app offers. 2048 is the minimum that fits Momentum's prompts;
+# larger values trade KV-cache memory for more history and longer answers.
+MIN_CONTEXT_TOKENS = 2048
+MAX_CONTEXT_TOKENS = 8192
+
+
+def _configured_n_ctx() -> int:
+    """Return the context window from config, clamped to a sane range.
+
+    A local model can be given a bigger window than the desktop default, which
+    is how the user gets more history and longer replies from the same weights.
+    The value is clamped because a window below the prompt size makes every
+    request fail, and an unbounded one can exhaust memory.
+    """
+    try:
+        from momentum import config as cfg
+
+        requested = int(getattr(cfg.load_config(), "llm_context_tokens", 0) or 0)
+    except Exception:
+        requested = 0
+        log.debug("Could not read configured context window", exc_info=True)
+
+    if requested <= 0:
+        return _default_n_ctx()
+    return max(MIN_CONTEXT_TOKENS, min(MAX_CONTEXT_TOKENS, requested))
+
+
 class LlmEngine:
     """Manages a local GGUF model for text generation."""
 
@@ -744,8 +771,12 @@ def get_engine(
 ) -> LlmEngine:
     """Get or create the singleton LLM engine.
 
-    The model will be downloaded first if not already cached. ``n_ctx`` defaults
-    to the platform-appropriate context window (see :func:`_default_n_ctx`).
+    ``n_ctx`` defaults to the user's configured window (see
+    ``AppConfig.llm_context_tokens``) and falls back to
+    :func:`_default_n_ctx` when unset. A larger window buys longer chat history
+    and longer answers at the cost of KV-cache memory, which the memory budget
+    in :func:`check_memory_budget` accounts for -- so raising it is a real
+    trade-off rather than a free win.
 
     Callers must run this off the UI thread. It performs the whole native load,
     which takes seconds and claims hundreds of megabytes; doing it inline in a
@@ -759,6 +790,8 @@ def get_engine(
             return _engine_instance
 
         model_path = ensure_model(model_name)
+        if n_ctx is None:
+            n_ctx = _configured_n_ctx()
         _engine_instance = LlmEngine(
             model_path=model_path,
             n_ctx=n_ctx,
