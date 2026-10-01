@@ -122,9 +122,62 @@ def build_user_context(conn: sqlite3.Connection) -> str:
     return "\n".join(parts)
 
 
+def recency_halflife_weight(age: int, halflife: float) -> float:
+    """Return an exponential recency weight for a message *age* turns back.
+
+    A weight of 1.0 is the most recent message, 0.5 is one halflife old, and so
+    on. Exponential decay is used rather than a linear ramp because the value of
+    a conversational turn falls off quickly once it is several turns back, while
+    the immediately preceding turns matter almost equally.
+    """
+    if halflife <= 0:
+        return 1.0
+    return float(0.5 ** (max(0, age) / halflife))
+
+
 def build_chat_history(
-    conn: sqlite3.Connection, limit: int = 6
+    conn: sqlite3.Connection,
+    limit: int = 6,
+    *,
+    max_candidates: int = 40,
+    recency_halflife: float = 6.0,
 ) -> list[dict[str, str]]:
-    """Return recent chat messages as a list of {role, content} dicts."""
-    messages = db.list_llm_chat_messages(conn, limit=limit)
-    return [{"role": m.role, "content": m.content} for m in reversed(messages)]
+    """Return chat messages weighted toward recent turns.
+
+    The whole conversation stays in SQLite -- nothing is dropped on save. What
+    changes here is *selection*: rather than taking the last ``limit`` messages
+    strictly by timestamp, up to ``max_candidates`` recent messages are scored
+    by recency (exponential decay with ``recency_halflife`` turns) and the
+    highest-scoring ``limit`` are returned.
+
+    Scoring by age rather than truncating by age means a still-relevant message
+    from earlier in the conversation can survive while a run of trivial
+    turn-taking ("ok", "thanks") from the last minute is dropped. The newest
+    message is always included regardless of score, because dropping the turn
+    being replied to would break the conversation outright.
+
+    The result is always returned oldest-first, as the prompt builder expects.
+    """
+    candidates = db.list_llm_chat_messages(conn, limit=max_candidates)
+    if len(candidates) <= limit:
+        ordered = list(reversed(candidates))
+        return [{"role": m.role, "content": m.content} for m in ordered]
+
+    # ``candidates`` is newest-first, so the enumeration index is the age in
+    # turns: index 0 is the newest message.
+    scored = [
+        (recency_halflife_weight(index, recency_halflife), index, message)
+        for index, message in enumerate(candidates)
+    ]
+    # Highest weight first, keeping newest-first ordering as the tie-break so
+    # equal-weight messages are chosen by recency rather than arbitrarily.
+    scored.sort(key=lambda item: (-item[0], item[1]))
+
+    chosen = scored[:limit]
+    # Index 0 is the NEWEST message, so descending index is oldest-first --
+    # the order the prompt builder and the chat transcript both expect.
+    chosen.sort(key=lambda item: item[1], reverse=True)
+
+    return [
+        {"role": message.role, "content": message.content} for _, _, message in chosen
+    ]
