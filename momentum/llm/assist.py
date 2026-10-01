@@ -16,6 +16,7 @@ from momentum import config as cfg
 from momentum.llm.context import build_user_context
 from momentum.llm.downloader import is_model_downloaded
 from momentum.llm.engine import (
+    InferencePreempted,
     InsufficientMemoryError,
     check_memory_budget,
     get_engine,
@@ -154,6 +155,9 @@ def request_assistance(
                 ],
                 max_tokens=max_tokens,
                 temperature=temperature,
+                # Optional snippet: yields the inference slot to a chat reply
+                # rather than making the user wait out its 180 tokens.
+                background=True,
             ).strip()
             if not text:
                 raise RuntimeError("The coach returned an empty response.")
@@ -161,6 +165,10 @@ def request_assistance(
                 _CACHE[key] = text
             if on_done:
                 on_done(text)
+        except InferencePreempted:
+            # Dropped so a chat reply could go first. Not an error: the snippet
+            # is optional and will be regenerated the next time it is asked for.
+            log.debug("Optional AI assistance yielded to a chat reply")
         except Exception as exc:
             log.debug("Optional AI assistance failed", exc_info=True)
             if on_error:

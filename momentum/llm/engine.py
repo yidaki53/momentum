@@ -551,15 +551,42 @@ _INFERENCE_SLOT = threading.Semaphore(1)
 # How long a caller waits for the single inference slot before giving up.
 INFERENCE_WAIT_S = 20.0
 
+# Set while a foreground (chat) request is waiting for the slot. A background
+# generation polls this between tokens and abandons itself, because a screen
+# insight that has been running for two minutes must never make the user wait
+# for their own reply: on a phone the insight takes 180 tokens at roughly
+# 1.4 tokens/second, which is longer than any reasonable wait.
+_FOREGROUND_WAITING = threading.Event()
 
-def _acquire_inference_slot() -> None:
+
+class InferencePreempted(RuntimeError):
+    """Raised inside a background generation when a chat reply needs the slot.
+
+    Not a failure worth reporting. The abandoned snippet is simply dropped and
+    regenerated next time; surfacing an error to the user would be worse than
+    the silence.
+    """
+
+
+def _acquire_inference_slot(*, background: bool = False) -> None:
     """Take the one inference slot, or raise so the caller can report it.
 
     A short wait is deliberate. On a phone a reply takes tens of seconds; a
     caller that cannot start promptly is better off being told the coach is
     busy than being left on a spinner.
+
+    A foreground caller additionally announces itself first, so a background
+    generation already inside llama.cpp can stop at its next token and hand the
+    slot over instead of forcing the reply to time out behind it.
     """
-    if not _INFERENCE_SLOT.acquire(timeout=INFERENCE_WAIT_S):
+    if not background:
+        _FOREGROUND_WAITING.set()
+    try:
+        acquired = _INFERENCE_SLOT.acquire(timeout=INFERENCE_WAIT_S)
+    finally:
+        if not background:
+            _FOREGROUND_WAITING.clear()
+    if not acquired:
         _trace("inference slot busy - declining this request")
         raise RuntimeError(
             "The coach is already working on something else. Wait for it to "
@@ -741,6 +768,7 @@ class LlmEngine:
         top_k: int = 40,
         stop: Optional[list[str]] = None,
         stream: bool = False,
+        background: bool = False,
     ) -> str:
         """Generate a response from the model.
 
@@ -752,9 +780,16 @@ class LlmEngine:
             top_k: Top-k sampling parameter.
             stop: Optional list of stop sequences.
             stream: If True, use streaming (returns full text at end).
+            background: If True, this is an optional snippet rather than
+                something the user is waiting for, so it abandons itself as soon
+                as a chat reply needs the inference slot.
 
         Returns:
             The generated text.
+
+        Raises:
+            InferencePreempted: A chat reply took priority over this
+                background request, which produced no text.
         """
         if self._llama is None:
             raise RuntimeError("Model not loaded. Call load() first.")
@@ -769,13 +804,20 @@ class LlmEngine:
         # The synchronous path (screen insights, encouragements) takes the same
         # single-flight slot as the streaming chat path, so a background request
         # can never leave a chat message queued behind it.
-        _acquire_inference_slot()
+        _acquire_inference_slot(background=background)
         stall_timer = _schedule_stall_release()
         try:
             _trace(
                 f"sync start n_ctx={self._n_ctx} threads={self._n_threads} "
-                f"budget={budget} messages={len(fitted_messages)}"
+                f"budget={budget} messages={len(fitted_messages)} "
+                f"background={background}"
             )
+            # Background work always decodes as a stream, even when the caller
+            # did not ask for one. Iteration is the only point at which this
+            # thread can observe that a chat reply has arrived and hand over the
+            # slot; llama.cpp emits chunks either way, so assembling them here
+            # gives the same text back. Foreground callers keep the response
+            # shape they asked for.
             response = self._llama.create_chat_completion(
                 messages=cast("Any", fitted_messages),
                 max_tokens=budget,
@@ -783,16 +825,34 @@ class LlmEngine:
                 top_p=top_p,
                 top_k=top_k,
                 stop=stop or [],
-                stream=stream,
+                stream=True if background else stream,
             )
-            if stream:
-                # For streaming, accumulate chunks. ``_delta_text`` tolerates the
-                # role-only and content-less chunks llama-cpp-python emits.
-                full_text = ""
-                for chunk in cast("Iterable[Any]", response):
-                    full_text += _delta_text(chunk)
-                return full_text.strip()
-            return _message_text(response).strip()
+            # Decide the response shape from what came back rather than from the flag:
+            # llama.cpp returns a complete payload when not streaming and a
+            # lazy generator when streaming. Assembling chunks by hand is only
+            # needed for the latter, and it is what allows a background
+            # generation to notice a waiting chat between tokens.
+            if isinstance(response, Mapping):
+                return _message_text(response).strip()
+            full_text = ""
+            chunks = 0
+            for chunk in cast("Iterable[Any]", response):
+                chunks += 1
+                # Hand the slot over if a chat reply needs it. Only background
+                # work yields: a user waiting on their own message must not be
+                # told the coach is busy.
+                if background and _FOREGROUND_WAITING.is_set():
+                    _trace(
+                        f"background generation preempted after {chunks} chunks "
+                        "(chat reply waiting)"
+                    )
+                    raise InferencePreempted(
+                        "A chat reply needs the coach; this snippet is dropped."
+                    )
+                content = _delta_text(chunk)
+                if content:
+                    full_text += content
+            return full_text.strip()
         finally:
             _cancel_stall_release(stall_timer)
             _release_inference_slot()

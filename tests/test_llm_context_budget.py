@@ -13,6 +13,7 @@ failure unreachable.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,31 @@ import pytest
 import momentum.llm.engine as engine_mod
 from momentum.llm import prompts
 from momentum.llm.engine import LlmEngine, _estimate_prompt_tokens, _fit_max_tokens
+
+
+class _SlowFakeLlama:
+    """A stand-in for ``Llama`` that yields chunks a real device would.
+
+    Each chunk costs a little time, standing in for a token of decoding, and the
+    counter records how far a generation got so a test can prove it stopped
+    early instead of running to its full budget.
+    """
+
+    def __init__(self, chunks: int = 180, delay: float = 0.01) -> None:
+        self._chunks = chunks
+        self._delay = delay
+        self.chunks_consumed = 0
+
+    def create_chat_completion(self, **_kwargs):
+        def _stream():
+            for _ in range(self._chunks):
+                time.sleep(self._delay)
+                self.chunks_consumed += 1
+                yield {
+                    "choices": [{"delta": {"content": "word "}, "finish_reason": None}]
+                }
+
+        return _stream()
 
 
 def _chat_messages(history_turns: int = 6) -> list[dict[str, str]]:
@@ -165,7 +191,7 @@ def test_both_generation_paths_take_the_single_slot() -> None:
     engine_mod = sys.modules["momentum.llm.engine"]
     for name in ("generate", "generate_async"):
         source = inspect.getsource(getattr(engine_mod.LlmEngine, name))
-        assert "_acquire_inference_slot()" in source, name
+        assert "_acquire_inference_slot(" in source, name
         assert "_release_inference_slot()" in source, name
 
 
@@ -251,3 +277,63 @@ def test_chat_temperature_is_low_enough_for_small_models() -> None:
         "not a replacement for professional help",
     ):
         assert required in prompt, required
+
+
+def _engine_with(fake) -> "LlmEngine":
+    """Build an engine around a fake llama, bypassing the real model load."""
+    import threading
+
+    engine = object.__new__(LlmEngine)
+    engine._llama = fake
+    engine._model_path = Path("unused")
+    engine._n_ctx = 2048
+    engine._n_threads = 2
+    engine._verbose = False
+    engine._lock = threading.Lock()
+    engine.last_budget = 0
+    return engine
+
+
+def test_background_generation_yields_the_slot_to_a_chat_reply() -> None:
+    """A chat reply must not queue behind a long background snippet.
+
+    Observed on the phone: a screen insight took the inference slot at 22:36:57
+    for its 180-token budget, and 20 seconds later the user's "hi" was rejected
+    with "inference slot busy - declining this request". Background work now
+    checks between tokens and abandons itself so the reply goes through.
+    """
+    import threading
+
+    fake = _SlowFakeLlama()
+    engine = _engine_with(fake)
+    # A chat arrives a moment into the snippet, as it would on a real screen.
+    threading.Timer(0.15, engine_mod._FOREGROUND_WAITING.set).start()
+    started = time.time()
+
+    with pytest.raises(engine_mod.InferencePreempted):
+        engine.generate(
+            [{"role": "user", "content": "hi"}], max_tokens=180, background=True
+        )
+    # It stopped near the start rather than decoding all 180 chunks (~1.8s).
+    assert fake.chunks_consumed < 60, fake.chunks_consumed
+    assert time.time() - started < 1.0
+    # And the slot is free again for whoever comes next.
+    assert engine_mod._INFERENCE_SLOT.acquire(timeout=1)
+    engine_mod._INFERENCE_SLOT.release()
+
+
+def test_a_chat_reply_never_yields_its_own_slot() -> None:
+    """Preemption is for background work only; a reply must finish."""
+    import threading
+
+    fake = _SlowFakeLlama()
+    engine = _engine_with(fake)
+    # The flag is set for the whole run, as it is while a reply holds the slot.
+    engine_mod._FOREGROUND_WAITING.set()
+    threading.Timer(2.0, engine_mod._FOREGROUND_WAITING.clear).start()
+    try:
+        text = engine.generate([{"role": "user", "content": "hi"}], max_tokens=180)
+    finally:
+        engine_mod._FOREGROUND_WAITING.clear()
+    assert text.strip(), "reply finished rather than bailing out"
+    assert fake.chunks_consumed == 180, fake.chunks_consumed
