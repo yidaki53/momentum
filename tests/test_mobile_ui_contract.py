@@ -375,9 +375,24 @@ def test_coach_insights_never_gate_the_rest_of_the_app() -> None:
     start = src.index("def _add_ai_insight(")
     block = src[start : start + 3000]
     # Nothing is added when the coach is not ready...
-    assert "if not _coach_ready():\n        return" in block
+    assert "if not _coach_ready():" not in block
+    assert "or _chat_is_active()" in block
     # ...and a failure removes the panel instead of raising into the screen.
     assert "container.remove_widget(panel)" in block
+
+
+def test_chat_has_priority_over_background_insights() -> None:
+    """An interactive message must never be queued behind a suggestion.
+
+    On device, entering the coach and sending a message started an automatic
+    insight in the same millisecond; the insight won the inference slot and
+    the real question was declined with "the coach is busy" after twenty
+    seconds, without ever reaching the model.
+    """
+    src = _mobile_main_source()
+    assert "_CHAT_ACTIVE = True" in src
+    # Cleared on every terminal path, or insights would stay suppressed forever.
+    assert src.count("_CHAT_ACTIVE = False") >= 3
 
 
 def test_coach_can_propose_tasks_but_only_after_confirmation() -> None:

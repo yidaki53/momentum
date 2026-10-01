@@ -392,6 +392,21 @@ def _available_model_specs() -> list:
     return []
 
 
+# Set while the coach screen has a request in flight.
+#
+# Automatic screen insights are a convenience; the coach chat is the feature.
+# On a phone both fire from the same tap -- entering the Coach screen starts
+# an insight in the same millisecond the user sends a message -- and whichever
+# wins the inference slot first is the one that runs. That repeatedly left
+# real questions queued behind a background suggestion and declined with
+# "the coach is busy", without ever reaching the model.
+_CHAT_ACTIVE = False
+
+
+def _chat_is_active() -> bool:
+    return _CHAT_ACTIVE
+
+
 def _coach_ready() -> bool:
     """Return whether optional AI snippets can be generated right now."""
     if not cfg.load_config().llm_enabled:
@@ -457,7 +472,9 @@ def _add_ai_insight(
     generates. If the load takes a while the user sees a quiet placeholder
     rather than a blocked screen.
     """
-    if not _coach_ready():
+    if not _coach_ready() or _chat_is_active():
+        # An interactive coach request is in flight. Background suggestions are
+        # never worth delaying or displacing a message the user is waiting on.
         return
 
     panel = BoxLayout(
@@ -3083,7 +3100,10 @@ class CoachScreen(Screen):
                         lambda _dt, e=exc: self._fail_reply(e), 0
                     )
 
-                # Accumulate streamed tokens so on_done can persist the full reply.
+                # Mark the coach busy so background screen insights stand aside
+                # instead of racing this request for the inference slot.
+                global _CHAT_ACTIVE
+                _CHAT_ACTIVE = True
                 self._pending_reply = ""
 
                 def _generate() -> None:
@@ -3137,6 +3157,8 @@ class CoachScreen(Screen):
                     target=_generate, name="momentum-coach-send", daemon=True
                 ).start()
             except Exception as exc:
+                global _CHAT_ACTIVE
+                _CHAT_ACTIVE = False
                 self.busy = False
                 self._hide_typing()
                 self._add_message(
@@ -3204,6 +3226,8 @@ class CoachScreen(Screen):
         self._scroll_to_bottom()
 
     def _finish_reply(self, full_text: str) -> None:
+        global _CHAT_ACTIVE
+        _CHAT_ACTIVE = False
         self.busy = False
         self._disarm_reply_watchdog()
         self._hide_typing()
@@ -3327,6 +3351,8 @@ class CoachScreen(Screen):
                 Clock.schedule_once(lambda _dt: refresh(), 0)
 
     def _fail_reply(self, exc) -> None:
+        global _CHAT_ACTIVE
+        _CHAT_ACTIVE = False
         self.busy = False
         self._disarm_reply_watchdog()
         self._hide_typing()
