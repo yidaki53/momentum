@@ -437,7 +437,11 @@ def _add_ai_insight(
                 setattr(button, "disabled", False),
             ),
             on_error=lambda exc: (
-                setattr(output, "text", "The coach could not add a perspective yet."),
+                setattr(
+                    output,
+                    "text",
+                    str(exc) or "The coach could not add a perspective yet.",
+                ),
                 setattr(button, "disabled", False),
             ),
         )
@@ -2919,7 +2923,6 @@ class CoachScreen(Screen):
                 )
                 self.busy = True
                 self._show_typing()
-                engine = funcs["get_engine"](model_name)
 
                 def _on_token(token: str) -> None:
                     Clock.schedule_once(
@@ -2938,14 +2941,36 @@ class CoachScreen(Screen):
 
                 # Accumulate streamed tokens so on_done can persist the full reply.
                 self._pending_reply = ""
-                engine.generate_async(
-                    messages=messages,
-                    on_token=lambda t: self._record_token(t, _on_token),
-                    on_done=_on_done,
-                    on_error=_on_error,
-                    max_tokens=512,
-                    temperature=0.7,
-                )
+
+                def _generate() -> None:
+                    """Load the engine and stream, entirely off the UI thread.
+
+                    ``get_engine`` performs the native load: it memory-maps a
+                    few hundred megabytes of weights and blocks for seconds. Doing
+                    it inline in the Kivy callback wedged the main looper, so the
+                    "AI Coach is thinking..." label was the last thing the user
+                    ever saw -- no repaint, no token callback, no error. On a
+                    phone the kernel would then reclaim the process while it was
+                    still resident.
+                    """
+                    try:
+                        engine = funcs["get_engine"](model_name)
+                    except Exception as exc:
+                        log.exception("AI Coach engine load failed")
+                        _on_error(exc)
+                        return
+                    engine.generate_async(
+                        messages=messages,
+                        on_token=lambda t: self._record_token(t, _on_token),
+                        on_done=_on_done,
+                        on_error=_on_error,
+                        max_tokens=512,
+                        temperature=0.7,
+                    )
+
+                threading.Thread(
+                    target=_generate, name="momentum-coach-send", daemon=True
+                ).start()
             except Exception as exc:
                 self.busy = False
                 self._hide_typing()
@@ -3005,7 +3030,10 @@ class CoachScreen(Screen):
             "assistant",
             f"I'm sorry, I encountered an error: {exc}",
         )
-        log.exception("AI Coach generation failed")
+        # ``log.exception`` outside an ``except`` block reports "NoneType: None"
+        # and discards the cause that actually matters here -- the engine-load
+        # refusal is the entire diagnosis for a memory-budget failure.
+        log.warning("AI Coach generation failed: %s: %s", type(exc).__name__, exc)
 
     def clear_chat(self) -> None:
         """Delete all chat history after confirmation."""

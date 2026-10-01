@@ -188,6 +188,117 @@ def _prefer_android_native_lib_dir() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Memory budget
+#
+# ``llama_cpp.Llama`` maps the whole GGUF into the process and then asks ggml for
+# KV-cache and compute scratch on top of that. On a phone that is ~720 MB of
+# weights plus a few hundred MB of buffers, and when the allocation fails the
+# failure surfaces *inside* llama.cpp as a native SIGSEGV rather than a Python
+# MemoryError. A segfault cannot be caught by ``try/except``, so it takes the
+# whole app down with no message -- which is exactly the observed behaviour:
+# the AI Coach tap on the help page killed Momentum outright.
+#
+# Estimating the footprint up front lets us refuse the load with an ordinary,
+# catchable error the UI can render, instead of letting the device reap the app.
+# The estimate is deliberately conservative; over-estimating only costs the user
+# a clear message, while under-estimating costs them the app.
+# ---------------------------------------------------------------------------
+
+# ggml scratch space (activations, logits, copy buffers) measured on the GGUF
+# sizes we ship. Roughly a fifth of the weights, which matches observed builds.
+_COMPUTE_BUFFER_RATIO = 0.25
+
+# KV cache is 2 tensors (keys + values) of n_ctx * n_layers * n_kv_heads *
+# head_dim elements at 2 bytes (f16). 2 * 22 * 4 * 64 = 11264 bytes per token.
+_KV_BYTES_PER_TOKEN = 2 * 22 * 4 * 64 * 2
+
+# Headroom for the Python/Kivy process itself, the SQLite page cache, and the
+# buffers ggml frees and re-requests during a decode step.
+_RESIDENT_HEADROOM_MB = 160
+
+# Devices with less free memory than this are not viable for on-device
+# inference at all, whatever model is selected.
+_MIN_HEADROOM_MB = 96
+
+
+def _available_memory_mb() -> Optional[int]:
+    """Return ``MemAvailable`` in MiB, or None when it cannot be determined.
+
+    ``MemAvailable`` is the kernel's own estimate of memory that can be handed
+    out without swapping, which is exactly the quantity that matters when the
+    question is "can this process still claim another few hundred MB". Android
+    exposes the same ``/proc/meminfo`` interface as Linux.
+    """
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except Exception:  # unreadable/absent procfs, e.g. some sandboxes
+        log.debug("Could not read /proc/meminfo", exc_info=True)
+    return None
+
+
+def estimate_load_mb(model_path: Path, n_ctx: int) -> int:
+    """Return the peak RSS this load is expected to need, in MiB.
+
+    Weights dominate: llama.cpp memory-maps the file, so the resident cost of
+    the model itself is its size on disk. KV cache scales linearly with the
+    context window, which is why a small ``n_ctx`` is the single cheapest lever
+    on a memory-constrained phone.
+    """
+    try:
+        weights_mb = Path(model_path).stat().st_size / (1024 * 1024)
+    except OSError:
+        weights_mb = 0.0
+    kv_mb = max(0, n_ctx) * _KV_BYTES_PER_TOKEN / (1024 * 1024)
+    compute_mb = weights_mb * _COMPUTE_BUFFER_RATIO
+    return int(weights_mb + kv_mb + compute_mb + _RESIDENT_HEADROOM_MB)
+
+
+class InsufficientMemoryError(RuntimeError):
+    """Raised when loading the model would exceed the memory budget.
+
+    A plain ``RuntimeError`` subclass so that every existing ``except
+    Exception`` around the coach already handles it: the user gets a message
+    instead of losing the app to a native crash.
+    """
+
+
+def check_memory_budget(model_path: Path, n_ctx: int) -> Optional[str]:
+    """Return a user-facing refusal message, or None when the load can proceed.
+
+    Returns the message rather than raising so that callers which only want to
+    pre-flight (the settings screen, diagnostics) can inspect the verdict
+    without handling an exception.
+    """
+    available_mb = _available_memory_mb()
+    if available_mb is None:
+        return None  # cannot measure; do not block a load that might well fit
+
+    needed_mb = estimate_load_mb(model_path, n_ctx)
+    headroom_mb = available_mb - needed_mb
+
+    if headroom_mb < 0:
+        return (
+            f"The AI Coach needs about {needed_mb} MB to run "
+            f"({Path(model_path).name}), but only {available_mb} MB of memory "
+            f"is free on this device. Close other apps and free some space, or "
+            f"choose the smaller Qwen model in Settings."
+        )
+    if headroom_mb < _MIN_HEADROOM_MB:
+        # Technically loadable, but leaving the kernel this little room is what
+        # produced the observed LOW_MEMORY kills mid-generation.
+        return (
+            f"Only about {available_mb} MB of memory is free and the AI Coach "
+            f"needs roughly {needed_mb} MB. Loading it now would very likely "
+            f"crash the app. Close other apps first, or switch to the smaller "
+            f"Qwen model in Settings."
+        )
+    return None
+
+
 def _instrument_event(msg: str) -> None:
     """Emit a concise, timestamped import-time message to the standard
     logger so it appears clearly in logcat when imports happen on-device.
@@ -329,25 +440,44 @@ def is_llm_available() -> bool:
     return LLM_AVAILABLE
 
 
+def _default_n_ctx() -> int:
+    """Return the context window to use for this platform.
+
+    A desktop with gigabytes of RAM can afford 2048 tokens. A phone cannot: the
+    KV cache grows linearly with the window, and a 720 MB model on a device
+    with well under a gigabyte free was already at the edge of being reclaimed
+    mid-generation. 512 keeps the chat prompt plus a few turns of history while
+    cutting the cache to a rounding error.
+    """
+    on_android = "ANDROID_ARGUMENT" in os.environ or hasattr(sys, "getandroidapilevel")
+    return 512 if on_android else 2048
+
+
 class LlmEngine:
     """Manages a local GGUF model for text generation."""
 
     def __init__(
         self,
         model_path: Path,
-        n_ctx: int = 2048,
+        n_ctx: Optional[int] = None,
         n_threads: Optional[int] = None,
         verbose: bool = False,
     ) -> None:
         self._model_path = model_path
-        self._n_ctx = n_ctx
+        self._n_ctx = _default_n_ctx() if n_ctx is None else n_ctx
         self._n_threads = n_threads or max(1, _guess_cpu_threads())
         self._verbose = verbose
         self._llama: Optional[Any] = None
         self._lock = threading.Lock()
 
     def load(self) -> None:
-        """Load the model into memory. Call once before generate()."""
+        """Load the model into memory. Call once before generate().
+
+        The memory budget is checked *before* constructing ``Llama``: an
+        allocation that llama.cpp cannot satisfy aborts natively with SIGSEGV,
+        which no Python handler can intercept, so refusing up front is the only
+        way to keep a failed load from taking the app down with it.
+        """
         if self._llama is not None:
             return
         if not LLM_AVAILABLE or Llama is None:
@@ -355,6 +485,9 @@ class LlmEngine:
                 "llama-cpp-python is not available on this build; "
                 "the AI Coach UI is ready but on-device inference is not."
             )
+        refusal = check_memory_budget(self._model_path, self._n_ctx)
+        if refusal is not None:
+            raise InsufficientMemoryError(refusal)
         log.info(
             "Loading model %s (ctx=%d, threads=%d)",
             self._model_path,
@@ -501,12 +634,18 @@ def _guess_cpu_threads() -> int:
 
 def get_engine(
     model_name: str = "tinyllama",
-    n_ctx: int = 2048,
+    n_ctx: Optional[int] = None,
     force_reload: bool = False,
 ) -> LlmEngine:
     """Get or create the singleton LLM engine.
 
-    The model will be downloaded first if not already cached.
+    The model will be downloaded first if not already cached. ``n_ctx`` defaults
+    to the platform-appropriate context window (see :func:`_default_n_ctx`).
+
+    Callers must run this off the UI thread. It performs the whole native load,
+    which takes seconds and claims hundreds of megabytes; doing it inline in a
+    Kivy callback freezes the main looper and leaves the screen showing its
+    "thinking" state with no way to redraw or react.
     """
     global _engine_instance
 
@@ -526,6 +665,9 @@ def get_engine(
 # Re-exported for callers that only want to probe availability.
 __all__ = [
     "LlmEngine",
+    "InsufficientMemoryError",
+    "check_memory_budget",
+    "estimate_load_mb",
     "get_engine",
     "reset_engine",
     "is_llm_available",

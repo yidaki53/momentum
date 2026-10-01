@@ -15,10 +15,37 @@ from collections.abc import Callable
 from momentum import config as cfg
 from momentum.llm.context import build_user_context
 from momentum.llm.downloader import is_model_downloaded
-from momentum.llm.engine import get_engine, is_llm_available
+from momentum.llm.engine import (
+    InsufficientMemoryError,
+    check_memory_budget,
+    get_engine,
+    is_llm_available,
+)
 from momentum.llm.prompts import SYSTEM_PROMPT
 
 log = logging.getLogger(__name__)
+
+
+def _memory_refusal(model_name: str) -> str | None:
+    """Return a user-facing refusal when *model_name* cannot fit in memory.
+
+    Both the engine module and the downloader are already imported by the time
+    this runs, so importing the model's path costs nothing extra. Returns None
+    when the model is absent (its absence is reported elsewhere) or when the
+    budget check cannot measure free memory.
+    """
+    try:
+        from momentum.llm.downloader import get_model_path
+        from momentum.llm.engine import _default_n_ctx
+
+        model_path = get_model_path(model_name)
+        if not model_path.exists():
+            return None
+        return check_memory_budget(model_path, _default_n_ctx())
+    except Exception:
+        log.debug("Could not pre-flight the coach memory budget", exc_info=True)
+        return None
+
 
 # This cache is intentionally process-local.  Generated snippets are ephemeral
 # UI copy; chat messages and the user's source data remain in SQLite.
@@ -84,6 +111,19 @@ def request_assistance(
         error = RuntimeError("The AI Coach is disabled or not ready.")
         if on_error:
             on_error(error)
+        return None
+
+    # Pre-flight the memory budget before spawning the worker. ``get_engine``
+    # memory-maps the weights and asks ggml for scratch space; when that
+    # allocation cannot be satisfied the failure is a native SIGSEGV inside
+    # llama.cpp, which no ``except`` clause can catch, so the process simply
+    # dies. Refusing here turns that uncatchable crash into a message the caller
+    # can render.
+    model_name = getattr(conf, "llm_model", "tinyllama")
+    refusal = _memory_refusal(model_name)
+    if refusal is not None:
+        if on_error:
+            on_error(InsufficientMemoryError(refusal))
         return None
 
     key = cache_key or instruction.strip()
