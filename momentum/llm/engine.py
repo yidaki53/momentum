@@ -581,25 +581,25 @@ def _release_inference_slot() -> None:
 # attempt rather than a permanent "busy".
 _INFERENCE_STALL_S = 240.0
 
-_stalled_releases: "list[threading.Timer]" = []
 
+def _schedule_stall_release() -> Optional[threading.Timer]:
+    """Return the inference slot automatically if a generation overruns.
 
-def _schedule_stall_release() -> None:
-    """Return the inference slot automatically if a generation overruns."""
-
-    def _release() -> None:
-        _trace("stall watchdog: releasing the inference slot")
-        _release_inference_slot()
-
-    timer = threading.Timer(_INFERENCE_STALL_S, _release)
+    The timer handle is returned rather than tracked in a shared list. A
+    module-level list is a race: one generation finishing would cancel every
+    *other* in-flight generation's watchdog, while a watchdog firing would
+    release a slot its own (still running) generation would later release
+    again, permanently inflating the count and letting unrelated requests
+    overlap. Ownership has to be per-request.
+    """
+    timer = threading.Timer(_INFERENCE_STALL_S, _release_inference_slot)
     timer.daemon = True
     timer.start()
-    _stalled_releases.append(timer)
+    return timer
 
 
-def _cancel_stall_release() -> None:
-    while _stalled_releases:
-        timer = _stalled_releases.pop()
+def _cancel_stall_release(timer: Optional[threading.Timer]) -> None:
+    if timer is not None:
         try:
             timer.cancel()
         except Exception:  # pragma: no cover - defensive
@@ -770,7 +770,7 @@ class LlmEngine:
         # single-flight slot as the streaming chat path, so a background request
         # can never leave a chat message queued behind it.
         _acquire_inference_slot()
-        _schedule_stall_release()
+        stall_timer = _schedule_stall_release()
         try:
             _trace(
                 f"sync start n_ctx={self._n_ctx} threads={self._n_threads} "
@@ -794,7 +794,7 @@ class LlmEngine:
                 return full_text.strip()
             return _message_text(response).strip()
         finally:
-            _cancel_stall_release()
+            _cancel_stall_release(stall_timer)
             _release_inference_slot()
 
     def generate_async(
@@ -846,7 +846,7 @@ class LlmEngine:
                 )
                 started = time.time()
                 _acquire_inference_slot()
-                _schedule_stall_release()
+                stall_timer = _schedule_stall_release()
                 try:
                     # The native call hands back a lazy generator; nothing is
                     # decoded until the loop below iterates it.
@@ -882,7 +882,7 @@ class LlmEngine:
                         f"{time.time() - started:.2f}s"
                     )
                 finally:
-                    _cancel_stall_release()
+                    _cancel_stall_release(stall_timer)
                     _release_inference_slot()
                 on_done(full_text.strip())
             except Exception as exc:
