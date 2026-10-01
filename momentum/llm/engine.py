@@ -574,6 +574,38 @@ def _release_inference_slot() -> None:
         pass
 
 
+# A generation that cannot be cancelled once it is inside llama.cpp. If one
+# wedges, it must not take the coach down with it: after this deadline the slot
+# is handed back so the app stays usable. The abandoned thread cannot be killed
+# safely, but releasing the slot means the next request at least gets an honest
+# attempt rather than a permanent "busy".
+_INFERENCE_STALL_S = 240.0
+
+_stalled_releases: "list[threading.Timer]" = []
+
+
+def _schedule_stall_release() -> None:
+    """Return the inference slot automatically if a generation overruns."""
+
+    def _release() -> None:
+        _trace("stall watchdog: releasing the inference slot")
+        _release_inference_slot()
+
+    timer = threading.Timer(_INFERENCE_STALL_S, _release)
+    timer.daemon = True
+    timer.start()
+    _stalled_releases.append(timer)
+
+
+def _cancel_stall_release() -> None:
+    while _stalled_releases:
+        timer = _stalled_releases.pop()
+        try:
+            timer.cancel()
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+
 def _short_repr(value: Any, limit: int = 160) -> str:
     """Return a compact repr of a streaming chunk, for on-device tracing."""
     try:
@@ -738,7 +770,12 @@ class LlmEngine:
         # single-flight slot as the streaming chat path, so a background request
         # can never leave a chat message queued behind it.
         _acquire_inference_slot()
+        _schedule_stall_release()
         try:
+            _trace(
+                f"sync start n_ctx={self._n_ctx} threads={self._n_threads} "
+                f"budget={budget} messages={len(fitted_messages)}"
+            )
             response = self._llama.create_chat_completion(
                 messages=cast("Any", fitted_messages),
                 max_tokens=budget,
@@ -757,6 +794,7 @@ class LlmEngine:
                 return full_text.strip()
             return _message_text(response).strip()
         finally:
+            _cancel_stall_release()
             _release_inference_slot()
 
     def generate_async(
@@ -808,6 +846,7 @@ class LlmEngine:
                 )
                 started = time.time()
                 _acquire_inference_slot()
+                _schedule_stall_release()
                 try:
                     # The native call hands back a lazy generator; nothing is
                     # decoded until the loop below iterates it.
@@ -843,6 +882,7 @@ class LlmEngine:
                         f"{time.time() - started:.2f}s"
                     )
                 finally:
+                    _cancel_stall_release()
                     _release_inference_slot()
                 on_done(full_text.strip())
             except Exception as exc:
