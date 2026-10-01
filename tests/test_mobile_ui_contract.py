@@ -309,3 +309,40 @@ def test_ci_requires_llama_build_to_succeed_and_uploads_logs() -> None:
     # evaluate despite a dependency failure.
     assert "always() &&" in ci
     assert "continue-on-error: true" in ci
+
+
+def test_coach_buttons_sit_above_the_text_field() -> None:
+    """Send/Clear must be reachable above the keyboard, not under it."""
+    src = _mobile_main_source()
+    start = src.index("<CoachScreen>:")
+    block = src[start : start + 4000]
+    send_at = block.index("text: 'Send'")
+    input_at = block.index("id: coach_input")
+    assert send_at < input_at, "the button row must precede the TextInput"
+
+
+def test_coach_enter_key_sends_the_message() -> None:
+    """Enter sends rather than inserting a newline."""
+    src = _mobile_main_source()
+    assert "on_text_validate: root.send_message()" in src
+    # One handler serves both the button and the key, so it must tolerate the
+    # widget argument Kivy passes to each.
+    assert "def send_message(self, *_args) -> None:" in src
+
+
+def test_coach_disclaimer_is_shown_once_ever() -> None:
+    """The medical notice must not reappear on every visit."""
+    src = _mobile_main_source()
+    assert "def _show_coach_disclaimer_once(" in src
+    assert "coach_disclaimer_ack" in src
+    # The old per-session screen flag must no longer gate the popup.
+    assert '_show_info_popup("AI Coach", funcs["DISCLAIMER"])' not in src
+
+
+def test_context_window_is_configurable_and_clamped() -> None:
+    """A local model can be given a larger window, within safe bounds."""
+    from momentum.llm import engine
+
+    assert engine.MIN_CONTEXT_TOKENS >= 2048
+    assert engine.MAX_CONTEXT_TOKENS >= 4096
+    assert engine.MIN_CONTEXT_TOKENS < engine.MAX_CONTEXT_TOKENS

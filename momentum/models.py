@@ -211,6 +211,13 @@ class AppConfig:
     show_llm_welcome: bool = True
     llm_enabled: bool = False
     llm_model: str = "tinyllama"
+    # The coach disclaimer is shown once, then never again. Persisted so it
+    # stays dismissed across restarts and app updates rather than reappearing
+    # every time the Coach screen is opened.
+    coach_disclaimer_ack: bool = False
+    # Context window for on-device generation. Larger means more history and a
+    # longer answer, at the cost of KV-cache memory; see ``llm/engine.py``.
+    llm_context_tokens: int = 2048
 
     def __post_init__(self) -> None:
         # Coerce string values (from JSON deserialisation) to their enum types,

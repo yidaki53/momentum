@@ -869,6 +869,28 @@ def _show_info_popup(title: str, text: str) -> None:
     popup.open()
 
 
+def _show_coach_disclaimer_once(text: str) -> None:
+    """Show the coach's medical disclaimer exactly once, ever.
+
+    The acknowledgement lives in the persisted config rather than a screen
+    attribute, so the popup does not come back on the next launch, after a
+    restart, or following an app update. A one-time legal notice that returns on
+    every visit trains people to dismiss notices without reading them, which
+    defeats the purpose of showing it at all.
+    """
+    conf = cfg.load_config()
+    if conf.coach_disclaimer_ack:
+        return
+    conf.coach_disclaimer_ack = True
+    try:
+        cfg.save_config(conf)
+    except Exception:
+        # A failed write must not block the coach; it only means the notice may
+        # appear again next time.
+        log.debug("Could not persist coach disclaimer acknowledgement", exc_info=True)
+    _show_info_popup("AI Coach", text)
+
+
 def _android_activity():
     """Return the running PythonActivity, or None when not on Android."""
     try:
@@ -1437,22 +1459,9 @@ KV = """
             height: self.minimum_height
             padding: [dp(8), dp(4)]
             spacing: dp(4)
-            TextInput:
-                id: coach_input
-                size_hint_y: None
-                height: dp(104) * app.font_scale
-                padding: [dp(10), dp(10)]
-                is_focusable: True
-                input_type: 'text'
-                keyboard_suggestions: True
-                allow_copy: True
-                write_tab: False
-                multiline: True
-                font_size: sp(16) * app.font_scale
-                background_color: app.input_bg_color
-                foreground_color: app.text_color
-                hint_text: 'Type a message to your AI Coach...'
-                on_touch_down: root.focus_coach_input()
+            # Buttons sit ABOVE the input so the send action is reachable
+            # without covering the keyboard, and so the field keeps the bottom
+            # edge where thumbs expect it.
             BoxLayout:
                 size_hint_y: None
                 height: dp(44)
@@ -1470,6 +1479,25 @@ KV = """
                     color: app.button_text_color
                     font_size: sp(13) * app.font_scale
                     on_release: root.clear_chat()
+            TextInput:
+                id: coach_input
+                size_hint_y: None
+                height: dp(104) * app.font_scale
+                padding: [dp(10), dp(10)]
+                is_focusable: True
+                input_type: 'text'
+                keyboard_suggestions: True
+                allow_copy: True
+                write_tab: False
+                multiline: True
+                # Enter sends the message instead of inserting a newline.
+                # on_text_validate fires on Enter in a multiline TextInput.
+                on_text_validate: root.send_message()
+                font_size: sp(16) * app.font_scale
+                background_color: app.input_bg_color
+                foreground_color: app.text_color
+                hint_text: 'Type a message... (Enter sends)'
+                on_touch_down: root.focus_coach_input()
             Label:
                 id: coach_disclaimer
                 text: ''
@@ -2708,9 +2736,8 @@ class CoachScreen(Screen):
             return
         self.ready = True
         self._load_history(funcs)
-        if not self._disclaimer_shown:
-            self._disclaimer_shown = True
-            _show_info_popup("AI Coach", funcs["DISCLAIMER"])
+        # Shown once per installation, not once per session.
+        _show_coach_disclaimer_once(funcs["DISCLAIMER"])
 
     def _show_unavailable(self, funcs) -> None:
         """Explain engine failure without blocking drafting or model setup."""
@@ -2887,8 +2914,13 @@ class CoachScreen(Screen):
             if getattr(child, "id", None) == "typing_indicator":
                 chat.remove_widget(child)
 
-    def send_message(self) -> None:
-        """Send the current input to the AI Coach and stream the reply."""
+    def send_message(self, *_args) -> None:
+        """Send the current input to the AI Coach and stream the reply.
+
+        Accepts and ignores arguments so one method serves both the Send button
+        (``on_release`` passes the button) and the keyboard's Enter key
+        (``on_text_validate`` passes the TextInput).
+        """
         if self.busy:
             return
         funcs = _get_llm_funcs()
