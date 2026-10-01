@@ -2961,19 +2961,50 @@ class CoachScreen(Screen):
         )
 
     def _show_typing(self) -> None:
+        """Show progress while the coach works.
+
+        A bare "thinking..." gave no sense of whether anything was happening,
+        and no way to tell a slow reply from a stuck one. The bar is
+        indeterminate while the model loads (no token counts exist yet) and
+        determinate once streaming starts, advancing with real token counts
+        against the budget actually requested.
+        """
         chat = self.ids.coach_chat
         typing_label = _make_label(
-            "AI Coach is thinking...",
+            "Starting the coach...",
             font_size=sp(12), italic=True, color=list(_MUTED),
         )
         typing_label.id = "typing_indicator"
         chat.add_widget(typing_label)
+
+        bar = ProgressBar(
+            max=1.0,
+            value=0.0,
+            size_hint_y=None,
+            height=dp(6),
+        )
+        bar.id = "coach_progress"
+        chat.add_widget(bar)
+        self._progress = bar
+        self._progress_tokens = 0
+        self._progress_total = 0
         self._scroll_to_bottom()
+
+    def _advance_progress(self, tokens: int, total: int) -> None:
+        """Move the bar forward using real streamed-token counts."""
+        self._progress_tokens = tokens
+        self._progress_total = max(1, total)
+        bar = getattr(self, "_progress", None)
+        if bar is None or bar.parent is None:
+            return
+        bar.max = float(self._progress_total)
+        bar.value = float(min(tokens, self._progress_total))
 
     def _hide_typing(self) -> None:
         chat = self.ids.coach_chat
+        self._progress = None
         for child in list(chat.children):
-            if getattr(child, "id", None) == "typing_indicator":
+            if getattr(child, "id", None) in ("typing_indicator", "coach_progress"):
                 chat.remove_widget(child)
 
     def send_message(self, *_args) -> None:
@@ -3061,6 +3092,7 @@ class CoachScreen(Screen):
                                 "this build."
                             )
                         self._arm_reply_watchdog()
+                        self._reply_budget = getattr(engine, "last_budget", 0)
                         print(
                             f"[COACH] engine ready, streaming ({model_name})",
                             flush=True,
@@ -3101,6 +3133,14 @@ class CoachScreen(Screen):
         self._pending_reply = getattr(self, "_pending_reply", "") + token
         self._disarm_reply_watchdog()
         forward(token)
+        # Real progress: the bar tracks streamed tokens against the budget the
+        # engine actually granted, so a long prompt visibly eats into the
+        # reply instead of the bar sitting still.
+        budget = getattr(self, "_reply_budget", 0) or 0
+        self._advance_progress(
+            getattr(self, "_progress_tokens", 0) + 1,
+            budget or max(1, len(self._pending_reply.split())),
+        )
 
     # Seconds to wait for the first token before telling the user something is
     # wrong. Generation on a phone is slow but not this slow; the earlier

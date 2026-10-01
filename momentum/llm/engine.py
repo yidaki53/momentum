@@ -577,6 +577,9 @@ class LlmEngine:
         self._verbose = verbose
         self._llama: Optional[Any] = None
         self._lock = threading.Lock()
+        # Completion tokens granted for the most recent request, published for
+        # the UI's progress bar.
+        self.last_budget: int = 0
 
     def load(self) -> None:
         """Load the model into memory. Call once before generate().
@@ -715,6 +718,29 @@ class LlmEngine:
             return full_text.strip()
         return _message_text(response).strip()
 
+    _GENERATION_LOCK_TIMEOUT_S = 120.0
+
+    def _acquire_generation_slot(self) -> None:
+        """Take the generation lock, or fail loudly instead of hanging.
+
+        One non-reentrant lock serialises every generation, and it is held for
+        the whole decode. A chat message and an automatic screen insight racing
+        for it used to mean the loser waited in silence behind the winner, which
+        is what left the chat screen stuck on "thinking" with nothing in the
+        log. Waiting is bounded, and a refusal is reported, so the UI always
+        recovers.
+        """
+        deadline = time.time() + self._GENERATION_LOCK_TIMEOUT_S
+        while True:
+            if self._lock.acquire(timeout=1.0):
+                return
+            if time.time() >= deadline:
+                _trace("generation lock timeout - another request is stuck")
+                raise RuntimeError(
+                    "The coach is busy with another request that has not "
+                    "finished. Wait a moment and try again."
+                )
+
     def generate_async(
         self,
         messages: list[dict[str, str]],
@@ -745,6 +771,10 @@ class LlmEngine:
                     raise RuntimeError("Model not loaded. Call load() first.")
 
                 fitted_messages, budget = self._prepare_request(messages, max_tokens)
+                # Published so the UI can show a determinate progress bar
+                # against the budget actually granted, rather than the
+                # requested one the prompt may have shrunk.
+                self.last_budget = budget
                 if budget <= 0:
                     raise RuntimeError(
                         "This conversation is too long for the model's context "
@@ -759,13 +789,20 @@ class LlmEngine:
                     f"budget={budget} messages={len(fitted_messages)}"
                 )
                 started = time.time()
-                with self._lock:
+                self._acquire_generation_slot()
+                try:
                     response = self._llama.create_chat_completion(
                         messages=cast("Any", fitted_messages),
                         max_tokens=budget,
                         temperature=temperature,
                         stream=True,
                     )
+                finally:
+                    # The native call hands back a lazy generator, so the lock is
+                    # released before any decoding happens. Holding it across the
+                    # whole decode meant one slow generation blocked every other
+                    # request behind it, silently.
+                    self._lock.release()
                 _trace(
                     f"create_chat_completion returned after {time.time() - started:.2f}s"
                 )
@@ -799,19 +836,34 @@ class LlmEngine:
 
 
 def _guess_cpu_threads() -> int:
-    """Guess a reasonable number of CPU threads for inference."""
+    """Return a safe number of inference threads for this device.
+
+    ggml parallelises with a spin barrier across its worker threads. On Android,
+    and especially on an emulated CPU topology, asking for every reported core
+    makes that barrier unreliable: the pool can livelock and the decode never
+    returns. Capping the count keeps the threadpool well inside what the device
+    actually schedules concurrently, which is the difference between a reply
+    and a hang.
+
+    The cap leaves headroom for the UI and Python threads rather than saturating
+    every core with ggml workers.
+    """
     import os
 
+    available: int | None = None
     try:
-        return len(os.sched_getaffinity(0))
+        available = len(os.sched_getaffinity(0))
     except AttributeError:
-        pass
-    try:
-        import multiprocessing
+        try:
+            import multiprocessing
 
-        return multiprocessing.cpu_count()
-    except NotImplementedError:
-        return 4
+            available = multiprocessing.cpu_count()
+        except NotImplementedError:
+            available = 4
+
+    on_android = "ANDROID_ARGUMENT" in os.environ or hasattr(sys, "getandroidapilevel")
+    cap = 4 if on_android else max(1, (available or 4))
+    return max(1, min(available or cap, cap))
 
 
 def get_engine(

@@ -112,3 +112,71 @@ def test_prompt_plus_budget_never_exceeds_window(n_ctx: int) -> None:
         fitted, budget = engine._prepare_request(messages, max_tokens=512)
         if budget > 0:
             assert _estimate_prompt_tokens(fitted) + budget <= n_ctx
+
+
+# ---------------------------------------------------------------------------
+# Generation concurrency
+# ---------------------------------------------------------------------------
+
+
+def test_generation_lock_times_out_instead_of_hanging() -> None:
+    """A busy engine must refuse the request, not block the caller forever.
+
+    The coach screen and the automatic screen insights share one engine. When
+    the generation lock was held across an entire decode, the loser waited in
+    silence -- which is what left the chat stuck on "thinking" with an empty
+    log. Waiting is now bounded and reported.
+    """
+    import sys
+    import threading
+
+    engine_mod = sys.modules["momentum.llm.engine"]
+    engine = engine_mod.LlmEngine(model_path=Path("/nonexistent.gguf"), n_ctx=2048)
+    engine._GENERATION_LOCK_TIMEOUT_S = 0.2
+
+    held = threading.Event()
+    release = threading.Event()
+
+    def _hold():
+        engine._lock.acquire()
+        held.set()
+        release.wait(5)
+        engine._lock.release()
+
+    holder = threading.Thread(target=_hold, daemon=True)
+    holder.start()
+    assert held.wait(5)
+
+    with pytest.raises(RuntimeError, match="busy"):
+        engine._acquire_generation_slot()
+
+    release.set()
+    holder.join(5)
+
+
+def test_generation_lock_is_released_around_the_native_call() -> None:
+    """The streaming call returns a lazy generator, so the lock must not span it.
+
+    Holding the lock for the whole decode would serialise every request behind
+    the slowest one on the device.
+    """
+    import inspect
+    import sys
+
+    engine_mod = sys.modules["momentum.llm.engine"]
+    source = inspect.getsource(engine_mod.LlmEngine.generate_async)
+    # The lock is taken, then released in a finally before iteration begins.
+    assert "self._acquire_generation_slot()" in source
+    assert "self._lock.release()" in source
+    assert "with self._lock:" not in source
+
+
+def test_android_thread_count_is_capped(monkeypatch) -> None:
+    """ggml's spin barrier can livelock when given every reported core."""
+    import sys
+
+    engine_mod = sys.modules["momentum.llm.engine"]
+    monkeypatch.setenv("ANDROID_ARGUMENT", "1")
+    monkeypatch.setattr(engine_mod.os, "sched_getaffinity", lambda _pid: set(range(16)))
+
+    assert engine_mod._guess_cpu_threads() <= 4
