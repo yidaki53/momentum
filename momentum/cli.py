@@ -723,6 +723,67 @@ def delete_tasks() -> None:
     conn.close()
 
 
+@app.command(name="export")
+def export_data(
+    output: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="File to write. Defaults to momentum-export.md in the data folder.",
+    ),
+    fmt: str = typer.Option(
+        "markdown",
+        "--format",
+        "-f",
+        help="Export format: markdown or org.",
+    ),
+) -> None:
+    """Export your data as a plain-text, diffable document.
+
+    The database stays the source of truth; this is a projection of it in a
+    format you can read, edit, grep, and commit to a private repo. Existing
+    files are never silently overwritten unless --force is given.
+    """
+    from momentum import config as cfg
+    from momentum import export as export_mod
+
+    if fmt not in export_mod.ExportFormat.ALL:
+        display.print_error(
+            f"Unknown format {fmt!r}; choose from: "
+            f"{', '.join(export_mod.ExportFormat.ALL)}"
+        )
+        raise typer.Exit(code=2)
+
+    suffix = ".org" if fmt == export_mod.ExportFormat.ORG else ".md"
+    destination = output or (cfg.app_data_root() / f"momentum-export{suffix}")
+
+    if destination.exists():
+        display.print_error(
+            f"{destination} already exists. Pass --force to overwrite it, "
+            f"or choose a different --output."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        conn = _conn()
+    except Exception as exc:
+        display.print_error(f"Could not open the database: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        text = export_mod.render_document(conn, fmt)
+    finally:
+        conn.close()
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(text, encoding="utf-8")
+    display.print_success(f"Exported your data to {destination}")
+    display.print_info(
+        f"Format: {fmt}. SQLite remains the source of truth; this file is a "
+        f"regenerable snapshot."
+    )
+
+
 @app.command(name="browse-db")
 def browse_db(
     table: str = typer.Argument(
