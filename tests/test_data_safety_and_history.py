@@ -13,6 +13,10 @@ from momentum import db
 from momentum.llm import context as ctx_mod
 from momentum.models import LlmChatMessageCreate, TaskCreate
 
+# Captured at import time, before conftest's autouse fixture redirects it, so
+# it always holds the genuine user config path.
+_REAL_CONFIG_FILE = cfg._CONFIG_FILE
+
 # ---------------------------------------------------------------------------
 # Database survives updates
 # ---------------------------------------------------------------------------
@@ -198,3 +202,31 @@ def test_short_history_is_returned_unchanged(tmp_path: Path) -> None:
         assert [m["content"] for m in history] == ["only one"]
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Test isolation
+# ---------------------------------------------------------------------------
+
+
+def test_config_writes_are_redirected_away_from_the_real_home() -> None:
+    """During a test run, config writes must not land in the developer's home.
+
+    Several suites call the real ``save_config``. Before the conftest fixture
+    redirected ``_CONFIG_FILE``, a test run left the developer's config
+    pointing at a pytest temporary directory that no longer existed -- which
+    looks exactly like the app having lost its database.
+
+    ``_REAL_CONFIG_FILE`` is captured at import time, before the autouse
+    fixture runs, so it is the genuine user path even while the test is
+    redirected.
+    """
+    assert cfg._CONFIG_FILE != _REAL_CONFIG_FILE
+    assert Path.home() not in cfg._CONFIG_FILE.parents
+
+    # And the write lands in the temp tree.
+    cfg.save_config(cfg.load_config())
+    assert cfg._CONFIG_FILE.exists()
+    assert not _REAL_CONFIG_FILE.exists() or _REAL_CONFIG_FILE.parent != (
+        cfg._CONFIG_FILE.parent
+    )
