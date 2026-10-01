@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -212,8 +213,9 @@ _BOOL_FIELDS = {
     "check_updates_at_startup",
     "show_llm_welcome",
     "llm_enabled",
+    "coach_disclaimer_ack",
 }
-_INT_FIELDS = {"last_update_check_unix"}
+_INT_FIELDS = {"last_update_check_unix", "llm_context_tokens"}
 _STR_FIELDS = {"llm_model"}
 _OPTIONAL_STR_FIELDS = {"db_path"}
 
@@ -403,13 +405,68 @@ def set_cloud_sync(provider: str) -> Optional[AppConfig]:
     """Configure the DB to live inside a cloud provider's sync folder.
 
     Returns the config if successful, None if the folder wasn't found.
+
+    If the current database holds user data it is *copied* into the cloud
+    location before the switch. Without that step the app silently starts
+    reading a brand-new empty database at the new path, so every task,
+    assessment, and chat message appears to vanish the moment sync is enabled --
+    which is exactly the "it doesn't work at all" symptom. The original file is
+    left in place, keeping the existing backup/recovery story intact.
     """
     folder = detect_cloud_folder(provider)
     if folder is None:
         return None
     db_dir = folder / "momentum"
     db_dir.mkdir(parents=True, exist_ok=True)
-    return set_db_path(str(db_dir / "momentum.db"))
+    target = db_dir / "momentum.db"
+
+    _migrate_database_to(target)
+    return set_db_path(str(target))
+
+
+def _migrate_database_to(target: Path) -> bool:
+    """Copy the active database to *target* when it is safe and needed.
+
+    Returns True when data was copied. Never overwrites a cloud database that
+    already holds user data, and does nothing when the source is empty.
+    """
+    try:
+        from momentum import recovery
+
+        existing = recovery.count_user_rows(target)
+        if existing is not None and (existing[0] or existing[1]):
+            log.info("Cloud database at %s already has data; not overwriting", target)
+            return False
+
+        source = get_db_path()
+        if source.resolve() == target.resolve():
+            return False
+
+        source_counts = recovery.count_user_rows(source)
+        if not source_counts or (source_counts[0] == 0 and source_counts[1] == 0):
+            return False
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # sqlite3's backup API gives a consistent copy even mid-write.
+        src_conn = sqlite3.connect(str(source))
+        try:
+            dst_conn = sqlite3.connect(str(target))
+            try:
+                src_conn.backup(dst_conn)
+            finally:
+                dst_conn.close()
+        finally:
+            src_conn.close()
+        log.warning(
+            "Copied user data to cloud database %s (%d tasks, %d assessments)",
+            target,
+            source_counts[0],
+            source_counts[1],
+        )
+        return True
+    except Exception:
+        log.warning("Could not migrate database to cloud location", exc_info=True)
+        return False
 
 
 def reset_db_path() -> AppConfig:
