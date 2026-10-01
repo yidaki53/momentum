@@ -322,9 +322,19 @@ def test_coach_buttons_sit_above_the_text_field() -> None:
 
 
 def test_coach_enter_key_sends_the_message() -> None:
-    """Enter sends rather than inserting a newline."""
+    """Enter sends rather than inserting a newline.
+
+    Kivy only dispatches ``on_text_validate`` when ``multiline`` is False, so
+    binding it on a multiline coach field did nothing at all. The input must be
+    the subclass that intercepts the newline in ``insert_text``.
+    """
     src = _mobile_main_source()
-    assert "on_text_validate: root.send_message()" in src
+    assert "class EnterSendsTextInput(TextInput):" in src
+    assert "def insert_text(self, substring: str, from_undo: bool = False):" in src
+    assert 'if substring in ("\\n", "\\r") and self.multiline:' in src
+    assert "send_on_enter: root.send_message" in src
+    # The non-working binding must not come back.
+    assert "on_text_validate: root.send_message()" not in src
     # One handler serves both the button and the key, so it must tolerate the
     # widget argument Kivy passes to each.
     assert "def send_message(self, *_args) -> None:" in src
@@ -346,3 +356,38 @@ def test_context_window_is_configurable_and_clamped() -> None:
     assert engine.MIN_CONTEXT_TOKENS >= 2048
     assert engine.MAX_CONTEXT_TOKENS >= 4096
     assert engine.MIN_CONTEXT_TOKENS < engine.MAX_CONTEXT_TOKENS
+
+
+def test_coach_insights_are_automatic_not_button_gated() -> None:
+    """Insights appear on their own; the user never presses a button."""
+    src = _mobile_main_source()
+    start = src.index("def _add_ai_insight(")
+    block = src[start : start + 3000]
+    assert "Get coach perspective" not in block
+    # The request is scheduled, not bound to a press.
+    assert "Clock.schedule_once(lambda _dt: _request(), 0)" in block
+    assert "button.bind(on_release=_request)" not in block
+
+
+def test_coach_insights_never_gate_the_rest_of_the_app() -> None:
+    """When the coach is unavailable the screen is untouched and stays usable."""
+    src = _mobile_main_source()
+    start = src.index("def _add_ai_insight(")
+    block = src[start : start + 3000]
+    # Nothing is added when the coach is not ready...
+    assert "if not _coach_ready():\n        return" in block
+    # ...and a failure removes the panel instead of raising into the screen.
+    assert "container.remove_widget(panel)" in block
+
+
+def test_coach_can_propose_tasks_but_only_after_confirmation() -> None:
+    """The model may suggest a task; the database is never written silently."""
+    src = _mobile_main_source()
+    assert "def _offer_task_creation(" in src
+    assert "def _create_tasks(" in src
+    start = src.index("def _offer_task_creation(")
+    block = src[start : src.index("def _create_tasks(")]
+    assert "Add these to your tasks?" in block
+    # The database write lives in _create_tasks, which is only reached by the
+    # confirmation button -- never inline in the reply handler.
+    assert "_offer_task_creation(task_titles)" in src

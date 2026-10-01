@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Sequence
 
@@ -120,6 +121,50 @@ def build_user_context(conn: sqlite3.Connection) -> str:
             parts.append(f"    Committed action: {entry.committed_action[:60]}")
 
     return "\n".join(parts)
+
+
+# Explicit task-creation marker.
+#
+# The coach may ask to create a task, but a 1.1B model must not be allowed to
+# write to the database on its own initiative: a hallucinated "[[task: ...]]"
+# would otherwise invent work the user never agreed to. So the model is told to
+# emit this marker only when the user explicitly asks, the marker is stripped
+# from the visible reply, and creation still requires a confirmation tap.
+TASK_MARKER = "[[task:"
+
+_TASK_MARKER_RE = re.compile(
+    r"\[\[\s*task\s*:\s*(?P<title>[^\]\|]+?)\s*(?:\|[^\]]*)?\]\]",
+    re.IGNORECASE,
+)
+
+
+def extract_task_requests(text: str) -> list[str]:
+    """Return the task titles a coach reply asked to create.
+
+    The markers are removed from the text so the user sees ordinary prose, and
+    each title is de-duplicated case-insensitively and length-capped: a runaway
+    generation must not be able to flood the task list.
+    """
+    seen: set[str] = set()
+    titles: list[str] = []
+    for match in _TASK_MARKER_RE.finditer(text or ""):
+        title = " ".join(match.group("title").split()).strip()
+        if not title or len(title) > 120:
+            continue
+        key = title.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        titles.append(title)
+    return titles
+
+
+def strip_task_markers(text: str) -> str:
+    """Return *text* with any task markers removed, tidied for display."""
+    cleaned = _TASK_MARKER_RE.sub("", text or "")
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def recency_halflife_weight(age: int, halflife: float) -> float:
