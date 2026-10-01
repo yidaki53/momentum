@@ -121,16 +121,16 @@ def test_insufficient_memory_error_is_a_runtime_error() -> None:
     assert issubclass(InsufficientMemoryError, RuntimeError)
 
 
-def test_android_uses_a_small_context_window(monkeypatch) -> None:
-    """Phones get 512 tokens; the KV cache is the linear cost."""
+def test_context_window_matches_prompt_requirements(monkeypatch) -> None:
+    """The window must fit Momentum's prompts on every platform.
+
+    A 512-token Android setting once looked like a memory saving but made every
+    message fail, because the system prompt alone exceeds it.
+    """
     monkeypatch.setenv("ANDROID_ARGUMENT", "1")
-    assert engine_mod._default_n_ctx() == 512
+    assert engine_mod._default_n_ctx() == 2048
 
     monkeypatch.delenv("ANDROID_ARGUMENT", raising=False)
-    monkeypatch.setattr(engine_mod.sys, "getandroidapilevel", lambda: 33, raising=False)
-    assert engine_mod._default_n_ctx() == 512
-
-    monkeypatch.delattr(engine_mod.sys, "getandroidapilevel", raising=False)
     assert engine_mod._default_n_ctx() == 2048
 
 

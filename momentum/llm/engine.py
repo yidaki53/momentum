@@ -443,14 +443,72 @@ def is_llm_available() -> bool:
 def _default_n_ctx() -> int:
     """Return the context window to use for this platform.
 
-    A desktop with gigabytes of RAM can afford 2048 tokens. A phone cannot: the
-    KV cache grows linearly with the window, and a 720 MB model on a device
-    with well under a gigabyte free was already at the edge of being reclaimed
-    mid-generation. 512 keeps the chat prompt plus a few turns of history while
-    cutting the cache to a rounding error.
+    The window must comfortably exceed the prompt or ``llama_cpp`` refuses
+    outright with "Requested tokens (...) exceed context window". Momentum's own
+    prompts are large by design: ``CHAT_SYSTEM_PROMPT`` inlines the whole
+    executive-dysfunction knowledge base and is ~1450 tokens on its own, before
+    any user context or chat history.
+
+    An earlier revision used 512 on Android to save KV-cache memory, which made
+    *every* message fail -- the prompt alone never fit. The window is now 2048
+    everywhere. Shrinking it further is not a useful lever: the cache at 2048 is
+    only ~44 MB against a 720 MB model, so the saving is noise while the risk of
+    silently rejecting the prompt is not. ``_fit_max_tokens`` handles the
+    long-conversation case properly instead of by starving the window.
     """
-    on_android = "ANDROID_ARGUMENT" in os.environ or hasattr(sys, "getandroidapilevel")
-    return 512 if on_android else 2048
+    return 2048
+
+
+# Tokens reserved for the model to finish its reply. Every request is capped at
+# this share of the window so the prompt can never crowd out the answer.
+_GENERATION_RESERVE = 256
+
+# llama-cpp-python tokenises the prompt itself, so an exact count is not
+# available before the call. Estimating from character length with a generous
+# divisor keeps the estimate safely above the real token count, which is the
+# direction that matters: over-estimating truncates the reply, while
+# under-estimating raises "exceed context window".
+_CHARS_PER_TOKEN_ESTIMATE = 3.0
+
+
+def _estimate_prompt_tokens(messages: Sequence[Mapping[str, Any]]) -> int:
+    """Return an upper-bound estimate of the prompt's token count.
+
+    Deliberately pessimistic. llama-cpp-python formats chat messages with a
+    template that adds per-message role tokens, and those cannot be counted
+    without the tokenizer, so the estimate includes a small per-message
+    allowance on top of the character-derived figure.
+    """
+    characters = 0
+    for message in messages:
+        content = message.get("content") if isinstance(message, Mapping) else None
+        characters += len(content) if isinstance(content, str) else 0
+    text_tokens = characters / _CHARS_PER_TOKEN_ESTIMATE
+    # ~4 tokens per message covers the role markers llama-cpp adds.
+    return int(text_tokens) + (len(messages) * 4) + 32
+
+
+def _fit_max_tokens(
+    n_ctx: int,
+    messages: Sequence[Mapping[str, Any]],
+    requested: int,
+) -> int:
+    """Clamp *requested* completion tokens so prompt + completion fit *n_ctx*.
+
+    ``llama_cpp.Llama.create_chat_completion`` raises ``ValueError`` when the
+    prompt alone fills the window, and the caller has no way to recover from
+    that. Shrinking the requested completion here -- and, when even the minimum
+    does not fit, dropping the oldest turns until it does -- is what makes the
+    "Requested tokens (...) exceed context window" failure unreachable from
+    Momentum's own code.
+    """
+    prompt_tokens = _estimate_prompt_tokens(messages)
+    available = n_ctx - prompt_tokens
+
+    if available <= 0:
+        return 0  # caller reports a clear, actionable error
+
+    return max(1, min(requested, available - 1))
 
 
 class LlmEngine:
@@ -516,6 +574,39 @@ class LlmEngine:
     def is_loaded(self) -> bool:
         return self._llama is not None
 
+    def _prepare_request(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+    ) -> tuple[list[dict[str, str]], int]:
+        """Return messages and a completion budget that fit the context window.
+
+        Momentum's prompts already fill most of the window, so a caller asking
+        for 512 tokens would trip llama-cpp's "exceed context window" guard on
+        every single request. Two adjustments keep that unreachable:
+
+        1. the completion is clamped to whatever the prompt left behind, and
+        2. when the prompt alone is too large, the oldest turns are dropped
+           (never the system prompt) until it fits.
+
+        Returning ``max_tokens == 0`` means even a trimmed prompt does not fit,
+        which the caller turns into a message the user can act on.
+        """
+        budget = _fit_max_tokens(self._n_ctx, messages, max_tokens)
+        trimmed = list(messages)
+
+        while budget <= 0 and len(trimmed) > 1:
+            # Drop the oldest turn after the system message (index 0).
+            del trimmed[1]
+            budget = _fit_max_tokens(self._n_ctx, trimmed, max_tokens)
+            log.debug(
+                "trimmed prompt to %d messages to fit n_ctx=%d",
+                len(trimmed),
+                self._n_ctx,
+            )
+
+        return trimmed, budget
+
     def generate(
         self,
         messages: list[dict[str, str]],
@@ -543,10 +634,17 @@ class LlmEngine:
         if self._llama is None:
             raise RuntimeError("Model not loaded. Call load() first.")
 
+        fitted_messages, budget = self._prepare_request(messages, max_tokens)
+        if budget <= 0:
+            raise RuntimeError(
+                "This conversation is too long for the model's context window. "
+                "Clear the chat and start again."
+            )
+
         with self._lock:
             response = self._llama.create_chat_completion(
-                messages=cast("Any", messages),
-                max_tokens=max_tokens,
+                messages=cast("Any", fitted_messages),
+                max_tokens=budget,
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k,
@@ -592,10 +690,17 @@ class LlmEngine:
                 if self._llama is None:
                     raise RuntimeError("Model not loaded. Call load() first.")
 
+                fitted_messages, budget = self._prepare_request(messages, max_tokens)
+                if budget <= 0:
+                    raise RuntimeError(
+                        "This conversation is too long for the model's context "
+                        "window. Clear the chat and start again."
+                    )
+
                 with self._lock:
                     response = self._llama.create_chat_completion(
-                        messages=cast("Any", messages),
-                        max_tokens=max_tokens,
+                        messages=cast("Any", fitted_messages),
+                        max_tokens=budget,
                         temperature=temperature,
                         stream=True,
                     )
