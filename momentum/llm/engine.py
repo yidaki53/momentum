@@ -538,6 +538,42 @@ def _configured_n_ctx() -> int:
     return max(MIN_CONTEXT_TOKENS, min(MAX_CONTEXT_TOKENS, requested))
 
 
+# Process-wide single-flight guard for local inference.
+#
+# Every generation -- a chat reply, an automatic screen insight, an
+# encouragement -- runs llama.cpp on this device, which is CPU-bound and
+# fragile. Letting them overlap means several prompts competing for a phone,
+# and a caller that blocks behind another one produces the exact "stuck on
+# thinking" symptom with nothing in the log. One at a time, and callers that
+# cannot get a slot say so instead of waiting invisibly.
+_INFERENCE_SLOT = threading.Semaphore(1)
+
+# How long a caller waits for the single inference slot before giving up.
+INFERENCE_WAIT_S = 20.0
+
+
+def _acquire_inference_slot() -> None:
+    """Take the one inference slot, or raise so the caller can report it.
+
+    A short wait is deliberate. On a phone a reply takes tens of seconds; a
+    caller that cannot start promptly is better off being told the coach is
+    busy than being left on a spinner.
+    """
+    if not _INFERENCE_SLOT.acquire(timeout=INFERENCE_WAIT_S):
+        _trace("inference slot busy - declining this request")
+        raise RuntimeError(
+            "The coach is already working on something else. Wait for it to "
+            "finish and try again."
+        )
+
+
+def _release_inference_slot() -> None:
+    try:
+        _INFERENCE_SLOT.release()
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+
 def _short_repr(value: Any, limit: int = 160) -> str:
     """Return a compact repr of a streaming chunk, for on-device tracing."""
     try:
@@ -698,7 +734,11 @@ class LlmEngine:
                 "Clear the chat and start again."
             )
 
-        with self._lock:
+        # The synchronous path (screen insights, encouragements) takes the same
+        # single-flight slot as the streaming chat path, so a background request
+        # can never leave a chat message queued behind it.
+        _acquire_inference_slot()
+        try:
             response = self._llama.create_chat_completion(
                 messages=cast("Any", fitted_messages),
                 max_tokens=budget,
@@ -708,38 +748,16 @@ class LlmEngine:
                 stop=stop or [],
                 stream=stream,
             )
-
-        if stream:
-            # For streaming, accumulate chunks. ``_delta_text`` tolerates the
-            # role-only and content-less chunks llama-cpp-python emits.
-            full_text = ""
-            for chunk in cast("Iterable[Any]", response):
-                full_text += _delta_text(chunk)
-            return full_text.strip()
-        return _message_text(response).strip()
-
-    _GENERATION_LOCK_TIMEOUT_S = 120.0
-
-    def _acquire_generation_slot(self) -> None:
-        """Take the generation lock, or fail loudly instead of hanging.
-
-        One non-reentrant lock serialises every generation, and it is held for
-        the whole decode. A chat message and an automatic screen insight racing
-        for it used to mean the loser waited in silence behind the winner, which
-        is what left the chat screen stuck on "thinking" with nothing in the
-        log. Waiting is bounded, and a refusal is reported, so the UI always
-        recovers.
-        """
-        deadline = time.time() + self._GENERATION_LOCK_TIMEOUT_S
-        while True:
-            if self._lock.acquire(timeout=1.0):
-                return
-            if time.time() >= deadline:
-                _trace("generation lock timeout - another request is stuck")
-                raise RuntimeError(
-                    "The coach is busy with another request that has not "
-                    "finished. Wait a moment and try again."
-                )
+            if stream:
+                # For streaming, accumulate chunks. ``_delta_text`` tolerates the
+                # role-only and content-less chunks llama-cpp-python emits.
+                full_text = ""
+                for chunk in cast("Iterable[Any]", response):
+                    full_text += _delta_text(chunk)
+                return full_text.strip()
+            return _message_text(response).strip()
+        finally:
+            _release_inference_slot()
 
     def generate_async(
         self,
@@ -789,41 +807,40 @@ class LlmEngine:
                     f"budget={budget} messages={len(fitted_messages)}"
                 )
                 started = time.time()
-                self._acquire_generation_slot()
+                _acquire_inference_slot()
                 try:
+                    # The native call hands back a lazy generator; nothing is
+                    # decoded until the loop below iterates it.
                     response = self._llama.create_chat_completion(
                         messages=cast("Any", fitted_messages),
                         max_tokens=budget,
                         temperature=temperature,
                         stream=True,
                     )
+                    _trace(
+                        f"create_chat_completion returned after "
+                        f"{time.time() - started:.2f}s"
+                    )
+
+                    chunks = 0
+                    for chunk in cast("Iterable[Any]", response):
+                        chunks += 1
+                        if chunks == 1:
+                            _trace(
+                                f"first chunk after {time.time() - started:.2f}s: "
+                                f"{type(chunk).__name__} {_short_repr(chunk)}"
+                            )
+                        content = _delta_text(chunk)
+                        if content:
+                            full_text += content
+                            on_token(content)
+
+                    _trace(
+                        f"stream complete: {chunks} chunks, {len(full_text)} chars, "
+                        f"{time.time() - started:.2f}s"
+                    )
                 finally:
-                    # The native call hands back a lazy generator, so the lock is
-                    # released before any decoding happens. Holding it across the
-                    # whole decode meant one slow generation blocked every other
-                    # request behind it, silently.
-                    self._lock.release()
-                _trace(
-                    f"create_chat_completion returned after {time.time() - started:.2f}s"
-                )
-
-                chunks = 0
-                for chunk in cast("Iterable[Any]", response):
-                    chunks += 1
-                    if chunks == 1:
-                        _trace(
-                            f"first chunk after {time.time() - started:.2f}s: "
-                            f"{type(chunk).__name__} {_short_repr(chunk)}"
-                        )
-                    content = _delta_text(chunk)
-                    if content:
-                        full_text += content
-                        on_token(content)
-
-                _trace(
-                    f"stream complete: {chunks} chunks, {len(full_text)} chars, "
-                    f"{time.time() - started:.2f}s"
-                )
+                    _release_inference_slot()
                 on_done(full_text.strip())
             except Exception as exc:
                 _trace(f"FAILED {type(exc).__name__}: {exc}\n" + traceback.format_exc())

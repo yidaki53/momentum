@@ -119,56 +119,54 @@ def test_prompt_plus_budget_never_exceeds_window(n_ctx: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_generation_lock_times_out_instead_of_hanging() -> None:
-    """A busy engine must refuse the request, not block the caller forever.
+def test_inference_is_single_flight() -> None:
+    """Only one generation may run at a time, and losers are told.
 
-    The coach screen and the automatic screen insights share one engine. When
-    the generation lock was held across an entire decode, the loser waited in
-    silence -- which is what left the chat stuck on "thinking" with an empty
-    log. Waiting is now bounded and reported.
+    Screen insights fire automatically, so without a process-wide guard a
+    background request can hold the engine while a chat message waits behind
+    it -- the "stuck on thinking" symptom, with nothing in the log.
     """
     import sys
     import threading
 
     engine_mod = sys.modules["momentum.llm.engine"]
-    engine = engine_mod.LlmEngine(model_path=Path("/nonexistent.gguf"), n_ctx=2048)
-    engine._GENERATION_LOCK_TIMEOUT_S = 0.2
 
-    held = threading.Event()
-    release = threading.Event()
+    # Take the slot in this thread. (Do not "reset" it by releasing first: an
+    # uncontended Semaphore(1) released once has a count of 2, which would let
+    # the contender through.)
+    engine_mod._acquire_inference_slot()
+    errors: list[Exception] = []
 
-    def _hold():
-        engine._lock.acquire()
-        held.set()
-        release.wait(5)
-        engine._lock.release()
+    def _contender():
+        try:
+            engine_mod._acquire_inference_slot()
+        except Exception as exc:  # noqa: BLE001 - the point is that it raises
+            errors.append(exc)
 
-    holder = threading.Thread(target=_hold, daemon=True)
-    holder.start()
-    assert held.wait(5)
+    original_wait = engine_mod.INFERENCE_WAIT_S
+    engine_mod.INFERENCE_WAIT_S = 0.2
+    try:
+        thread = threading.Thread(target=_contender, daemon=True)
+        thread.start()
+        thread.join(10)
+    finally:
+        engine_mod.INFERENCE_WAIT_S = original_wait
+        engine_mod._release_inference_slot()
 
-    with pytest.raises(RuntimeError, match="busy"):
-        engine._acquire_generation_slot()
-
-    release.set()
-    holder.join(5)
+    assert len(errors) == 1
+    assert "already working" in str(errors[0])
 
 
-def test_generation_lock_is_released_around_the_native_call() -> None:
-    """The streaming call returns a lazy generator, so the lock must not span it.
-
-    Holding the lock for the whole decode would serialise every request behind
-    the slowest one on the device.
-    """
+def test_both_generation_paths_take_the_single_slot() -> None:
+    """Chat (streaming) and insights (sync) must not bypass the guard."""
     import inspect
     import sys
 
     engine_mod = sys.modules["momentum.llm.engine"]
-    source = inspect.getsource(engine_mod.LlmEngine.generate_async)
-    # The lock is taken, then released in a finally before iteration begins.
-    assert "self._acquire_generation_slot()" in source
-    assert "self._lock.release()" in source
-    assert "with self._lock:" not in source
+    for name in ("generate", "generate_async"):
+        source = inspect.getsource(getattr(engine_mod.LlmEngine, name))
+        assert "_acquire_inference_slot()" in source, name
+        assert "_release_inference_slot()" in source, name
 
 
 def test_android_thread_count_is_capped(monkeypatch) -> None:
