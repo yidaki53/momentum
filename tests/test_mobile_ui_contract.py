@@ -391,3 +391,29 @@ def test_coach_can_propose_tasks_but_only_after_confirmation() -> None:
     # The database write lives in _create_tasks, which is only reached by the
     # confirmation button -- never inline in the reply handler.
     assert "_offer_task_creation(task_titles)" in src
+
+
+def test_settings_offers_a_model_picker() -> None:
+    """The user must be able to change model from the app.
+
+    ``llm_model`` was only ever *read* -- no UI anywhere could write it, so the
+    720 MB default could not be swapped for the smaller one even on a device
+    where it does not fit. Switching model was impossible, not merely awkward.
+    """
+    src = _mobile_main_source()
+    assert "def _select_model(" in src
+    assert "def _available_model_specs(" in src
+    assert '"available_models"' in src
+    # Changing the model must also drop the cached engine, or the old weights
+    # keep generating while the UI claims the new model is selected.
+    select = src[src.index("def _select_model(") :]
+    assert "conf.llm_model = name" in select
+    assert 'funcs["reset_engine"]()' in select
+    assert 'funcs["clear_assistance_cache"]()' in select
+
+
+def test_model_picker_offers_download_when_missing() -> None:
+    """Choosing an undownloaded model must offer to fetch it."""
+    src = _mobile_main_source()
+    assert "def _offer_model_download(" in src
+    assert 'funcs["ensure_model"](name, progress_callback=_update)' in src

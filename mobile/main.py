@@ -201,6 +201,7 @@ def _get_llm_funcs() -> dict | None:
             "import_error": getattr(engine, "LLM_IMPORT_ERROR", ""),
             "native_diagnostics": getattr(engine, "native_diagnostics", lambda: {"available": False}),
             "is_model_downloaded": getattr(downloader, "is_model_downloaded", lambda name: False),
+            "available_models": getattr(downloader, "available_models", lambda: []),
             "model_size_mb": getattr(downloader, "model_size_mb", lambda name: 0),
             "ensure_model": getattr(downloader, "ensure_model", lambda *a, **k: None),
             "get_engine": getattr(engine, "get_engine", lambda *a, **k: None),
@@ -371,6 +372,24 @@ except Exception:  # pragma: no cover - the llm package is optional
 
     def _strip_task_markers(text):  # type: ignore[misc]
         return (text or "").strip()
+
+
+def _available_model_specs() -> list:
+    """Return the model registry for the settings picker, never raising.
+
+    Falls back to the default model alone when the downloader is unavailable
+    so the settings screen still renders on a build without the coach.
+    """
+    funcs = _get_llm_funcs()
+    if funcs is None:
+        return []
+    try:
+        specs = list(funcs["available_models"]())
+        if specs:
+            return specs
+    except Exception:
+        log.debug("Could not list available models", exc_info=True)
+    return []
 
 
 def _coach_ready() -> bool:
@@ -3543,6 +3562,44 @@ class SettingsScreen(ScrollScreen):
         coach_actions.add_widget(delete_model_btn)
         coach_actions.add_widget(clear_chat_btn)
         c.add_widget(coach_actions)
+
+        # Model picker. Until this existed llm_model could only ever be read,
+        # never changed: there was no way on any platform to move off the
+        # default model. That matters most for smaller devices, where the
+        # 720 MB default may not fit at all.
+        c.add_widget(_make_label("Model", font_size=sp(13), bold=True, color=accent))
+        c.add_widget(_make_label(
+            "A smaller model uses less memory and replies faster on a phone.",
+            font_size=sp(11), color=muted,
+        ))
+        selected = current.llm_model
+        for spec in _available_model_specs():
+            is_selected = spec.name == selected
+            downloaded = False
+            if coach_status is not None:
+                try:
+                    downloaded = bool(coach_status["is_model_downloaded"](spec.name))
+                except Exception:
+                    downloaded = False
+            marker = " (current)" if is_selected else ""
+            state = "downloaded" if downloaded else f"~{spec.size_mb} MB"
+            btn = Button(
+                text=f"{spec.name}{marker} - {state}",
+                size_hint_y=None,
+                height=dp(44),
+                background_color=list(accent) if is_selected else list(neutral),
+                color=list(button_text),
+                font_size=sp(12) * font_scale,
+            )
+            btn.bind(
+                on_release=lambda _b, name=spec.name: self._select_model(name)
+            )
+            c.add_widget(btn)
+        c.add_widget(_make_label(
+            "Choosing a model that is not downloaded offers to fetch it. "
+            "Downloads use your internet connection and are stored on this device.",
+            font_size=sp(11), color=muted,
+        ))
         remove_ai_btn = Button(
             text="Remove all AI data",
             size_hint_y=None,
@@ -3709,6 +3766,114 @@ class SettingsScreen(ScrollScreen):
             if not enabled:
                 funcs["reset_engine"]()
         self._refresh_home_runtime_state()
+
+    def _select_model(self, name: str) -> None:
+        """Switch the coach to *name*, downloading it first if necessary.
+
+        Switching has to reset the engine: the cached singleton is bound to the
+        previously loaded weights, so reusing it would keep generating from the
+        old model while the UI claimed a new one was selected.
+        """
+        funcs = _get_llm_funcs()
+        if funcs is None:
+            self._show_msg("Coach unavailable", "The coach modules are not available.")
+            return
+        current = cfg.load_config()
+        if current.llm_model == name:
+            return
+
+        def _apply():
+            conf = cfg.load_config()
+            conf.llm_model = name
+            try:
+                cfg.save_config(conf)
+            except Exception as exc:
+                self._show_msg("Could not change model", str(exc))
+                return
+            # Drop the engine so the next request loads the newly chosen model.
+            try:
+                funcs["reset_engine"]()
+            except Exception:
+                log.debug("Could not reset engine after model switch", exc_info=True)
+            # Generated snippets were produced by the old model.
+            try:
+                funcs["clear_assistance_cache"]()
+            except Exception:
+                log.debug("Could not clear coach cache", exc_info=True)
+
+            try:
+                already = bool(funcs["is_model_downloaded"](name))
+            except Exception:
+                already = False
+            if already:
+                self._show_msg("Model changed", f"The coach will now use {name}.")
+                self.refresh_all()
+            else:
+                self._offer_model_download(
+                    name,
+                    "Switched to {name}. It still needs downloading (~{size} MB).",
+                )
+
+        _run_ui_action(_apply, prefix="Could not change the coach model.")
+
+    def _offer_model_download(self, name: str, intro: str = "") -> None:
+        """Download *name* behind a progress popup, then refresh settings."""
+        funcs = _get_llm_funcs()
+        if funcs is None:
+            return
+        self.busy = True
+        size_mb = funcs["model_size_mb"](name)
+        content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+        progress = ProgressBar(max=100, value=0, size_hint_y=None, height=dp(20))
+        content.add_widget(_make_label(
+            intro.format(name=name, size=size_mb),
+            font_size=sp(13),
+        ))
+        content.add_widget(progress)
+        status = _make_label("Starting download...", font_size=sp(12), color=_MUTED)
+        content.add_widget(status)
+        popup = Popup(
+            title="Downloading model",
+            content=content,
+            size_hint=(0.9, None),
+            height=dp(300),
+            auto_dismiss=False,
+        )
+        popup.open()
+
+        def _update(downloaded: int, total: int) -> None:
+            def _apply(_dt):
+                progress.value = int(downloaded / total * 100) if total > 0 else 0
+                status.text = (
+                    f"{downloaded / (1024 * 1024):.0f} MB downloaded"
+                    f" ({progress.value:.0f}%)"
+                )
+
+            Clock.schedule_once(_apply, 0)
+
+        def _download() -> None:
+            try:
+                funcs["ensure_model"](name, progress_callback=_update)
+                Clock.schedule_once(lambda _dt: _done())
+            except Exception as exc:
+                Clock.schedule_once(lambda _dt, e=exc: _error(e))
+
+        def _done() -> None:
+            self.busy = False
+            popup.dismiss()
+            try:
+                funcs["reset_engine"]()
+            except Exception:
+                pass
+            self._show_msg("Model ready", f"{name} is downloaded and selected.")
+            self.refresh_all()
+
+        def _error(exc) -> None:
+            self.busy = False
+            popup.dismiss()
+            self._show_msg("Download failed", str(exc))
+
+        threading.Thread(target=_download, daemon=True).start()
 
     def _delete_model(self) -> None:
         funcs = _get_llm_funcs()
