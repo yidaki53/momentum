@@ -538,6 +538,29 @@ def _configured_n_ctx() -> int:
     return max(MIN_CONTEXT_TOKENS, min(MAX_CONTEXT_TOKENS, requested))
 
 
+def _short_repr(value: Any, limit: int = 160) -> str:
+    """Return a compact repr of a streaming chunk, for on-device tracing."""
+    try:
+        text = repr(value)
+    except Exception:  # pragma: no cover - exotic objects
+        return "<unrepresentable>"
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _trace(message: str) -> None:
+    """Emit a timestamped diagnostic line to stdout.
+
+    On Android the APK's logging is not wired to a handler, so ``log.debug``
+    vanishes and leaves nothing to diagnose a stalled generation with. ``print``
+    reaches logcat on a debuggable build, which is what makes these traces
+    usable in the field.
+    """
+    try:
+        print(f"[LLM] {message}", flush=True)
+    except Exception:  # never let diagnostics break generation
+        pass
+
+
 class LlmEngine:
     """Manages a local GGUF model for text generation."""
 
@@ -578,6 +601,10 @@ class LlmEngine:
             self._model_path,
             self._n_ctx,
             self._n_threads,
+        )
+        _trace(
+            f"loading {Path(self._model_path).name} n_ctx={self._n_ctx} "
+            f"threads={self._n_threads}"
         )
         self._llama = Llama(
             model_path=str(self._model_path),
@@ -724,6 +751,14 @@ class LlmEngine:
                         "window. Clear the chat and start again."
                     )
 
+                # On-device tracing. The ``momentum`` logger is not configured
+                # in the APK, so these prints are the only evidence available
+                # when a generation stalls on a phone.
+                _trace(
+                    f"start n_ctx={self._n_ctx} threads={self._n_threads} "
+                    f"budget={budget} messages={len(fitted_messages)}"
+                )
+                started = time.time()
                 with self._lock:
                     response = self._llama.create_chat_completion(
                         messages=cast("Any", fitted_messages),
@@ -731,15 +766,30 @@ class LlmEngine:
                         temperature=temperature,
                         stream=True,
                     )
+                _trace(
+                    f"create_chat_completion returned after {time.time() - started:.2f}s"
+                )
 
+                chunks = 0
                 for chunk in cast("Iterable[Any]", response):
+                    chunks += 1
+                    if chunks == 1:
+                        _trace(
+                            f"first chunk after {time.time() - started:.2f}s: "
+                            f"{type(chunk).__name__} {_short_repr(chunk)}"
+                        )
                     content = _delta_text(chunk)
                     if content:
                         full_text += content
                         on_token(content)
 
+                _trace(
+                    f"stream complete: {chunks} chunks, {len(full_text)} chars, "
+                    f"{time.time() - started:.2f}s"
+                )
                 on_done(full_text.strip())
             except Exception as exc:
+                _trace(f"FAILED {type(exc).__name__}: {exc}\n" + traceback.format_exc())
                 log.exception("Async generation failed")
                 on_error(exc)
 
