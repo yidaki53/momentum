@@ -3157,7 +3157,9 @@ class CoachScreen(Screen):
                     target=_generate, name="momentum-coach-send", daemon=True
                 ).start()
             except Exception as exc:
-                global _CHAT_ACTIVE
+                # No `global` here: this closure already declared it above, and
+                # re-declaring after an assignment is a SyntaxError in the host
+                # python the Android build compiles with.
                 _CHAT_ACTIVE = False
                 self.busy = False
                 self._hide_typing()

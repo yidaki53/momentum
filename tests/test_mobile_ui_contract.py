@@ -432,3 +432,18 @@ def test_model_picker_offers_download_when_missing() -> None:
     src = _mobile_main_source()
     assert "def _offer_model_download(" in src
     assert 'funcs["ensure_model"](name, progress_callback=_update)' in src
+
+
+def test_mobile_main_compiles_under_the_android_host_python() -> None:
+    """mobile/main.py must compile the way the Android build compiles it.
+
+    Buildozer compiles the app with an older host python than the dev box, so
+    syntax that 3.12 accepts still fails there. A re-declared `global` after an
+    assignment in the same closure raised exactly that SyntaxError and silently
+    stopped every APK from building, while ruff and pytest both passed locally.
+    """
+    import ast
+    import pathlib
+
+    source = (pathlib.Path(__file__).parent.parent / "mobile" / "main.py").read_text()
+    ast.parse(source, feature_version=(3, 8))
