@@ -804,7 +804,10 @@ class LlmEngine:
         on_done: Callable[[str], None],
         on_error: Callable[[Exception], None],
         max_tokens: int = 256,
-        temperature: float = 0.7,
+        # 0.5 rather than 0.7: the smallest models run on the phone drift into
+        # narration and invented formats at the higher setting, and the coach's
+        # replies gain nothing from the extra randomness.
+        temperature: float = 0.5,
     ) -> threading.Thread:
         """Generate a response asynchronously, streaming tokens to *on_token*.
 

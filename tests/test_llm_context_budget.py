@@ -201,7 +201,42 @@ def test_chat_system_prompt_is_small_enough_for_a_phone() -> None:
     assert headroom > 1000, "not enough room left for history and the reply"
 
 
-def test_chat_prompt_keeps_the_safety_rules() -> None:
+def test_user_data_is_labelled_as_data_not_instructions() -> None:
+    """The app-data block must be fenced and marked as data.
+
+    Delivered as an unlabelled block of app formatting, the small model on the
+    phone read it as an instruction and narrated the template back instead of
+    replying: "hi" came back as "[This user is now creating a task ... they
+    will write ... such as "Todya's Focus: [task]"]", inventing a label that
+    exists nowhere in the codebase.
+    """
+    from momentum.llm import prompts
+
+    block = prompts.build_chat_prompt("hi", "Active task: Draft intro", [])
+    data = next(m for m in block if "Draft intro" in m["content"])
+
+    assert data["content"].startswith("This is the user's app data.")
+    assert "not instructions" in data["content"]
+    assert "--- begin user data ---" in data["content"]
+    assert "--- end user data ---" in data["content"]
+
+
+def test_chat_system_prompt_forbids_narration() -> None:
+    from momentum.llm import prompts
+
+    prompt = prompts.CHAT_SYSTEM_PROMPT.lower()
+    assert "square brackets" in prompt
+    assert "reply only to what the user just said" in prompt
+
+
+def test_chat_temperature_is_low_enough_for_small_models() -> None:
+    """At 0.7 the smallest models drift into narration and invented formats."""
+    import inspect
+
+    from momentum.llm.engine import LlmEngine
+
+    default = inspect.signature(LlmEngine.generate_async).parameters["temperature"]
+    assert default.default <= 0.5, default.default
     """Compacting the prompt must not drop safety or behaviour rules.
 
     The task marker is covered separately in tests/test_coach_tasks.py, where
