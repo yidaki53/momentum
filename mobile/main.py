@@ -347,6 +347,32 @@ def _coach_diagnostics_text(funcs: dict | None) -> str:
     return "\n".join(lines)
 
 
+# Task markers the coach can emit when the user explicitly asks for a task.
+# Exposed at module level because the Coach screen parses the reply before
+# display; the pure parsing helpers themselves live in momentum.llm.context so
+# they can be unit-tested without Kivy.
+try:
+    from momentum.llm.context import (
+        TASK_MARKER as _TASK_MARKER,
+    )
+    from momentum.llm.context import (
+        extract_task_requests as _extract_task_requests,
+    )
+    from momentum.llm.context import (
+        strip_task_markers as _strip_task_markers,
+    )
+except Exception:  # pragma: no cover - the llm package is optional
+    log.debug("Task-marker helpers unavailable", exc_info=True)
+
+    _TASK_MARKER = "[[task:"
+
+    def _extract_task_requests(text):  # type: ignore[misc]
+        return []
+
+    def _strip_task_markers(text):  # type: ignore[misc]
+        return (text or "").strip()
+
+
 def _coach_ready() -> bool:
     """Return whether optional AI snippets can be generated right now."""
     if not cfg.load_config().llm_enabled:
@@ -399,9 +425,22 @@ def _add_ai_insight(
     cache_key: str,
     title: str = "Coach perspective",
 ) -> None:
-    """Add an optional, non-blocking AI insight control to a screen/popup."""
+    """Add an automatic, non-blocking AI insight to a screen or popup.
+
+    When the coach is active the insight appears on its own as soon as the
+    screen is opened -- there is no button to find and press. When the coach is
+    off, has no model, or cannot run, nothing is added at all: every other part
+    of the app keeps working exactly as before. The AI is additive, never a
+    gate on using the app.
+
+    The request runs on a worker thread and the result is marshalled back with
+    ``Clock``, so the screen stays responsive while the model loads and
+    generates. If the load takes a while the user sees a quiet placeholder
+    rather than a blocked screen.
+    """
     if not _coach_ready():
         return
+
     panel = BoxLayout(
         orientation="vertical",
         size_hint_y=None,
@@ -411,52 +450,74 @@ def _add_ai_insight(
     panel.bind(minimum_height=panel.setter("height"))
     panel.add_widget(_make_label(title, font_size=sp(14), bold=True, color=_ACCENT))
     output = _make_label(
-        "The coach can add a personalised next step here.",
+        "The coach is thinking about this...",
         font_size=sp(12),
         color=_MUTED,
     )
     panel.add_widget(output)
-    button = Button(
-        text="Get coach perspective",
-        size_hint_y=None,
-        height=dp(40),
-        background_color=list(_ACCENT),
-        color=list(_BUTTON_TEXT),
-        font_size=sp(12),
-    )
+    container.add_widget(panel)
 
-    def _request(_):
-        button.disabled = True
-        output.text = "The coach is thinking about your Momentum data..."
-        started = _request_ai_text(
+    def _request():
+        def _done(text):
+            def _apply(_dt):
+                if output.parent is not None:
+                    output.text = text
+
+            Clock.schedule_once(_apply, 0)
+
+        def _error(exc):
+            # Degrade quietly: the screen must remain fully usable even if the
+            # coach cannot answer. Hide the panel rather than showing an error
+            # the user cannot act on.
+            def _apply(_dt):
+                if panel.parent is not None:
+                    container.remove_widget(panel)
+
+            Clock.schedule_once(_apply, 0)
+            log.debug("Coach insight unavailable: %s", exc)
+
+        _request_ai_text(
             instruction,
             conn=conn,
             cache_key=cache_key,
-            on_done=lambda text: (
-                setattr(output, "text", text),
-                setattr(button, "disabled", False),
-            ),
-            on_error=lambda exc: (
-                setattr(
-                    output,
-                    "text",
-                    str(exc) or "The coach could not add a perspective yet.",
-                ),
-                setattr(button, "disabled", False),
-            ),
+            on_done=_done,
+            on_error=_error,
         )
-        if not started:
-            button.disabled = False
-            output.text = "The coach is not ready yet."
 
-    button.bind(on_release=_request)
-    panel.add_widget(button)
-    container.add_widget(panel)
+    Clock.schedule_once(lambda _dt: _request(), 0)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Coach chat input
+# ---------------------------------------------------------------------------
+
+
+class EnterSendsTextInput(TextInput):
+    """A multiline text field where Enter sends instead of inserting a newline.
+
+    Kivy only dispatches ``on_text_validate`` when ``multiline`` is False. With a
+    multiline field Enter inserts a newline instead, so binding
+    ``on_text_validate`` silently does nothing -- which is why the Send button
+    worked but the Enter key appeared dead.
+
+    Overriding ``insert_text`` covers every route a newline can arrive: a
+    hardware keyboard, and the soft keyboard's IME action key on Android.
+    """
+
+    send_on_enter = ObjectProperty(None, allownone=True)
+
+    def insert_text(self, substring: str, from_undo: bool = False):
+        if substring in ("\n", "\r") and self.multiline:
+            callback = self.send_on_enter
+            if callable(callback):
+                callback(self)
+            return None
+        return super().insert_text(substring, from_undo=from_undo)
+
 
 def _resolve_palette() -> dict[str, list[float]]:
     """Build the active mobile color palette from persisted config."""
@@ -1479,7 +1540,7 @@ KV = """
                     color: app.button_text_color
                     font_size: sp(13) * app.font_scale
                     on_release: root.clear_chat()
-            TextInput:
+            EnterSendsTextInput:
                 id: coach_input
                 size_hint_y: None
                 height: dp(104) * app.font_scale
@@ -1490,9 +1551,10 @@ KV = """
                 allow_copy: True
                 write_tab: False
                 multiline: True
-                # Enter sends the message instead of inserting a newline.
-                # on_text_validate fires on Enter in a multiline TextInput.
-                on_text_validate: root.send_message()
+                # Enter sends rather than inserting a newline. This must be the
+                # subclass: Kivy's on_text_validate never fires while
+                # multiline is True.
+                send_on_enter: root.send_message
                 font_size: sp(16) * app.font_scale
                 background_color: app.input_bg_color
                 foreground_color: app.text_color
@@ -2984,21 +3046,41 @@ class CoachScreen(Screen):
                     ever saw -- no repaint, no token callback, no error. On a
                     phone the kernel would then reclaim the process while it was
                     still resident.
+
+                    The whole body is guarded, not just the load. An exception
+                    escaping this function kills the worker thread with nothing
+                    left to clear the typing indicator, so the screen sat on
+                    "thinking" forever with no error anywhere -- the exact
+                    symptom reported on device.
                     """
                     try:
                         engine = funcs["get_engine"](model_name)
+                        if engine is None:
+                            raise RuntimeError(
+                                "The AI Coach engine could not be started on "
+                                "this build."
+                            )
+                        self._arm_reply_watchdog()
+                        print(
+                            f"[COACH] engine ready, streaming ({model_name})",
+                            flush=True,
+                        )
+                        engine.generate_async(
+                            messages=messages,
+                            on_token=lambda t: self._record_token(t, _on_token),
+                            on_done=_on_done,
+                            on_error=_on_error,
+                            max_tokens=512,
+                            temperature=0.7,
+                        )
+                        print("[COACH] generate_async returned", flush=True)
                     except Exception as exc:
-                        log.exception("AI Coach engine load failed")
+                        print(
+                            f"[COACH] generation setup failed: "
+                            f"{type(exc).__name__}: {exc}",
+                            flush=True,
+                        )
                         _on_error(exc)
-                        return
-                    engine.generate_async(
-                        messages=messages,
-                        on_token=lambda t: self._record_token(t, _on_token),
-                        on_done=_on_done,
-                        on_error=_on_error,
-                        max_tokens=512,
-                        temperature=0.7,
-                    )
 
                 threading.Thread(
                     target=_generate, name="momentum-coach-send", daemon=True
@@ -3017,7 +3099,37 @@ class CoachScreen(Screen):
 
     def _record_token(self, token: str, forward) -> None:
         self._pending_reply = getattr(self, "_pending_reply", "") + token
+        self._disarm_reply_watchdog()
         forward(token)
+
+    # Seconds to wait for the first token before telling the user something is
+    # wrong. Generation on a phone is slow but not this slow; the earlier
+    # indefinite "thinking" had no upper bound at all.
+    _REPLY_TIMEOUT_S = 180.0
+
+    def _arm_reply_watchdog(self) -> None:
+        """Give the reply a deadline so a stall cannot strand the UI."""
+        self._disarm_reply_watchdog()
+
+        def _expired(_dt):
+            if not self.busy:
+                return
+            print("[COACH] reply timed out waiting for first token", flush=True)
+            self._fail_reply(
+                RuntimeError(
+                    "The coach stopped responding. This usually means the model "
+                    "does not fit in memory on this device, or the context is "
+                    "too long. Try the smaller Qwen model in Settings."
+                )
+            )
+
+        self._watchdog_event = Clock.schedule_once(_expired, self._REPLY_TIMEOUT_S)
+
+    def _disarm_reply_watchdog(self) -> None:
+        event = getattr(self, "_watchdog_event", None)
+        if event is not None:
+            event.cancel()
+            self._watchdog_event = None
 
     def _append_token(self, token: str) -> None:
         """Append a streamed token to the most recent assistant bubble."""
@@ -3034,11 +3146,24 @@ class CoachScreen(Screen):
 
     def _finish_reply(self, full_text: str) -> None:
         self.busy = False
+        self._disarm_reply_watchdog()
         self._hide_typing()
-        text = full_text or getattr(self, "_pending_reply", "")
+        raw = full_text or getattr(self, "_pending_reply", "")
         self._pending_reply = ""
-        if not text:
+        if not raw:
+            # The model finished without emitting anything. Say so rather than
+            # leaving the user with a silent, empty reply.
+            self._add_message(
+                "assistant",
+                "The coach returned an empty reply. Try rephrasing, or use the "
+                "smaller Qwen model in Settings if this keeps happening.",
+            )
             return
+
+        # A small model can drift into the task marker mid-sentence, so the
+        # visible text is cleaned before it is stored or shown.
+        text = _strip_task_markers(raw) or raw
+        task_titles = _extract_task_requests(raw)
         # Replace the in-progress bubble with the final text to avoid duplicates.
         chat = self.ids.coach_chat
         for child in list(chat.children):
@@ -3046,6 +3171,8 @@ class CoachScreen(Screen):
                 chat.remove_widget(child)
                 break
         self._add_message("assistant", text)
+        if task_titles:
+            self._offer_task_creation(task_titles)
         try:
             conn = self._home_conn()
             if conn is not None:
@@ -3055,16 +3182,100 @@ class CoachScreen(Screen):
         except Exception:
             log.debug("Could not persist AI Coach reply", exc_info=True)
 
+    def _offer_task_creation(self, titles: list[str]) -> None:
+        """Ask before adding tasks the coach proposed.
+
+        The model never writes to the database directly. A small model can emit
+        a task marker when nobody asked for one, so the user always confirms,
+        and declining simply leaves the list untouched.
+        """
+        if not titles:
+            return
+        app = App.get_running_app()
+        fg = list(app.text_color) if app else list(_TEXT)
+        accent = list(app.accent_color) if app else list(_ACCENT)
+        button_text = list(app.button_text_color) if app else list(_BUTTON_TEXT)
+
+        content = BoxLayout(orientation="vertical", padding=10, spacing=10)
+        listing = "\n".join(f"• {t}" for t in titles[:5])
+        if len(titles) > 5:
+            listing += f"\n...and {len(titles) - 5} more"
+        label = Label(
+            text=f"Add these to your tasks?\n\n{listing}",
+            font_size=sp(13),
+            color=fg,
+            halign="left",
+            valign="top",
+            text_size=(dp(240), None),
+            size_hint_y=None,
+        )
+        label.bind(texture_size=lambda inst, val: setattr(inst, "height", val[1]))
+        content.add_widget(label)
+
+        def _create(*_args):
+            popup.dismiss()
+            self._create_tasks(titles)
+
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+        add_btn = Button(
+            text="Add",
+            background_color=accent,
+            color=button_text,
+            font_size=sp(13),
+        )
+        skip_btn = Button(
+            text="Not now",
+            background_color=list(_MUTED),
+            color=button_text,
+            font_size=sp(13),
+        )
+        row.add_widget(add_btn)
+        row.add_widget(skip_btn)
+        content.add_widget(row)
+
+        popup = Popup(
+            title="AI Coach",
+            content=content,
+            size_hint=(0.86, None),
+            height=dp(360),
+        )
+        add_btn.bind(on_release=_create)
+        skip_btn.bind(on_release=lambda *_: popup.dismiss())
+        popup.open()
+
+    def _create_tasks(self, titles: list[str]) -> None:
+        """Create the confirmed tasks and refresh Home so they appear at once."""
+        conn = self._home_conn()
+        if conn is None:
+            return
+        created = 0
+        try:
+            for title in titles[:10]:
+                db.add_task(conn, TaskCreate(title=title))
+                created += 1
+        except Exception as exc:
+            log.warning("Could not create coach-proposed tasks: %s", exc)
+            _show_error_popup("AI Coach", f"Could not add the task(s): {exc}")
+            return
+        if created:
+            self._add_message(
+                "assistant",
+                f"Added {created} task{'s' if created != 1 else ''} to your list.",
+            )
+            home = self.manager.get_screen("home")
+            refresh = getattr(home, "refresh_all", None)
+            if callable(refresh):
+                Clock.schedule_once(lambda _dt: refresh(), 0)
+
     def _fail_reply(self, exc) -> None:
         self.busy = False
+        self._disarm_reply_watchdog()
         self._hide_typing()
+        print(f"[COACH] failure: {type(exc).__name__}: {exc}", flush=True)
         self._add_message(
             "assistant",
             f"I'm sorry, I encountered an error: {exc}",
         )
-        # ``log.exception`` outside an ``except`` block reports "NoneType: None"
-        # and discards the cause that actually matters here -- the engine-load
-        # refusal is the entire diagnosis for a memory-budget failure.
         log.warning("AI Coach generation failed: %s: %s", type(exc).__name__, exc)
 
     def clear_chat(self) -> None:
