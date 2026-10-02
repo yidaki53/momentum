@@ -398,7 +398,7 @@ class TestUpdateCommands:
         monkeypatch.setattr("momentum.config._CONFIG_DIR", cfg_dir)
         monkeypatch.setattr("momentum.config._CONFIG_FILE", cfg_dir / "config.json")
 
-    def _mock_release(self, monkeypatch, version: str = "0.5.0") -> None:
+    def _mock_release(self, monkeypatch, version: str = "0.5.1") -> None:
         from momentum.ui import update_check
 
         monkeypatch.setattr(
@@ -410,7 +410,7 @@ class TestUpdateCommands:
         )
 
     def test_check_updates_up_to_date(self, monkeypatch) -> None:
-        self._mock_release(monkeypatch, "0.5.0")
+        self._mock_release(monkeypatch, "0.5.1")
         result = runner.invoke(app, ["check-updates"])
         assert result.exit_code == 0
         assert "latest version" in result.output
@@ -433,7 +433,7 @@ class TestUpdateCommands:
         assert result.exit_code == 1
 
     def test_update_no_new_version(self, monkeypatch) -> None:
-        self._mock_release(monkeypatch, "0.5.0")
+        self._mock_release(monkeypatch, "0.5.1")
         result = runner.invoke(app, ["update"])
         assert result.exit_code == 0
         assert "latest version" in result.output

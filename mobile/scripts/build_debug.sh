@@ -36,7 +36,7 @@ fi
 
 echo "Building debug APK (this may take a while)..."
 "$BUILDOZER" android debug
-APK="$PWD/bin/momentum-0.5.0-arm64-v8a-debug.apk"
+APK="$PWD/bin/momentum-0.5.1-arm64-v8a-debug.apk"
 poetry -C "$REPO_ROOT" run python "$PWD/scripts/verify_coach_apk.py" "$APK"
 echo "Installing APK on connected device..."
 ADB="$(command -v adb || true)"
