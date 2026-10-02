@@ -153,8 +153,14 @@ def test_unparseable_sensor_output_yields_nothing_rather_than_a_wrong_reading(gu
 # --- supervision ------------------------------------------------------------
 
 
-def test_supervise_returns_the_commands_own_exit_code(guard):
+def test_supervise_returns_the_commands_own_exit_code(guard, monkeypatch):
     """A guard that rewrote exit codes would break every caller that checks one."""
+    monkeypatch.setattr(
+        guard,
+        "sample",
+        lambda: [guard.Reading("cpu_package", 50.0), guard.Reading("gpu", 45.0)],
+    )
+    monkeypatch.setattr(guard, "busiest_other_cpu", lambda: 5.0)
     assert (
         guard.supervise(
             [sys.executable, "-c", "raise SystemExit(7)"],
@@ -201,31 +207,181 @@ def test_the_guard_survives_killing_its_child(guard):
     )
 
 
-def test_a_hot_run_is_stopped_and_reported_as_124(guard, monkeypatch):
-    """The overheat path, end to end, with the thresholds forced down.
+# ---------------------------------------------------------------------------
+# The second crash: laptop thresholds, ramp detection, preflight, durable logs
+# ---------------------------------------------------------------------------
 
-    Tightening the limits exercises the real kill path on hardware that is not actually
-    overheating, which is the only way to test it in CI.
+
+def test_thresholds_leave_real_headroom_below_the_firmware_limits(guard):
+    """Waiting for the firmware limit means letting the machine defend itself.
+
+    The CPU reports high=100C / crit=100C. The first guard stopped at 90C, which on a
+    laptop is not a margin -- it is a countdown, and it crashed anyway.
     """
-    hot = [guard.Reading("cpu_package", 91.0) for _ in range(4)]
-    monkeypatch.setattr(guard, "sample", lambda: hot)
-
-    result = guard.supervise(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        interval=1,
-        patience=2,
-        limits={"cpu_package": (80.0, 90.0)},
+    assert guard.DEFAULT_LIMITS["cpu_package"][1] <= 80.0
+    assert (
+        guard.DEFAULT_LIMITS["cpu_package"][0] < guard.DEFAULT_LIMITS["cpu_package"][1]
     )
-    assert result == 124
+    for key, (warn, stop) in guard.DEFAULT_LIMITS.items():
+        assert warn < stop, key
+        assert stop <= 85.0, f"{key} stop threshold is too permissive for a laptop"
+
+
+def test_nvme_ceiling_is_watched_separately_and_is_lower_than_the_cpu(guard):
+    """A drive throttles long before the CPU reads a reassuring number."""
+    assert guard.DEFAULT_LIMITS["nvme"][1] < guard.DEFAULT_LIMITS["cpu_package"][1]
+
+
+def test_default_sampling_is_fast_enough_for_a_laptop(guard):
+    """Fifteen seconds is long enough for a small laptop to overshoot."""
+    assert guard.DEFAULT_INTERVAL <= 5
+    assert guard.DEFAULT_PATIENCE <= 2
+
+
+def test_a_fast_climb_is_stopped_before_any_threshold_is_reached(guard):
+    """Ramp detection catches the runaway that absolute thresholds miss.
+
+    A fan that has stopped, or a job entering a heavier phase, can climb 30C while still
+    reading below the absolute stop threshold. Waiting for 78C in that situation is
+    waiting for the shutdown.
+    """
+    history = [(0.0, 45.0), (20.0, 58.0), (40.0, 70.0)]
+    assert guard.ramp_c_per_minute(history) > guard.RAMP_C_PER_MIN
+    assert guard.ramp_is_dangerous(history)
+    # A slow, steady warm-up over the same period is fine.
+    assert not guard.ramp_is_dangerous([(0.0, 45.0), (20.0, 50.0), (40.0, 55.0)])
+    # And a flat machine is fine.
+    assert not guard.ramp_is_dangerous([(0.0, 60.0), (30.0, 60.5)])
+
+
+def test_ramp_needs_enough_history_to_mean_anything(guard):
+    assert guard.ramp_c_per_minute([]) == 0.0
+    assert guard.ramp_c_per_minute([(0.0, 50.0)]) == 0.0
+    # Two samples 1s apart cannot distinguish a ramp from sensor noise.
+    assert not guard.ramp_is_dangerous([(0.0, 50.0), (1.0, 70.0)])
+
+
+def test_preflight_refuses_to_start_on_a_warm_machine(guard, monkeypatch):
+    """This is the check that would have prevented the second crash.
+
+    The machine was already at 89C with another job at 95% CPU. Supervising only our
+    own child cannot see that, and by the time a second load pushes it over there is no
+    time left to react.
+    """
+    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", 76.0)])
+    monkeypatch.setattr(guard, "busiest_other_cpu", lambda: 5.0)
+    check = guard.preflight()
+    assert not check.ok
+    assert any("already at" in reason for reason in check.reasons)
+
+    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", 40.0)])
+    monkeypatch.setattr(guard, "busiest_other_cpu", lambda: 5.0)
+    assert guard.preflight().ok
+
+
+def test_preflight_refuses_when_another_job_is_already_saturating_the_cpu(
+    guard, monkeypatch
+):
+    """Stacking a second heavy job is what crashed this machine."""
+    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", 45.0)])
+    monkeypatch.setattr(guard, "busiest_other_cpu", lambda: 95.0)
+    check = guard.preflight()
+    assert not check.ok
+    assert any("another process" in reason for reason in check.reasons)
+
+
+def test_preflight_warns_but_does_not_block_without_sensors(guard, monkeypatch):
+    """No sensors is a reason to be careful, not a reason to block work forever."""
+    monkeypatch.setattr(guard, "sample", lambda: [])
+    monkeypatch.setattr(guard, "busiest_other_cpu", lambda: 5.0)
+    check = guard.preflight()
+    assert check.ok
+    assert any("no temperature sensors" in reason for reason in check.reasons)
+
+
+def test_supervise_refuses_a_hot_start_with_exit_code_three(
+    guard, monkeypatch, tmp_path
+):
+    """Exit 3 means "refused", which is distinct from 124 "stopped while running"."""
+    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", 95.0)])
+    monkeypatch.setattr(guard, "busiest_other_cpu", lambda: 5.0)
+    marker = tmp_path / "should_not_exist"
+    result = guard.supervise(
+        [
+            sys.executable,
+            "-c",
+            f"import pathlib; pathlib.Path({str(marker)!r}).touch()",
+        ],
+        interval=1,
+        log_path=tmp_path / "thermal.csv",
+    )
+    assert result == 3
+    assert not marker.exists(), "the command ran despite a refusing preflight"
+
+
+def test_allow_hot_start_skips_the_preflight(guard, monkeypatch, tmp_path):
+    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", 40.0)])
+    monkeypatch.setattr(guard, "busiest_other_cpu", lambda: 5.0)
+    marker = tmp_path / "ran"
+    result = guard.supervise(
+        [
+            sys.executable,
+            "-c",
+            f"import pathlib; pathlib.Path({str(marker)!r}).touch()",
+        ],
+        interval=1,
+        allow_hot_start=True,
+    )
+    assert result == 0
+    assert marker.exists()
+
+
+def test_samples_are_written_to_a_csv_that_survives(guard, tmp_path):
+    """The crash left no record at all, which is why thresholds were guesswork.
+
+    The telemetry has to outlive the process that produced it, so the log is flushed and
+    fsynced per sample rather than at exit.
+    """
+    path = tmp_path / "thermal.csv"
+    telemetry = guard.TemperatureLog(path)
+    telemetry.write(
+        1.0, [guard.Reading("cpu_package", 61.0), guard.Reading("gpu", 44.0)], "run"
+    )
+    telemetry.write(6.0, [guard.Reading("cpu_package", 63.0)], "warn")
+    telemetry.close()
+
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    assert lines[0].split(",")[0] == "timestamp"
+    assert len(lines) == 3
+    assert "61.0" in lines[1] and "44.0" in lines[1] and "run" in lines[1]
+    assert "warn" in lines[2]
+
+
+def test_the_log_records_every_sensors_value_a_run_touched(guard, tmp_path):
+    """A log missing the NVMe is how the drive gets cooked unnoticed."""
+    path = tmp_path / "thermal.csv"
+    telemetry = guard.TemperatureLog(path)
+    telemetry.write(
+        1.0,
+        [
+            guard.Reading("cpu_package", 60.0),
+            guard.Reading("nvme", 65.0),
+            guard.Reading("nvme", 61.0),
+        ],
+        "run",
+    )
+    telemetry.close()
+    row = path.read_text(encoding="utf-8").strip().splitlines()[1]
+    assert "65.0" in row, "the hottest of several drives must be the one recorded"
 
 
 def test_a_cool_run_is_left_to_finish(guard, monkeypatch, tmp_path):
-    marker = tmp_path / "finished"
     monkeypatch.setattr(
         guard,
         "sample",
-        lambda: [guard.Reading("cpu_package", 55.0), guard.Reading("gpu", 50.0)],
+        lambda: [guard.Reading("cpu_package", 50.0), guard.Reading("gpu", 42.0)],
     )
+    marker = tmp_path / "finished"
     result = guard.supervise(
         [
             sys.executable,
@@ -233,7 +389,29 @@ def test_a_cool_run_is_left_to_finish(guard, monkeypatch, tmp_path):
             f"import pathlib; pathlib.Path({str(marker)!r}).write_text('done')",
         ],
         interval=1,
-        patience=2,
+        allow_hot_start=True,
+        log_path=tmp_path / "t.csv",
     )
     assert result == 0
     assert marker.exists()
+    assert (tmp_path / "t.csv").exists()
+
+
+def test_a_guarded_run_leaves_a_readable_temperature_trail(
+    guard, monkeypatch, tmp_path
+):
+    """End to end: a real child, a real log, the file still there afterwards."""
+    monkeypatch.setattr(
+        guard,
+        "sample",
+        lambda: [guard.Reading("cpu_package", 55.0), guard.Reading("gpu", 48.0)],
+    )
+    path = tmp_path / "trail.csv"
+    guard.supervise(
+        [sys.executable, "-c", "import time; time.sleep(3)"],
+        interval=1,
+        allow_hot_start=True,
+        log_path=path,
+    )
+    text = path.read_text(encoding="utf-8")
+    assert "cpu_package" in text and "55.0" in text

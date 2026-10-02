@@ -165,6 +165,105 @@ easy to break by accident:
 
 ## Thermal safety
 
+**This machine has crashed from thermal overload twice**, both times during long ML
+runs on this laptop. Treat that as a hard constraint, not as bad luck. The second crash
+happened with a guard already written -- it only supervised its own child while the heat
+came from a second job -- which is why the guard now refuses to start rather than only
+reacting once things are hot.
+
+```bash
+# check before starting anything long
+python scripts/thermal_guard.py --check
+
+# guard a long run, with telemetry that survives a crash
+python scripts/thermal_guard.py --log out/thermal.csv -- \
+    python scripts/train_distill.py --config configs/distill.qwen05b-12gb.toml \
+                                     --pairs data/synthetic/train.jsonl
+```
+
+| Behaviour | Detail |
+|---|---|
+| Refuses to start | exit 3 if already warm, or another process is above 60% CPU |
+| Stops a hot run | exit 124 after 2 consecutive hot samples |
+| Stops a runaway | exit 124 on a 20C/min climb, **even below any threshold** |
+| Keeps evidence | `--log` writes CSV, flushed and fsynced per sample |
+
+| Sensor | Warn | Stop |
+|---|---|---|
+| CPU package | 70C | 78C |
+| CPU core (hottest) | 75C | 85C |
+| GPU | 72C | 80C |
+| NVMe | 60C | 70C |
+
+Every threshold sits well below the firmware's own limits (CPU high=100/crit=100, GPU
+max ~89C, NVMe crit 84.8C). That gap is deliberate: the firmware limits are where the
+machine defends *itself*, by throttling or shutting down. Waiting for them is how you
+lose the machine.
+
+The ramp check exists because the dangerous condition is often not the absolute
+temperature but the rate: a fan that has stopped, or a job entering a heavier phase, can
+climb 30C while still reading below the stop threshold.
+
+`tests/test_thermal_guard.py` covers all of this on CI hardware with no sensors --
+thresholds, ramp maths, the refusal gate, durable logging, and both kill paths.
+
+## Measured state (2026-10-02)
+
+The pipeline runs end to end on this machine. It has been run, not just written:
+
+| Step | Result |
+|---|---|
+| `train_distill.py`, 25 pairs, 3 epochs | 9.4 s on GPU, train_loss 2.789, adapter + merge saved |
+| Same corpus on CPU | >11 min for two optimiser steps, never completed |
+| `eval_bench.py` on the merged model | runs; SHIP: no (see the table in `configs/eval.bench.toml`) |
+
+`gen_replies_hf.py` generates bench replies from a merged checkpoint on the GPU, so a
+model can be scored *before* quantisation, which is the only point where a regression is
+cheap to catch.
+
+**The default training config does not fit a 12GB card.** Batch 8 x 1024 tokens with
+Qwen's 151k vocab needs ~18GB for the float32 logits alone, and it OOMs. Use
+`configs/distill.qwen05b-12gb.toml` (batch 2, 640 tokens, gradient checkpointing), or
+raise the batch size if you have the memory.
+
+**The teacher cannot run here either.** Qwen2.5-7B in bf16 needs ~14GB. Options are a
+1.5B/3B teacher, 4-bit quantisation of the 7B, or a machine with more VRAM.
+
+### Hardware notes
+
+- Run long jobs under `scripts/thermal_guard.py` (see Thermal safety below).
+- `configs/smoke.tiny.toml` exists to exercise the whole path -- train, save, merge --
+  in about a minute. Use it to check a change before starting a real run.
+
+## Invariants
+
+Constraints that are easy to break by accident, recorded here because the folder is
+easy to break by accident:
+
+1. **Nothing here is imported by the app.** No `momentum/`, `mobile/` or wheel code may
+   import from this folder, and torch/transformers/TRL must never enter
+   `pyproject.toml`. A model consumer should not inherit a training stack.
+2. **Heretic stays a submodule.** It is AGPL-3.0 against our MIT licence. It is invoked
+   as a subprocess; its code is never vendored, and a Momentum file appearing inside the
+   submodule is a bug.
+3. **Licence gating is not negotiable.** `fetch_oa_corpus.py` rejects any record without
+   a licence, a DOI and a sha256, and treats an unrecognised licence as proprietary.
+   Widening the corpus means widening the allow-list deliberately, with a reason.
+4. **No real user data in training.** Every training user is synthetic. Real Momentum
+   tasks, journals or scores must never enter a file under `data/`.
+5. **The gates are proposals until calibrated.** The thresholds in
+   `configs/eval.bench.toml` were chosen before any run existed. `--calibrate` against a
+   baseline is what makes them real, and no model gets registered in
+   `momentum/llm/downloader.py` until every axis passes.
+6. **Heretic has no CLI flags.** It is driven by `config.toml` in its working directory
+   and prompts interactively unless `export_strategy` is set. `run_heretic.py` injects
+   the keys it needs; do not invent flags upstream does not have.
+7. **Logit distillation is deliberately absent.** `train_distill.py` is supervised only.
+   Add the KD pass when the bench shows the student is confidently wrong where the teacher
+   would have hedged -- not before.
+
+## Thermal safety
+
 This workstation has crashed from thermal overload once, during a CPU fine-tuning run
 that pinned every core for half an hour. Treat that as a hard constraint on how long
 scripts are allowed to run here, not as bad luck.
