@@ -108,6 +108,34 @@ only records it can prove are CC-BY or CC0 and writes one manifest row per artef
 row without a licence, DOI or sha256 is rejected. Raw publisher text stays out of git;
 only *teacher-written synthetic pairs* are committed.
 
+## Measured state (2026-10-02)
+
+The pipeline runs end to end on this machine. It has been run, not just written:
+
+| Step | Result |
+|---|---|
+| `train_distill.py`, 25 pairs, 3 epochs | 9.4 s on GPU, train_loss 2.789, adapter + merge saved |
+| Same corpus on CPU | >11 min for two optimiser steps, never completed |
+| `eval_bench.py` on the merged model | runs; SHIP: no (see the table in `configs/eval.bench.toml`) |
+
+`gen_replies_hf.py` generates bench replies from a merged checkpoint on the GPU, so a
+model can be scored *before* quantisation, which is the only point where a regression is
+cheap to catch.
+
+**The default training config does not fit a 12GB card.** Batch 8 x 1024 tokens with
+Qwen's 151k vocab needs ~18GB for the float32 logits alone, and it OOMs. Use
+`configs/distill.qwen05b-12gb.toml` (batch 2, 640 tokens, gradient checkpointing), or
+raise the batch size if you have the memory.
+
+**The teacher cannot run here either.** Qwen2.5-7B in bf16 needs ~14GB. Options are a
+1.5B/3B teacher, 4-bit quantisation of the 7B, or a machine with more VRAM.
+
+### Hardware notes
+
+- Run long jobs under `scripts/thermal_guard.py` (see Thermal safety below).
+- `configs/smoke.tiny.toml` exists to exercise the whole path -- train, save, merge --
+  in about a minute. Use it to check a change before starting a real run.
+
 ## Invariants
 
 Constraints that are easy to break by accident, recorded here because the folder is
@@ -134,3 +162,35 @@ easy to break by accident:
 7. **Logit distillation is deliberately absent.** `train_distill.py` is supervised only.
    Add the KD pass when the bench shows the student is confidently wrong where the teacher
    would have hedged -- not before.
+
+## Thermal safety
+
+This workstation has crashed from thermal overload once, during a CPU fine-tuning run
+that pinned every core for half an hour. Treat that as a hard constraint on how long
+scripts are allowed to run here, not as bad luck.
+
+```bash
+# one-shot reading of CPU package, cores, both NVMes and the GPU
+python scripts/thermal_guard.py --check
+
+# guard anything long-running: polls every 15s, stops after 3 hot samples
+python scripts/thermal_guard.py -- python scripts/train_distill.py \
+    --config configs/distill.qwen05b.toml --pairs data/synthetic/train.jsonl
+```
+
+Thresholds, chosen from this machine's own reported limits with headroom:
+
+| Sensor | Warn | Stop |
+|---|---|---|
+| CPU package | 80C | 90C (crit 100C) |
+| CPU core (hottest) | 85C | 95C |
+| GPU | 80C | 85C (Tj max 89C) |
+| NVMe | 70C | 80C (crit 84.8C) |
+
+Exit code 124 means the guard stopped the run. That means *wait for the machine to cool
+and reconsider the workload*, not *retry immediately* — a run that trips the guard twice
+in a row wants a smaller batch, a shorter sequence, or the GPU.
+
+`scripts/thermal_guard.py` keeps every decision in pure functions over readings, so
+`tests/test_thermal_guard.py` covers the thresholds, the parsers and the kill path on
+CI hardware with no sensors at all.
