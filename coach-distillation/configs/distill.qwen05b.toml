@@ -24,7 +24,7 @@ registry_name = "momentum-qwen05b"
 #
 # Raise this to the 7B only on hardware that can hold it in bf16 (>=18GB VRAM), where
 # the CPU is never involved and the quality difference is worth the memory.
-model_id = "Qwen/Qwen2.5-3B-Instruct"
+model_id = "Qwen/Qwen2.5-1.5B-Instruct"
 # bf16, not 4-bit: see above. Set true only alongside a teacher that fits in full.
 load_in_4bit = false
 revision = "main"

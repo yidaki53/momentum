@@ -632,6 +632,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         interval=args.interval,
         log_path=Path(args.log) if args.log else None,
         allow_hot_start=args.allow_hot_start,
+        max_hot_seconds=args.max_hot_seconds,
         dry_run=args.dry_run,
     )
 
