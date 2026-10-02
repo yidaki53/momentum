@@ -558,6 +558,13 @@ INFERENCE_WAIT_S = 20.0
 # 1.4 tokens/second, which is longer than any reasonable wait.
 _FOREGROUND_WAITING = threading.Event()
 
+# Set while a background generation holds the slot. It can only yield between
+# tokens, and on a phone its prompt prefill alone can outlast INFERENCE_WAIT_S.
+_BACKGROUND_HOLDS_SLOT = threading.Event()
+
+# Chat and a screen insight often start together when the model finishes loading.
+_BACKGROUND_GRACE_S = 0.5
+
 
 class InferencePreempted(RuntimeError):
     """Raised inside a background generation when a chat reply needs the slot.
@@ -583,6 +590,14 @@ def _acquire_inference_slot(*, background: bool = False) -> None:
         _FOREGROUND_WAITING.set()
     try:
         acquired = _INFERENCE_SLOT.acquire(timeout=INFERENCE_WAIT_S)
+        deadline = time.monotonic() + _INFERENCE_STALL_S
+        while (
+            not acquired
+            and not background
+            and _BACKGROUND_HOLDS_SLOT.is_set()
+            and time.monotonic() < deadline
+        ):
+            acquired = _INFERENCE_SLOT.acquire(timeout=1.0)
     finally:
         if not background:
             _FOREGROUND_WAITING.clear()
@@ -592,9 +607,12 @@ def _acquire_inference_slot(*, background: bool = False) -> None:
             "The coach is already working on something else. Wait for it to "
             "finish and try again."
         )
+    if background:
+        _BACKGROUND_HOLDS_SLOT.set()
 
 
 def _release_inference_slot() -> None:
+    _BACKGROUND_HOLDS_SLOT.clear()
     try:
         _INFERENCE_SLOT.release()
     except Exception:  # pragma: no cover - defensive
@@ -807,6 +825,12 @@ class LlmEngine:
         _acquire_inference_slot(background=background)
         stall_timer = _schedule_stall_release()
         try:
+            # Prefill cannot be interrupted, so yield now if a chat is starting.
+            if background and _FOREGROUND_WAITING.wait(_BACKGROUND_GRACE_S):
+                _trace("background generation yielded before prefill")
+                raise InferencePreempted(
+                    "A chat reply needs the coach; this snippet is dropped."
+                )
             _trace(
                 f"sync start n_ctx={self._n_ctx} threads={self._n_threads} "
                 f"budget={budget} messages={len(fitted_messages)} "

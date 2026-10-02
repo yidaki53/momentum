@@ -337,3 +337,34 @@ def test_a_chat_reply_never_yields_its_own_slot() -> None:
         engine_mod._FOREGROUND_WAITING.clear()
     assert text.strip(), "reply finished rather than bailing out"
     assert fake.chunks_consumed == 180, fake.chunks_consumed
+
+
+def test_chat_outwaits_a_background_prefill(monkeypatch) -> None:
+    """A background job in prefill cannot yield yet; the chat must not give up."""
+    import sys
+    import threading
+
+    engine_mod = sys.modules["momentum.llm.engine"]
+    monkeypatch.setattr(engine_mod, "INFERENCE_WAIT_S", 0.2)
+    engine_mod._acquire_inference_slot(background=True)
+    threading.Timer(0.8, engine_mod._release_inference_slot).start()
+
+    engine_mod._acquire_inference_slot()
+    engine_mod._release_inference_slot()
+    assert not engine_mod._BACKGROUND_HOLDS_SLOT.is_set()
+
+
+def test_background_yields_before_prefill_when_a_chat_starts_with_it() -> None:
+    """On the phone both started together after the model load; the snippet
+    won the slot and its prefill made the reply wait over a minute."""
+    import threading
+
+    fake = _SlowFakeLlama()
+    engine = _engine_with(fake)
+    threading.Timer(0.05, engine_mod._FOREGROUND_WAITING.set).start()
+    try:
+        with pytest.raises(engine_mod.InferencePreempted):
+            engine.generate([{"role": "user", "content": "hi"}], background=True)
+    finally:
+        engine_mod._FOREGROUND_WAITING.clear()
+    assert fake.chunks_consumed == 0
