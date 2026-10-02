@@ -30,6 +30,7 @@ import logging
 import random
 import re
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -383,11 +384,20 @@ def quality_gate(response: str, *, constraint: str) -> tuple[bool, str]:
 
 
 class Teacher:
-    """The large model, loaded lazily so --plan works without torch installed."""
+    """The large model, loaded lazily so --plan works without torch installed.
 
-    def __init__(self, model_id: str, revision: str = "main") -> None:
+    ``load_in_4bit`` exists because the 7B teacher does not fit a 12GB card in bf16
+    (~17GB with activations) while 4-bit needs ~5.7GB and fits comfortably. 4-bit costs
+    a little teacher quality, which is a trade worth making here: an unrunnable teacher
+    produces no corpus at all, and the corpus is the expensive part.
+    """
+
+    def __init__(
+        self, model_id: str, revision: str = "main", load_in_4bit: bool = True
+    ) -> None:
         self.model_id = model_id
         self.revision = revision
+        self.load_in_4bit = load_in_4bit
         self._pipe: Any = None
 
     def _load(self) -> Any:
@@ -519,6 +529,8 @@ def generate(
     """
     accepted: list[Pair] = []
     rejected: list[tuple[str, str]] = []
+    generated = 0
+    started = time.time()
     for pair in pairs:
         if not pair.response:
             prompt = build_teacher_prompt(
@@ -535,6 +547,22 @@ def generate(
             accepted.append(pair)
         else:
             rejected.append((pair.id, reason))
+        if pair.id.startswith("coach:") or pair.id.startswith("lived:"):
+            generated += 1
+            if generated % 25 == 0 or generated == 1:
+                elapsed = time.time() - started
+                rate = generated / elapsed if elapsed else 0.0
+                remaining = (len(pairs) - generated) / rate if rate else 0.0
+                log.info(
+                    "%d/%d generated, %d accepted, %d rejected, "
+                    "%.1fs elapsed, ~%.0fmin remaining",
+                    generated,
+                    len(pairs),
+                    len(accepted),
+                    len(rejected),
+                    elapsed,
+                    remaining / 60,
+                )
     return accepted, rejected
 
 
