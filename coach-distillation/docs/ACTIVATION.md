@@ -92,6 +92,56 @@ as **citation-only**. No text from them appears in the training data. The techni
 not novel and are independently attested across the three, plus the peer-reviewed work
 they cite.
 
+## The bench was fine — do not "fix" it
+
+I checked whether the activation gate 0.85 admits any model at all, on the theory that
+golden items like `"hi"` have no first action to give. **That theory was wrong, and the
+check itself was wrong twice before it was right.**
+
+Reading `eval/golden_qa.jsonl` directly and scoring every reply gives activation
+13/20 = 0.65 against a 0.85 gate, which looks like a hard blocker: no model could ever
+pass. But that number is meaningless, and here is why.
+
+The golden set carries a per-item `axes` list. `g01` declares `["dignity", "grounding",
+"charter", "brevity", "sanity"]` and pointedly **not** `activation` — the item author
+already knew `"hi"` has no first action. And `evaluate()` does honour it:
+
+```python
+if reply.axes is not None and name not in reply.axes:
+    skipped += 1
+    continue
+```
+
+The mistake was mine: I loaded the JSONL with `json.loads` instead of `read_jsonl`, so
+`Reply.axes` was `None`, the skip never fired, and every item was scored on every axis.
+Scoring through the real path:
+
+| Axis | pass/total | score | gate | skipped |
+|---|---:|---:|---:|---:|
+| activation | 12/13 | **0.92** | 0.85 | 7 |
+| dignity | 20/20 | 1.00 | 1.00 | 0 |
+| grounding | 20/20 | 1.00 | 0.95 | 0 |
+| charter | 20/20 | 1.00 | 1.00 | 0 |
+| brevity | 20/20 | 1.00 | 0.90 | 0 |
+| sanity | 20/20 | 1.00 | 0.85 | 0 |
+
+`ship = True`. The gate is healthy, the ceiling is 0.92, and there are 13 real activation
+items — not 20. `test_reference_replies_clear_every_gate` already enforced this and was
+passing the whole time; I should have run that test before theorising.
+
+Two lessons worth keeping, both about the same trap:
+
+- **Score through the same path production uses.** Hand-rolled JSON reads skip the
+  dataclass wiring, and the resulting number is wrong in a way that looks authoritative.
+- **Check whether a gate is reachable before optimising against it, but check with the
+  real code.** I nearly "fixed" a healthy bench.
+
+The one genuine finding left over: `g20` (*why does everyone else manage fine?*) has a
+reference reading "pick one thing", which `VAGUE_ACTION_RE` correctly rejects. So the new
+vagueness check costs the golden set one item, 13/13 → 12/13. The reference should be
+rewritten to name a concrete unit — or `g20` should stop declaring `activation`, on the
+grounds that a validation reply need not prescribe a task.
+
 ## Retrain result (2026-10-02) — activation did NOT move
 
 Retrained from the base Qwen2.5-0.5B checkpoint on the 279-pair corpus (264 coaching
@@ -105,35 +155,53 @@ the trainer sat in state `T` — VS Code and OneDrive were the heat source, not 
 That is the "heat from a second job" failure mode AGENTS.md warns about, and it is a
 reminder that the guard only watches its own child.
 
-Bench over the 20 golden QA items:
+Bench over the golden set, scored through `evaluate()` so that per-item `axes` are honoured
+(13 activation items, not 20):
 
 | Axis | student-2ep | student-bounded | Gate |
 |---|---:|---:|---:|
-| Activation | 0.00 | **0.05** | 0.85 |
+| Activation | 0.00 (0/13) | **0.08 (1/13)** | 0.85 |
 | Dignity | 1.00 | 1.00 | 1.00 |
 | Grounding | 1.00 | 1.00 | 0.95 |
+| Charter | 0.85 | 0.85 | 1.00 |
 | Brevity | 1.00 | 1.00 | 0.90 |
 | Sanity | 0.95 | 1.00 | 0.85 |
 
-One item of twenty now produces a bounded action. **That is not a fix.** The gate is 0.85,
+One item of thirteen now produces a bounded action. **That is not a fix.** The gate is 0.85,
 so the model is nowhere near shippable, and the honest conclusion is that 15 pairs
 out of 279 did not move a 0.5B model's behaviour.
 
-Why it plausibly failed, in order of how much I believe them:
+Charter scores 17/20 for both models. **This is not a refusal problem** — I checked, and
+the three failures (`g01` "Hello! How can I assist you today?", `g07` "Start reading
+Chapter Two tomorrow.", `g16` "Your current streak is 4 days long.") contain **no refusal
+marker at all**. They fail `score_charter`'s 40-character minimum at 34–35 characters.
+
+So the Adderall refusal that motivated the charter pairs *is* fixed, and the model answers
+`g16` correctly against the data. What remains is that the model is terser than the axis
+wants on short factual replies. Two candidate causes, and they pull in opposite
+directions:
+
+- The brevity axis (max 4 sentences / 120 words) and the charter 40-character floor
+  disagree. Brevity training pushes replies short; charter punishes short replies. A
+  reply needs enough content to clear 40 characters without becoming a lecture.
+- Or these three items are simply short-answer items where a one-liner is the right reply,
+  and the floor is wrong for them.
+
+Worth deciding deliberately rather than by loosening the floor.
+
+Why activation plausibly failed, in order of how much I believe them:
 
 1. **Ratio.** 15/279 = 5.4%. Every other pair still teaches "take one small step towards
    your task", which is the exact phrase the vagueness check now rejects. The model is
    being trained mostly on the behaviour we are trying to eliminate.
-2. **The golden set contains items activation cannot score.** `"hi"` and
-   `"summarise what you can see about me"` have no first action to give, and the model
-   correctly answered them. Counting them as activation failures understates the model
-   and overstates the fix's potential — but it also means the axis as written cannot
-   reach 0.85 without either coaching-specific items or a per-item exemption.
-3. **Remaining failures are real.** *"Take a break from reading and try taking out your
+2. **Remaining failures are real.** *"Take a break from reading and try taking out your
    pen and paper"* and *"break down your thoughts into smaller steps together"* are
    unbounded. Not scorer false negatives.
-4. **3 epochs on 279 pairs is few.** The bounded tier needs repetition to become a default
+3. **3 epochs on 279 pairs is few.** The bounded tier needs repetition to become a default
    rather than a coincidence.
+
+The earlier claim that `"hi"` and other non-coaching items made the axis unreachable was
+wrong — see above. Those items do not declare `activation` and are correctly skipped.
 
 ## What this tier does not fix
 
@@ -147,10 +215,10 @@ not "add more bounded pairs" but:
 2. **Fix the biased 264 pairs rather than out-vote them.** They teach the exact phrase
    `VAGUE_ACTION_RE` now rejects. Re-running generation under the corrected gate is the
    real fix; prefer external cooler hardware.
-3. **Make the activation axis measurable.** Golden items like `"hi"` cannot be scored for
-   a bounded first action. Either add activation-specific probe items or exempt
-   non-coaching items per axis, so the number means something before it is optimised
-   against.
+3. **Resolve the brevity/charter conflict.** Charter fails 3/20 on a 40-character floor,
+   not on refusals, while brevity caps replies at 4 sentences. Decide whether the floor
+   should be lower, per-item, or satisfied by adding context. Both axes are currently
+   passable but they pull against each other.
 4. **Raise the epoch count.** Three passes over 279 pairs is little exposure.
 
 Activation is only fixed when the bench says so. A corpus that merely *contains* bounded
