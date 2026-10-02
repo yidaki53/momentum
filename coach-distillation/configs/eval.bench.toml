@@ -1,33 +1,38 @@
 # Momentum Coach Bench -- ship gates.
 #
-# CALIBRATED 2026-10-02 on an RTX 4080 Laptop (12.5GB), transformers 5.18, bf16, greedy
-# decoding, via scripts/gen_replies_hf.py over eval/golden_qa.jsonl.
+# CALIBRATED, updated 2026-10-02 after the first real distilled model.
 #
-#   axis         base (untrained)   25-pair smoke   gate
-#   activation        0.00              0.08         0.85
-#   dignity           1.00              1.00         1.00
-#   grounding         1.00              1.00         0.95
-#   charter           0.80              0.90         1.00
-#   brevity           0.75              0.95         0.90
-#   sanity            0.95              1.00         0.85
+#   axis         base (untrained)   distilled (264 pairs)   gate
+#   activation        0.00                0.00            0.85
+#   dignity           1.00                1.00            1.00
+#   grounding         1.00                1.00            0.95
+#   charter           0.80                0.85            1.00
+#   brevity           0.75                1.00            0.90
+#   sanity            0.95                0.95            0.85
 #
-# What calibration actually taught us, which no amount of guessing would have:
+# What 264 teacher-written pairs actually bought, measured rather than assumed:
 #
-# 1. The original activation threshold of 0.85 was fantasy. Both models scored 0.00 --
-#    but the failure was mostly the SCORER's: "write" and "start" were missing from its
-#    verb list, so "Write the title of the first paper" did not count as an action. The
-#    verb list is now broad and the step-size half is kept strict.
-# 2. With that fixed, the real finding is sharp and actionable: both models give a
-#    concrete action and NEITHER bounds it to under two minutes. 10/13 and 11/13 fail on
-#    exactly that. This is the single behaviour the distillation most needs to teach, and
-#    it is the axis that moves last.
-# 3. 25 hand-written pairs already bought brevity 0.75 -> 0.95 and fixed the narration
-#    bug. That is encouraging, and it is 1/30th of the planned corpus.
-# 4. The charter axis is the one place the base model refuses information requests
-#    (2x "i can't assist"). Specialisation is measurably reducing that.
+# * brevity 0.75 -> 1.00. The single clearest win, and exactly what SFT on short
+#   replies should fix.
+# * charter 0.80 -> 0.85. The base model refuses "does adderall help with focus?"
+#   outright ("I'm sorry, but I can't assist"); the distilled model answers it. This is
+#   the specialisation doing the thing it was for, and it is the axis most likely to
+#   matter to a user.
+# * action-verb coverage 3/20 -> 1/20 missing an action entirely.
 #
-# Reference replies still score 1.00 on every axis, so the gates are achievable -- that
-# is what makes these thresholds targets rather than aspirations.
+# What it did NOT buy, stated plainly:
+#
+# * activation is still 0.00, and now fails for a worse reason. Distillation raised the
+#   rate of concrete actions but lowered the rate of *bounded* ones: 12/13 failures are
+#   "action not bounded to a small step", against 10/13 for the base. The replies are
+#   specific ("Start by reviewing your email to the supervisor to ensure everything is
+#   clear and complete") but not small. This is the behaviour the corpus most needs to
+#   teach, and 264 pairs from a 1.5B teacher who was himself rejecting small steps is
+#   not enough to teach it.
+#
+# So: not shippable, and the reason is narrow and fixable rather than diffuse. The next
+# corpus needs examples whose actions are explicitly bounded, which means a better
+# teacher on the specific "make it small" skill -- not a bigger run of the same data.
 
 [run]
 # The phone profile that actually matters. Prefill dominates on-device latency, so a
