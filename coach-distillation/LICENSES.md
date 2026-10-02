@@ -29,6 +29,8 @@ quietly fail.
 | Guilford / Cambridge handbooks | Proprietary | **Cite only.** |
 | ADDitude magazine | Proprietary | **Cite only.** Already referenced with permission in `knowledge.py`; do not copy into training data. |
 | Clinical practice guidelines generally | Mixed | **Cite only** unless the record proves CC-BY/CC0. |
+| First-person blog posts (dylan.blog, Substack) | All rights reserved | **Excerpt + attribute only.** Grounding for teacher generation; never a training target. |
+| Patient stories on clinic websites | All rights reserved | **Excerpt + attribute only**, same as above. |
 | Teacher-generated replies | Ours (derived work) | Commit freely. |
 
 ## Why we store the teacher output, not the source
@@ -39,6 +41,24 @@ user's problem. If we ship only *teacher-written* responses that were *informed*
 prose, the committed artefact is ours. The manifest keeps provenance auditable — anyone
 can trace which literature shaped the model — without the corpus carrying third-party
 text.
+
+## Lived-experience accounts
+
+This is the case most likely to be got wrong by accident, because a blog post *feels*
+like freely usable material. It is not. `data/lived_experience.json` stores short verbatim
+excerpts with author, URL and date, and every entry is marked
+`license: all-rights-reserved`.
+
+What that permits: reading them to understand how people describe their own experience,
+and using that understanding to write better prompts and situations.
+
+What it does not permit: putting their sentences in the training corpus. So the pipeline
+routes them one way only — into `LIVED_SITUATIONS`, which are paraphrases used to seed
+*teacher generation*. The committed artefact is still the teacher's reply.
+
+The test for whether a lived-experience item was handled correctly: could you delete the
+file and regenerate the corpus without changing a single word of it? If not, something
+copyrighted leaked into the training data.
 
 ## Heretic
 

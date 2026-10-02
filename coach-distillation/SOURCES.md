@@ -40,6 +40,34 @@ US federal works are public domain and may be ingested, with attribution recorde
 The fetcher (`scripts/fetch_oa_corpus.py`) records `pmcid`, `doi`, `license`, `sha256`
 for every accepted record.
 
+## Tier 3b — lived experience (first-person accounts)
+
+Clinical literature tells us what executive dysfunction *is*. These accounts tell us what
+it *feels like* in the words people actually use — "my brain is a browser with 400 tabs",
+"a beautiful brain and a cursed Start button", "a planner that worked for two weeks and
+then died".
+
+That matters more than it sounds. A coach trained only on clinical prose validates the
+wrong things ("your EF is impaired") and misses the humour that keeps someone talking to
+it. The `lived` pair kind is generated from these situations so the student learns the
+user's own vocabulary.
+
+`data/lived_experience.json` holds 11 short, attributed excerpts from:
+
+- **dylan's blog** (2026-03-05) — novelty-dependent function, sustaining after routine.
+- **Carmen Irace, "AuDHD + Executive Dysfunction"** (Substack, 2025-12-28) — the
+  knowing-but-cannot-start pattern, EF profile unevenness, systems that fail at week two.
+- **Rebekah & Co., "Dear Boss, It's Not Laziness"** (Substack, 2025-07-05) — time
+  blindness, prospective memory, perfecting the system instead of doing the work.
+- **ScienceWorks Behavioral Healthcare** (2026-02-19, clinically reviewed by
+  Dr. Kiesa Kelly) — the "how the system runs, not how much you care" framing.
+
+**All four are `all-rights-reserved`, so none of them is training data.** They are
+recorded as excerpts with attribution and used only to ground the teacher's generation.
+The committed corpus contains the teacher's words, never theirs. That is the same rule as
+Tier 3, and it is enforced the same way: these entries never pass the corpus's licence
+gate because they are not corpus rows at all.
+
 ## Tier 4 — synthetic pairs (generated, therefore ours)
 
 The bulk of training data is teacher-generated from Tier 1–3 *context*, not copied from

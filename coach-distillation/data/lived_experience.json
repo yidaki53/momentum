@@ -1,0 +1,162 @@
+{
+  "_comment": "Lived-experience excerpts. SHORT verbatim quotations with attribution, used as grounding for teacher generation only. The full articles are copyrighted and are NOT vendored. Entries are licence 'all-rights-reserved', so they are NOT trainable text: the pipeline must use them to inform teacher-written replies, never as training targets. See ../LICENSES.md.",
+  "count": 11,
+  "accounts": [
+    {
+      "id": "lived-001",
+      "author": "dylan",
+      "title": "My brain is a browser with 400 tabs open and somehow I built a business out of the one that was",
+      "url": "https://dylan.blog/2026/03/05/my-brain-is-a-browser.html",
+      "date": "2026-03-05",
+      "license": "all-rights-reserved",
+      "excerpt": "I would get hired somewhere, be incredible for six months, and then slowly unravel as the novelty wore off and the executive dysfunction kicked in. Not because I was lazy. Not because I didn't care. Because my brain literally could not maintain interest in something that had become routine.",
+      "themes": [
+        "sustaining after novelty",
+        "shame vs mechanism",
+        "interest-dependent work"
+      ],
+      "use": "situation vocabulary; teaches that 'unmotivated' must never be echoed back"
+    },
+    {
+      "id": "lived-002",
+      "author": "dylan",
+      "title": "My brain is a browser with 400 tabs open (2)",
+      "url": "https://dylan.blog/2026/03/05/my-brain-is-a-browser.html",
+      "date": "2026-03-05",
+      "license": "all-rights-reserved",
+      "excerpt": "For my entire adult life, I have experienced work as a thing I do despite my brain. A constant negotiation between what needs to happen and what my neurochemistry will allow.",
+      "themes": [
+        "negotiation with executive function",
+        "translation cost"
+      ],
+      "use": "situations about forcing a routine task after the spark has gone"
+    },
+    {
+      "id": "lived-003",
+      "author": "dylan",
+      "title": "My brain is a browser with 400 tabs open (3)",
+      "url": "https://dylan.blog/2026/03/05/my-brain-is-a-browser.html",
+      "date": "2026-03-05",
+      "license": "all-rights-reserved",
+      "excerpt": "I still have days where I can't focus on anything and days where I focus on the wrong thing for nine hours.",
+      "themes": [
+        "good days and bad days",
+        "hyperfocus as not a virtue"
+      ],
+      "use": "situations about fluctuating capacity; the coach must not treat a bad day as failure"
+    },
+    {
+      "id": "lived-004",
+      "author": "Carmen Irace",
+      "title": "AuDHD + Executive Dysfunction: Why You Know What to Do... and Still Can't Do It",
+      "url": "https://carmenauthenticallyadhd.substack.com/p/audhd-executive-dysfunction-why-you",
+      "date": "2025-12-28",
+      "license": "all-rights-reserved",
+      "excerpt": "If you are AuDHD, executive dysfunction can feel like living with a beautiful brain... and a cursed \"Start\" button.",
+      "themes": [
+        "initiation as the bottleneck",
+        "self-acceptance",
+        "humour"
+      ],
+      "use": "situation vocabulary for the knowing-but-cannot-start pattern"
+    },
+    {
+      "id": "lived-005",
+      "author": "Carmen Irace",
+      "title": "AuDHD + Executive Dysfunction (2)",
+      "url": "https://carmenauthenticallyadhd.substack.com/p/audhd-executive-dysfunction-why-you",
+      "date": "2025-12-28",
+      "license": "all-rights-reserved",
+      "excerpt": "EFs are 'united but separable.' You can be solid at one (say, creativity and quick thinking) and still face-plant at another (task initiation or transitions).",
+      "themes": [
+        "profile unevenness",
+        "strength does not imply initiation"
+      ],
+      "use": "teaches the coach not to infer capability from one strong domain"
+    },
+    {
+      "id": "lived-006",
+      "author": "Carmen Irace",
+      "title": "AuDHD + Executive Dysfunction (3)",
+      "url": "https://carmenauthenticallyadhd.substack.com/p/audhd-executive-dysfunction-why-you",
+      "date": "2025-12-28",
+      "license": "all-rights-reserved",
+      "excerpt": "Why do planners work for two weeks and then die? Because many planners demand consistent initiation, consistent review, and consistent time awareness - three things executive dysfunction makes inconsistent.",
+      "themes": [
+        "systems that fail at week two",
+        "external structure"
+      ],
+      "use": "situations about abandoning a system; the coach suggests restarting, not abandoning"
+    },
+    {
+      "id": "lived-007",
+      "author": "Rebekah & Co.",
+      "title": "Dear Boss, It's Not Laziness - It's Executive Dysfunction (A Love Letter from My AuDHD Brain)",
+      "url": "https://rebekahandco.substack.com/p/dear-boss-its-not-laziness-its-executive",
+      "date": "2025-07-05",
+      "license": "all-rights-reserved",
+      "excerpt": "You set an alarm for a meeting, then immediately forget why the alarm is going off. Every. Time.",
+      "themes": [
+        "time blindness",
+        "prospective memory"
+      ],
+      "use": "situation vocabulary; the app's timer and journal exist precisely for this"
+    },
+    {
+      "id": "lived-008",
+      "author": "Rebekah & Co.",
+      "title": "Dear Boss, It's Not Laziness (2)",
+      "url": "https://rebekahandco.substack.com/p/dear-boss-its-not-laziness-its-executive",
+      "date": "2025-07-05",
+      "license": "all-rights-reserved",
+      "excerpt": "You spend 3 hours hyper-fixating on redesigning your entire planner to make it perfect ... and then forget to actually do any of the tasks in said planner.",
+      "themes": [
+        "productivity-system procrastination",
+        "perfecting as avoidance"
+      ],
+      "use": "situations about building a system instead of doing the work"
+    },
+    {
+      "id": "lived-009",
+      "author": "Rebekah & Co.",
+      "title": "Dear Boss, It's Not Laziness (3)",
+      "url": "https://rebekahandco.substack.com/p/dear-boss-its-not-laziness-its-executive",
+      "date": "2025-07-05",
+      "license": "all-rights-reserved",
+      "excerpt": "It's not a matter of willpower. It's a matter of support, understanding, and occasionally, noise-canceling headphones and crying in your car on your lunch break.",
+      "themes": [
+        "willpower framing is wrong",
+        "environmental support"
+      ],
+      "use": "explicitly forbids the willpower/shame register in replies"
+    },
+    {
+      "id": "lived-010",
+      "author": "ScienceWorks Behavioral Healthcare (clinician review: Dr. Kiesa Kelly)",
+      "title": "Executive Dysfunction in Adults: Why You Can't Start",
+      "url": "https://www.scienceworkshealth.com/post/executive-dysfunction-in-adults-101-planning-initiation-and-why-i-can-t-start",
+      "date": "2026-02-19",
+      "license": "all-rights-reserved",
+      "excerpt": "Executive dysfunction is a 'how the system runs' issue, not a 'how much you care' issue.",
+      "themes": [
+        "care vs system",
+        "mechanism framing"
+      ],
+      "use": "the core validation sentence, clinically reviewed; a licence-free paraphrase of this idea belongs in replies"
+    },
+    {
+      "id": "lived-011",
+      "author": "ScienceWorks Behavioral Healthcare",
+      "title": "Executive Dysfunction in Adults: Why You Can't Start (2)",
+      "url": "https://www.scienceworkshealth.com/post/executive-dysfunction-in-adults-101-planning-initiation-and-why-i-can-t-start",
+      "date": "2026-02-19",
+      "license": "all-rights-reserved",
+      "excerpt": "Losing steps mid-task because working memory gets overloaded. Underestimating time and transitions, sometimes called time blindness.",
+      "themes": [
+        "working memory overload",
+        "time blindness"
+      ],
+      "use": "situation vocabulary for mid-task derailment"
+    }
+  ]
+}

@@ -83,6 +83,36 @@ CONSTRAINTS: tuple[str, ...] = (
 )
 
 
+# Situations drawn from first-person accounts (data/lived_experience.json). Kept apart
+# from SITUATIONS so their provenance is traceable: clinical literature tells us what
+# executive dysfunction IS, these accounts tell us what it FEELS LIKE in the words
+# people actually use. A coach trained only on clinical prose validates the wrong
+# things and misses the humour that keeps someone talking to it.
+#
+# All of these are paraphrases or very short fragments, not vendored article text.
+LIVED_SITUATIONS: tuple[str, ...] = (
+    # "I know what to do and cannot do it" -- the defining pattern, in users' own words.
+    "I know exactly what the first step is and I still cannot press start on it.",
+    "It is a cursed start button. I know the task. I cannot begin it.",
+    # Novelty-dependent function: works until routine kills it.
+    "I was excellent at this for six months and then I fell apart when it got repetitive.",
+    "The thing I care about I can do for nine hours. The thing I have to do, I cannot.",
+    # Systems that die at week two.
+    "This planner worked for two weeks and then I stopped using it.",
+    "I keep redesigning my system instead of doing the work in it.",
+    # Time blindness and prospective memory.
+    "I set an alarm and then forgot what it was for.",
+    "I always forget why I walked into the room.",
+    # Working memory overload mid-task.
+    "I lose the thread halfway through and cannot find it again.",
+    # Bad days, and the shame that follows them.
+    "Today was a bad day and I am already beating myself up about it.",
+    "I have days where I focus on nothing and days where I focus on the wrong thing.",
+    # Restructuring the environment rather than the self.
+    "I cannot do this without headphones and a closed door.",
+)
+
+
 # --------------------------------------------------------------------------
 # Synthetic users
 # --------------------------------------------------------------------------
@@ -251,7 +281,7 @@ CHARTER_CASES: tuple[tuple[str, str, str], ...] = (
 
 
 def build_teacher_prompt(
-    prompt: str, constraint: str, digest: str, skill: str = ""
+    prompt: str, constraint: str, digest: str, skill: str = "", lived: bool = False
 ) -> str:
     """The instruction given to the teacher.
 
@@ -270,6 +300,12 @@ def build_teacher_prompt(
     ]
     if skill:
         parts.append(f"Coach using: {skill}.")
+    if lived:
+        parts.append(
+            "This situation was taken from a first-person account. Speak in language "
+            "the user would recognise as their own, not clinical paraphrase, and keep "
+            "any warmth or humour natural."
+        )
     parts.append(f"Reply constraints: {constraint}")
     parts.append("")
     parts.append(
@@ -418,6 +454,23 @@ def plan_pairs(config: dict[str, Any]) -> list[Pair]:
                     user=user,
                     prompt=situation,
                     constraint=constraint,
+                )
+            )
+
+    # Lived-experience situations get their own ids so a corpus row can be traced back
+    # to the account that motivated it.
+    for situation in LIVED_SITUATIONS:
+        for skill in rng.sample(SKILLS, 2):
+            pairs.append(
+                Pair(
+                    id=f"lived:{len(pairs):06d}",
+                    kind="lived",
+                    situation=situation,
+                    skill=skill,
+                    user=rng.choice(USER_POOL),
+                    prompt=situation,
+                    constraint=rng.choice(CONSTRAINTS),
+                    citation="data/lived_experience.json (first-person account)",
                 )
             )
 
