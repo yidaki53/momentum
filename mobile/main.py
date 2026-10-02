@@ -3154,7 +3154,6 @@ class CoachScreen(Screen):
                             on_done=_on_done,
                             on_error=_on_error,
                             max_tokens=512,
-                            temperature=0.7,
                         )
                         print("[COACH] generate_async returned", flush=True)
                     except Exception as exc:

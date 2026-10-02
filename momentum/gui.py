@@ -2738,7 +2738,6 @@ class MomentumApp:
                     on_done=_on_done,
                     on_error=_on_error,
                     max_tokens=512,
-                    temperature=0.7,
                 )
             except Exception:
                 _hide_typing()
