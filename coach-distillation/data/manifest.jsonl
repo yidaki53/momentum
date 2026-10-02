@@ -1,0 +1,4 @@
+{
+  "_comment": "Provenance ledger for the Momentum coach corpus. One row per accepted source record. Publisher prose is NOT stored here: only metadata, so this file is redistributable. See ../LICENSES.md. Run scripts/fetch_oa_corpus.py to fill it.",
+  "count": 0
+}

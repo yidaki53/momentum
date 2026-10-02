@@ -1,0 +1,13 @@
+{
+  "alternatives": [
+    "I know exactly what the first step is and still cannot move.",
+    "I keep switching tabs and getting nothing done.",
+    "I missed three days in a row and now I feel like I have failed completely."
+  ],
+  "notes": "All seed users are synthetic. Never copy a real Momentum task title here.",
+  "situation": "I have been staring at this document for an hour and cannot start writing.",
+  "skills": [
+    "task decomposition into a sub-two-minute first action",
+    "externalising time with a visible timer"
+  ]
+}

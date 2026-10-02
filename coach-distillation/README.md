@@ -107,3 +107,30 @@ Training data provenance is enforced by `scripts/fetch_oa_corpus.py`, which down
 only records it can prove are CC-BY or CC0 and writes one manifest row per artefact. Any
 row without a licence, DOI or sha256 is rejected. Raw publisher text stays out of git;
 only *teacher-written synthetic pairs* are committed.
+
+## Invariants
+
+Constraints that are easy to break by accident, recorded here because the folder is
+easy to break by accident:
+
+1. **Nothing here is imported by the app.** No `momentum/`, `mobile/` or wheel code may
+   import from this folder, and torch/transformers/TRL must never enter
+   `pyproject.toml`. A model consumer should not inherit a training stack.
+2. **Heretic stays a submodule.** It is AGPL-3.0 against our MIT licence. It is invoked
+   as a subprocess; its code is never vendored, and a Momentum file appearing inside the
+   submodule is a bug.
+3. **Licence gating is not negotiable.** `fetch_oa_corpus.py` rejects any record without
+   a licence, a DOI and a sha256, and treats an unrecognised licence as proprietary.
+   Widening the corpus means widening the allow-list deliberately, with a reason.
+4. **No real user data in training.** Every training user is synthetic. Real Momentum
+   tasks, journals or scores must never enter a file under `data/`.
+5. **The gates are proposals until calibrated.** The thresholds in
+   `configs/eval.bench.toml` were chosen before any run existed. `--calibrate` against a
+   baseline is what makes them real, and no model gets registered in
+   `momentum/llm/downloader.py` until every axis passes.
+6. **Heretic has no CLI flags.** It is driven by `config.toml` in its working directory
+   and prompts interactively unless `export_strategy` is set. `run_heretic.py` injects
+   the keys it needs; do not invent flags upstream does not have.
+7. **Logit distillation is deliberately absent.** `train_distill.py` is supervised only.
+   Add the KD pass when the bench shows the student is confidently wrong where the teacher
+   would have hedged -- not before.

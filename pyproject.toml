@@ -28,6 +28,12 @@ buildozer = "^1.5.0"
 cython = "^3.0.0"
 setuptools = "^75.1.0"
 
+[tool.pytest.ini_options]
+# Heretic ships its own test suite inside the coach-distillation submodule. Without
+# this, `pytest` collects AGPL tests that import the `heretic` package we deliberately do
+# not install, and the run dies at collection instead of testing Momentum.
+norecursedirs = ["heretic", "llama.cpp", ".venv", "build", "dist", "out", "mobile"]
+
 [tool.ruff]
 line-length = 88
 target-version = "py311"

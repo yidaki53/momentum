@@ -224,6 +224,24 @@ make test
 # or: poetry run pytest tests/ -v
 ```
 
+## Specialised coach model (in progress)
+
+`coach-distillation/` contains the pipeline that distils a large open instruct model
+into the 0.5B model the app already ships, so it becomes genuinely good at executive
+dysfunction rather than merely small. It covers corpus provenance, licence
+enforcement, distillation, optional Heretic abliteration, quantisation, and the
+"**Momentum Coach Bench**" that decides whether any artefact may be registered as a
+model.
+
+**No distilled model is released yet.** The folder ships configs, scripts, evaluation
+data and tests only -- `make dist-plan`, `make dist-bench` and `make dist-heretic-check`
+run with no model, no GPU, and no network. See `coach-distillation/README.md`,
+`coach-distillation/docs/CHARTER.md` for the model's intended behaviour, and
+`coach-distillation/docs/MODEL_CARD.md` for its intended use and limitations.
+
+The pipeline is entirely separate from the app: Momentum never imports from it, and it
+adds no runtime dependency (torch and friends are deliberately not in `pyproject.toml`).
+
 ## Architecture
 
 - `models.py` -- Pydantic models (single source of truth for all types)

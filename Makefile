@@ -1,4 +1,5 @@
-.PHONY: install install-dev test lint typecheck gui dist build mobile-deps mobile-apk mobile-aab clean help
+.PHONY: install install-dev test lint typecheck gui dist build mobile-deps mobile-apk mobile-aab \
+        dist-plan dist-bench dist-heretic-check clean help
 
 PYTHON := python3
 POETRY := poetry
@@ -66,6 +67,25 @@ mobile-apk: ## Build Android APK (requires buildozer + SDK)
 
 mobile-aab: ## Build Android AAB release artifact for Play upload
 	$(PYTHON) mobile/scripts/build_android.py --aab
+
+# ---------------------------------------------------------------------------
+# Coach distillation (coach-distillation/)
+#
+# The pipeline needs torch/transformers, which Momentum deliberately does not depend on,
+# so these targets are plan/check only by default. See coach-distillation/README.md.
+# ---------------------------------------------------------------------------
+
+dist-plan: ## Show the planned distillation corpus without generating or downloading
+	cd coach-distillation && python3 scripts/build_distill_pairs.py --config \
+		configs/distill.qwen05b.toml --plan
+
+dist-bench: ## Score the hand-written reference replies against the ship gates
+	cd coach-distillation && python3 scripts/eval_bench.py \
+		--config configs/eval.bench.toml --calibrate \
+		--replies eval/reference_replies.jsonl
+
+dist-heretic-check: ## Verify the Heretic submodule and its config
+	cd coach-distillation && python3 scripts/run_heretic.py --check-only
 
 # ---------------------------------------------------------------------------
 # Housekeeping

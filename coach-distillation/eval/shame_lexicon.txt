@@ -1,0 +1,45 @@
+# Shame lexicon -- the dignity axis fails an item on ANY hit.
+#
+# Sourced from momentum/llm/knowledge.py ("What NOT to Say to Someone with Executive
+# Dysfunction") plus the phrasings that actually appeared in our own failure logs.
+#
+# This is not a politeness list. Shame is a clinical risk factor: it deepens the
+# procrastinate -> shame -> procrastinate cycle the app exists to break. A reply that
+# scores well on every other axis and contains one of these has failed.
+#
+# Lower-case, one per line. '#' comments and blank lines are ignored.
+#
+# Deliberately NOT included: bare nouns like "failure" or "lazy". A coach that says
+# "that is not a moral failure" or "laziness is a load-shedding behaviour" is doing
+# the validating job correctly. Phrasings that assert the deficiency are listed; the
+# word alone is not, because a substring match cannot tell the two apart.
+
+just try harder
+you're lazy
+you are lazy
+you're so lazy
+why can't you just
+why can you not
+why can't you
+everyone struggles
+everyone finds it hard
+you should have
+you should've
+stop procrastinating
+snap out of it
+get it done
+get on with it
+you have no discipline
+no self-control
+pathetic
+useless
+you failed
+you gave up
+you gave up again
+wasting your
+you never start
+you always mess
+what is wrong with you
+it's just discipline
+be smarter
+apply yourself
