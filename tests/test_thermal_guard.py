@@ -9,9 +9,12 @@ testable on any machine -- including CI, which has no sensors at all.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -278,18 +281,137 @@ def test_a_brief_spike_does_not_kill_the_run(guard, monkeypatch, tmp_path):
     assert marker.exists()
 
 
-def test_sustained_heat_is_still_killed(guard, monkeypatch):
-    """The other half of the rule: staying hot for too long still ends the run."""
+def test_sustained_heat_pauses_before_it_kills(guard, monkeypatch):
+    """Sustained heat pauses the run and lets it finish, rather than killing it.
+
+    A killed training run loses its checkpoint. Pausing costs five minutes and keeps
+    the work, which is the better trade every time the run is resumable.
+    """
     monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", 85.0)])
-    assert (
-        guard.supervise(
-            [sys.executable, "-c", "import time; time.sleep(60)"],
-            interval=1,
-            max_hot_seconds=3,
-            allow_hot_start=True,
-        )
-        == 124
+    pauses = []
+    original = guard._pause_child
+
+    def spy(process, seconds, limits, telemetry, started):
+        """Record the requested pause, then run a zero-length one for speed."""
+        pauses.append(seconds)
+        return original(process, 0.0, limits, telemetry, started)
+
+    monkeypatch.setattr(guard, "_pause_child", spy)
+    result = guard.supervise(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        interval=1,
+        max_hot_seconds=2,
+        pause_seconds=30,
+        max_pauses=5,
+        allow_hot_start=True,
     )
+    assert pauses, "the run was never paused"
+    assert pauses[0] == 30, "the requested pause length was not honoured"
+    # It gave up eventually rather than pausing forever.
+    assert result == 124
+
+
+def test_a_paused_child_really_stops_working(guard):
+    """A pause that does not idle the process is not a pause.
+
+    This is the property the whole feature rests on. SIGSTOP is sent to the child's
+    process group so that dataloader workers stop too; signalling only the parent would
+    leave the CPU pinned through the cool-down and quietly achieve nothing.
+
+    Verified by CPU time from /proc rather than by the guard's own return value, because
+    a guard that claims to have paused while its child burns four cores looks identical
+    from the outside.
+    """
+    import signal
+
+    child = [
+        sys.executable,
+        "-c",
+        "import threading, time\n"
+        "def burn():\n"
+        "    end = time.time() + 20\n"
+        "    while time.time() < end:\n"
+        "        sum(i * i for i in range(20000))\n"
+        "for _ in range(3):\n"
+        "    threading.Thread(target=burn).start()\n"
+        "time.sleep(20)\n",
+    ]
+    process = subprocess.Popen(child, start_new_session=True)
+    try:
+        time.sleep(2.0)
+
+        def cpu_seconds():
+            with open(f"/proc/{process.pid}/stat") as handle:
+                fields = handle.read().rsplit(")", 1)[1].split()
+            return (int(fields[11]) + int(fields[12])) / 100.0
+
+        before = cpu_seconds()
+        guard._signal_group(process, signal.SIGSTOP)
+        time.sleep(2.0)
+        during = cpu_seconds()
+        state = open(f"/proc/{process.pid}/stat").read().rsplit(")", 1)[1].split()[0]
+        assert state == "T", f"child is not stopped (state {state!r})"
+        assert during - before < 0.3, (
+            f"child burned {during - before:.1f}s of CPU while supposedly paused"
+        )
+        guard._signal_group(process, signal.SIGCONT)
+        time.sleep(1.0)
+        assert cpu_seconds() - during > 0.3, "SIGCONT did not resume the child"
+    finally:
+        with contextlib.suppress(Exception):
+            guard._terminate(process)
+
+
+def test_pause_budget_is_finite(guard, monkeypatch):
+    """A run that overheats repeatedly must stop, not pause forever.
+
+    Otherwise a workload that cannot be cooled looks like a run that is merely slow,
+    and the failure is discovered hours later.
+    """
+    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", 85.0)])
+    pauses = []
+    monkeypatch.setattr(
+        guard,
+        "_pause_child",
+        lambda process, seconds, limits, telemetry, started: pauses.append(seconds),
+    )
+    result = guard.supervise(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        interval=1,
+        max_hot_seconds=2,
+        pause_seconds=10,
+        max_pauses=2,
+        allow_hot_start=True,
+    )
+    assert result == 124
+    assert len(pauses) == 2, f"expected exactly 2 pauses, got {len(pauses)}"
+
+
+def test_pause_seconds_zero_keeps_the_kill_only_behaviour(guard, monkeypatch):
+    """Some commands are cheap to re-run and should not be paused at all."""
+    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", 85.0)])
+    paused = []
+    monkeypatch.setattr(
+        guard,
+        "_pause_child",
+        lambda *args: paused.append(args) or None,
+    )
+    result = guard.supervise(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        interval=1,
+        max_hot_seconds=2,
+        pause_seconds=0,
+        allow_hot_start=True,
+    )
+    assert result == 124
+    assert not paused, "pause_seconds=0 must not pause"
+
+
+def test_default_budget_is_five_minutes_and_two_pauses(guard):
+    """Pinned because these are the values the machine was tuned against."""
+    assert guard.DEFAULT_MAX_HOT_SECONDS == 30.0
+    assert guard.DEFAULT_PAUSE_SECONDS == 300.0
+    assert guard.DEFAULT_MAX_PAUSES == 2
 
 
 def test_preflight_refuses_when_another_job_is_already_saturating_the_cpu(

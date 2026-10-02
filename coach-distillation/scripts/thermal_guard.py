@@ -91,6 +91,21 @@ DEFAULT_MAX_HOT_SECONDS = 30.0
 # Sampling cadence. Five seconds gives a resolution of 5s on the hot-duration timer.
 DEFAULT_INTERVAL = 5
 
+# When the run exceeds --max-hot-seconds we do not kill it outright: we SIGSTOP the
+# child's process group, wait out the cool-down, then SIGCONT and carry on. Killing a
+# half-finished training run loses the checkpoint; pausing keeps it.
+#
+# Stopping (rather than continuing) matters because a paused process holds its GPU
+# memory but does no work, so the machine actually gets to cool. The default is 300s,
+# which is long enough to drop several degrees on this chassis.
+DEFAULT_PAUSE_SECONDS = 300.0
+
+# How many times one run may pause before we conclude that pausing is not enough and
+# the workload has to change. Without a cap, a run on a permanently hot machine pauses
+# forever and looks like progress. Two pauses already means the cooling is not keeping
+# up with the duty cycle.
+DEFAULT_MAX_PAUSES = 2
+
 # Refuse to start if some *other* process is already using this much of the CPU.
 CONCURRENT_CPU_PERCENT = 60.0
 
@@ -452,6 +467,62 @@ def describe(
 # --------------------------------------------------------------------------
 
 
+def _signal_group(process: subprocess.Popen, sig: int) -> None:
+    """Send *sig* to the child's whole process group, falling back to the child alone.
+
+    ``start_new_session`` puts the child in its own group, so signalling the group
+    reaches the Python process *and* anything it spawned -- a training run spawns a
+    dataloader worker, and pausing only the parent leaves the workers hammering the CPU
+    through the cool-down, which defeats the entire point.
+    """
+    try:
+        os.killpg(os.getpgid(process.pid), sig)
+    except (ProcessLookupError, PermissionError):
+        try:
+            process.send_signal(sig)
+        except (ProcessLookupError, ValueError):
+            pass
+
+
+def _pause_child(
+    process: subprocess.Popen,
+    pause_seconds: float,
+    limits: Optional[dict[str, tuple[float, float]]],
+    telemetry: Optional["TemperatureLog"],
+    started: float,
+) -> None:
+    """SIGSTOP the child, wait for *pause_seconds*, then SIGCONT.
+
+    Keeps sampling through the cool-down and logs it, so the CSV shows the pause as the
+    flat, cooling segment it is rather than a silent gap. If the child dies while
+    stopped (a checkpoint flush, or an OOM the pause cannot help with) we do not
+    SIGCONT a corpse: there is nothing to resume, and the caller sees the real exit code
+    on its next poll.
+    """
+    _signal_group(process, signal.SIGSTOP)
+    deadline = time.time() + pause_seconds
+    while time.time() < deadline:
+        time.sleep(min(DEFAULT_INTERVAL, max(0.0, deadline - time.time())))
+        if process.poll() is not None:
+            print(
+                "[thermal] child exited during the cool-down; not resuming",
+                flush=True,
+            )
+            return
+        readings = sample()
+        elapsed = time.time() - started
+        action, _offender = decide(readings, limits)
+        telemetry and telemetry.write(elapsed, readings, f"paused_{action}")
+    cooled = sample()
+    hottest = max((r.celsius for r in cooled), default=float("nan"))
+    print(
+        f"[thermal] resuming after {pause_seconds:.0f}s; hottest sensor now "
+        f"{hottest:.1f}C",
+        flush=True,
+    )
+    _signal_group(process, signal.SIGCONT)
+
+
 def _terminate(process: subprocess.Popen) -> None:
     """SIGTERM the child's whole process group, then SIGKILL if it lingers.
 
@@ -479,21 +550,31 @@ def supervise(
     log_path: Optional[Path] = None,
     allow_hot_start: bool = False,
     max_hot_seconds: float = DEFAULT_MAX_HOT_SECONDS,
+    pause_seconds: float = DEFAULT_PAUSE_SECONDS,
+    max_pauses: int = DEFAULT_MAX_PAUSES,
     dry_run: bool = False,
 ) -> int:
-    """Run *command*, polling temperature, stopping it if the machine overheats.
+    """Run *command*, polling temperature, pausing it if the machine overheats.
 
     ``max_hot_seconds`` is how long the machine may stay continuously above a stop
-    threshold before the run is killed. A brief spike costs nothing and the timer resets
-    the moment it settles; only sustained heat ends the run.
+    threshold before the run is paused. A brief spike costs nothing and the timer resets
+    the moment it settles; only sustained heat counts.
+
+    On sustained heat the child's process group is SIGSTOPped for ``pause_seconds`` and
+    then resumed, up to ``max_pauses`` times. Pausing rather than killing keeps a
+    half-finished run alive -- it still holds its VRAM but does no work, so the machine
+    actually cools. Exceeding the pause budget stops the run for good, because a
+    workload that overheats three times is a workload that needs to get smaller, not
+    one that needs more patience.
 
     Returns the command's status, 124 if stopped for heat, 3 if preflight refused.
     """
     if dry_run:
         print("would run:", " ".join(command))
         print(
-            f"sampling every {interval}s; killing after {max_hot_seconds:.0f}s "
-            f"continuously above a stop threshold"
+            f"sampling every {interval}s; pausing after {max_hot_seconds:.0f}s "
+            f"continuously above a stop threshold, for {pause_seconds:.0f}s, "
+            f"up to {max_pauses} time(s)"
         )
         return 0
 
@@ -511,11 +592,19 @@ def supervise(
 
     telemetry = TemperatureLog(log_path) if log_path else None
     print(f"[thermal] guarding: {' '.join(command)}", flush=True)
-    print(
-        f"[thermal] sampling every {interval}s; killing after "
-        f"{max_hot_seconds:.0f}s continuously above a stop threshold",
-        flush=True,
-    )
+    if pause_seconds > 0:
+        print(
+            f"[thermal] sampling every {interval}s; pausing for {pause_seconds:.0f}s "
+            f"after {max_hot_seconds:.0f}s continuously above a stop threshold "
+            f"(up to {max_pauses} time(s))",
+            flush=True,
+        )
+    else:
+        print(
+            f"[thermal] sampling every {interval}s; killing after "
+            f"{max_hot_seconds:.0f}s continuously above a stop threshold",
+            flush=True,
+        )
     if telemetry:
         print(f"[thermal] logging to {telemetry.path}", flush=True)
 
@@ -524,6 +613,7 @@ def supervise(
     # Seconds the machine has been continuously above a stop threshold. Reset as soon
     # as it drops back, so a brief spike costs nothing and only sustained heat counts.
     hot_since: Optional[float] = None
+    pauses = 0
     try:
         while process.poll() is None:
             time.sleep(interval)
@@ -544,13 +634,40 @@ def supervise(
                     )
                 hot_for = elapsed - hot_since
                 if hot_for >= max_hot_seconds:
+                    # --pause-seconds 0 keeps the original kill-only behaviour, which is
+                    # still right for a cheap command that can simply be re-run.
+                    if pause_seconds <= 0 or pauses >= max_pauses:
+                        if pause_seconds > 0:
+                            print(
+                                f"[thermal] stopping: {hot_for:.0f}s above the stop "
+                                f"threshold for the {pauses + 1}th time. Pausing is not "
+                                f"keeping this workload cool, so continuing would just "
+                                f"repeat this. This machine has crashed from heat twice.",
+                                flush=True,
+                            )
+                        else:
+                            print(
+                                f"[thermal] stopping: {hot_for:.0f}s continuously above "
+                                f"the stop threshold. This machine has crashed from heat "
+                                f"twice.",
+                                flush=True,
+                            )
+                        _terminate(process)
+                        return 124
+                    pauses += 1
                     print(
-                        f"[thermal] stopping: {hot_for:.0f}s continuously above the "
-                        f"stop threshold. This machine has crashed from heat twice.",
+                        f"[thermal] PAUSING (pause {pauses}/{max_pauses}) for "
+                        f"{pause_seconds:.0f}s: {hot_for:.0f}s above the stop threshold "
+                        f"({describe(offender, limits)}). The run resumes afterwards.",
                         flush=True,
                     )
-                    _terminate(process)
-                    return 124
+                    _pause_child(process, pause_seconds, limits, telemetry, started)
+                    # The cool-down is not the run's fault, so it must not count towards
+                    # elapsed time in the telemetry, and the hot timer restarts from zero
+                    # once work resumes.
+                    started += pause_seconds
+                    hot_since = None
+                    continue
                 continue
 
             if hot_since is not None:
@@ -585,8 +702,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--max-hot-seconds",
         type=float,
         default=DEFAULT_MAX_HOT_SECONDS,
-        help="seconds continuously above a stop threshold before the run is killed "
+        help="seconds continuously above a stop threshold before the run is paused "
         f"(default {DEFAULT_MAX_HOT_SECONDS:.0f})",
+    )
+    parser.add_argument(
+        "--pause-seconds",
+        type=float,
+        default=DEFAULT_PAUSE_SECONDS,
+        help="how long to pause the run for when it gets too hot, 0 to kill instead "
+        f"(default {DEFAULT_PAUSE_SECONDS:.0f})",
+    )
+    parser.add_argument(
+        "--max-pauses",
+        type=int,
+        default=DEFAULT_MAX_PAUSES,
+        help="how many times one run may pause before it is stopped outright "
+        f"(default {DEFAULT_MAX_PAUSES})",
     )
     parser.add_argument(
         "--check",
@@ -633,6 +764,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         log_path=Path(args.log) if args.log else None,
         allow_hot_start=args.allow_hot_start,
         max_hot_seconds=args.max_hot_seconds,
+        pause_seconds=args.pause_seconds,
+        max_pauses=args.max_pauses,
         dry_run=args.dry_run,
     )
 
