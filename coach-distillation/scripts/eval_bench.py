@@ -63,9 +63,7 @@ REPO_ROOT = ROOT.parent
 # behaviour. The step-size half is kept strict, because neither model did bound its
 # steps -- and that is a real failure worth keeping visible.
 ACTION_RE = re.compile(
-    r"\b(open|set|put|stand up|sit down|pick up|write|writing|fill in|click|drag|fold|"
-    r"take|do|start|begin|try|send|reply|email|call|read|schedule|list|choose|pick|"
-    r"start a timer|set a timer)\b",
+    r"\b(open|set|put|stand up|sit down|pick up|write|writing|fill in|click|drag|fold|take|do|start|begin|try|send|reply|email|call|read|schedule|list|choose|pick|outline|draft|jot|note down|look|find|gather|copy|check|review|define|name|break down|split|cut|measure|weigh|decide|move|stand|sit|lay|place|bring|get|grab|put away|tidy|clear|sort|mark|highlight|underline|print|say out loud|whisper|tell|ask)\b",
     re.IGNORECASE,
 )
 # What makes a step "small enough to start". Three ways a coach can bound it:

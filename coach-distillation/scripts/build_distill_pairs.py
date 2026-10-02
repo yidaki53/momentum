@@ -340,7 +340,7 @@ DIAGNOSIS_PATTERNS = (
 )
 
 SMALL_ACTION_RE = re.compile(
-    r"\b(set|open|put|stand up|drink|pick up|write one|fill in|click|drag|fold)\b",
+    r"\b(open|set|put|stand up|sit down|pick up|write|writing|fill in|click|drag|fold|take|do|start|begin|try|send|reply|email|call|read|schedule|list|choose|pick|outline|draft|jot|note down|look|find|gather|copy|check|review|define|name|break down|split|cut|measure|weigh|decide|move|stand|sit|lay|place|bring|get|grab|put away|tidy|clear|sort|mark|highlight|underline|print|say out loud|whisper|tell|ask)\b",
     re.IGNORECASE,
 )
 
@@ -360,7 +360,11 @@ def quality_gate(response: str, *, constraint: str) -> tuple[bool, str]:
     because it was the most common real failure.
     """
     text = (response or "").strip()
-    if len(text) < 40:
+    # 40 characters was arbitrary and rejected good replies: a 1.5B teacher answering
+    # "Open your email inbox immediately." produced a perfectly good first action in 32
+    # characters and the gate threw it away. The real requirement is that there IS an
+    # action, which is checked below, not that the prose is long.
+    if len(text) < 25:
         return False, "too short to be a coaching reply"
     if text.lstrip().startswith("["):
         return False, "narrated a bracketed stage direction"
@@ -582,6 +586,33 @@ def generate(
     return accepted, rejected
 
 
+def load_done(path: Path) -> set[str]:
+    """Ids already present in an existing corpus, so slicing can resume."""
+    if not path.exists():
+        return set()
+    done: set[str] = set()
+    import json
+
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                done.add(json.loads(line)["id"])
+            except (json.JSONDecodeError, KeyError):
+                continue
+    return done
+
+
+def append_pairs(path: Path, pairs: list[Pair]) -> None:
+    """Append a slice to the corpus, creating it if needed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for pair in pairs:
+            handle.write(json.dumps(pair.to_row(), sort_keys=True) + "\n")
+
+
 def write_pairs(path: Path, pairs: list[Pair]) -> None:
     """Write JSONL, creating parent directories.
 
@@ -624,12 +655,47 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=0,
         help="cap the number of generations (0 = no cap)",
     )
+    parser.add_argument(
+        "--slice",
+        type=int,
+        default=0,
+        help="generate at most this many pairs per slice, then idle (0 = all at once)",
+    )
+    parser.add_argument(
+        "--cooldown",
+        type=int,
+        default=40,
+        help="seconds to idle between slices (default 40)",
+    )
+    parser.add_argument(
+        "--slices",
+        type=int,
+        default=0,
+        help="how many slices to run in this invocation (0 = a single slice)",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     config = load_config(Path(args.config))
     pairs = plan_pairs(config)
     output = Path(config.get("seeds", {}).get("output", "data/synthetic/train.jsonl"))
+
+    # Heat on this laptop accumulates with the DURATION of GPU work, not with the size
+    # of the model doing it: 1.5B, 3B and 7B all peak within a degree of each other
+    # over a short burst. What differs is how long it stays there. So generation is
+    # sliced, with an idle period between slices, and ids already in the corpus are
+    # skipped -- an interrupted run resumes instead of starting over.
+    already = load_done(output)
+    if already:
+        pairs = [pair for pair in pairs if pair.id not in already]
+        log.info(
+            "resuming: %d already in the corpus, %d to generate",
+            len(already),
+            len(pairs),
+        )
+    if not pairs:
+        print(f"Nothing to do: {output} already holds {len(already)} pairs.")
+        return 0
 
     if args.plan:
         kinds: dict[str, int] = {}
@@ -645,16 +711,52 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.limit:
         pairs = pairs[: args.limit]
+
+    teacher_cfg = config.get("teacher", {})
     teacher = Teacher(
-        config.get("teacher", {}).get("model_id", "Qwen/Qwen2.5-7B-Instruct")
+        teacher_cfg.get("model_id", "Qwen/Qwen2.5-3B-Instruct"),
+        load_in_4bit=bool(teacher_cfg.get("load_in_4bit", False)),
     )
-    accepted, rejected = generate(pairs, teacher)
-    print(f"accepted {len(accepted)} / {len(pairs)}")
-    if rejected:
-        print(f"rejected {len(rejected)}; first five reasons:")
-        for pair_id, reason in rejected[:5]:
+
+    accepted_all: list[Pair] = []
+    slices = max(1, args.slices) if args.slice else 1
+    written_total = 0
+    rejected_total: list[tuple[str, str]] = []
+
+    for index in range(slices):
+        remaining = [
+            pair for pair in pairs if pair.id not in {p.id for p in accepted_all}
+        ]
+        if args.slice:
+            remaining = remaining[: args.slice]
+        if not remaining:
+            break
+
+        accepted, rejected = generate(remaining, teacher)
+        if accepted:
+            append_pairs(output, accepted)
+        accepted_all.extend(accepted)
+        rejected_total.extend(rejected)
+        written_total += len(accepted)
+        left = len(pairs) - len(accepted_all)
+        print(
+            f"slice {index + 1}/{slices}: wrote {len(accepted)} pairs, "
+            f"{len(rejected)} rejected, {left} to go",
+            flush=True,
+        )
+        log.info("corpus now holds %d pairs at %s", len(accepted_all), output)
+
+        if index + 1 < slices and left:
+            print(f"cooling for {args.cooldown}s before the next slice", flush=True)
+            time.sleep(args.cooldown)
+
+    print(f"accepted {len(accepted_all)} / {len(pairs)}")
+    if rejected_total:
+        print(f"rejected {len(rejected_total)}; first five reasons:")
+        for pair_id, reason in rejected_total[:5]:
             print(f"  {pair_id}: {reason}")
-    if not accepted:
+    print(f"corpus: {output} ({written_total} pairs written this run)")
+    if not accepted_all:
         print(
             "Nothing passed the quality gate. Do not train on this corpus.",
             file=sys.stderr,
