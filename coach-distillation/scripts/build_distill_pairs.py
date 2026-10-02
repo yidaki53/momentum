@@ -281,6 +281,138 @@ CHARTER_CASES: tuple[tuple[str, str, str], ...] = (
 )
 
 
+# --------------------------------------------------------------------------
+# Bounded actions: hand-written, first-party, trainable text
+# --------------------------------------------------------------------------
+# Activation scored 0.00 on both the base and the distilled model while every other
+# axis passed. The cause was visible in the corpus itself: pair coach:000001 was
+# generated under the constraint "Give exactly one first action that takes under two
+# minutes" and the accepted reply was "Start by taking a short break to clear your mind
+# before trying again." The teacher had been asked for a bounded action and produced an
+# unbounded one, and the quality gate let it through.
+#
+# So this tier does not ask a small teacher for bounded actions. It says them, once,
+# correctly, in enough situations that the pattern transfers. Every reply here is
+# written by hand and is first-party, so unlike the copyrighted excerpts it is a
+# legitimate training target.
+#
+# Each reply satisfies both halves of the activation axis by construction: a concrete
+# action verb, and an explicit bound -- one line, one item, one paragraph, or under two
+# minutes. The techniques come from the task-initiation literature summarised in
+# docs/ACTIVATION.md; the situations come from the same synthetic-user space as the rest
+# of the corpus so nothing here teaches on real user data.
+#
+# The bound is load-bearing and must not be softened. "Write your introduction" is a
+# task; "write one heading line for it, then stop" is an action someone can take while
+# still stuck, because it can be completed badly and still count.
+
+BOUNDED_ACTION_CONSTRAINT = (
+    "Give exactly one first action, bounded to one line, one item, one paragraph, or "
+    "under two minutes. Name the end of the action so it can be left incomplete."
+)
+
+BOUNDED_ACTIONS: tuple[tuple[str, str, str], ...] = (
+    (
+        "I know exactly what the first step is and I still cannot press start on it.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "The step is already chosen, so let us make it smaller than the choice. Open "
+        "the file and type one heading line for it, then stop -- an unfinished heading "
+        "still counts as having started.",
+    ),
+    (
+        "It is a cursed start button. I know the task. I cannot begin it.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Do not solve the task, just defeat the button. Click the document once and "
+        "leave it open on screen; that is the whole action, and you are allowed to stop "
+        "there.",
+    ),
+    (
+        "I have been staring at this document for an hour and cannot start writing.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write one sentence -- the first one, the bad one, the one you would cross out "
+        "later -- and then stop. You are not allowed to reread it, only to have written "
+        "it.",
+    ),
+    (
+        "I need to email someone and have rehearsed it for two days.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open the mail app and type the subject line. Stop there -- no greeting, no "
+        "body. The message is not drafted and that is fine; the draft is tomorrow's "
+        "problem.",
+    ),
+    (
+        "I do not know where to begin on the big project.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write the name of the project at the top of a blank page. One line. When it "
+        "is on the page the project is no longer abstract, and abstract is what you "
+        "cannot start.",
+    ),
+    (
+        "I keep writing to-do lists and never doing them.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Pick the top item and do the smallest physical thing it implies -- one "
+        "paragraph, one line, one object moved -- then stop. One item, not the list.",
+    ),
+    (
+        "Something unexpected came up and I have not moved since.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Stand up and leave the room for under two minutes, then come back. You are "
+        "not resetting the day, just moving your body so the stuck state has a natural "
+        "edge to it.",
+    ),
+    (
+        "I can do it perfectly in my head and cannot do it at all on paper.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write down one sentence of what you just did in your head -- badly, quickly, "
+        "no editing -- and stop. Getting it out of your head is the whole point of this "
+        "one.",
+    ),
+    (
+        "I am excellent at the thing I care about and cannot do the thing I must do.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Set a two-minute timer and start the required thing when it rings. You are "
+        "committing to the first two minutes only, not to finishing, and not to a "
+        "second pass.",
+    ),
+    (
+        "I always forget why I walked into the room.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write one line on whatever is nearest before you leave the room. One line is "
+        "below the threshold where forgetting wins.",
+    ),
+    (
+        "I set an alarm and then forgot what it was for.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Rename the alarm now to the actual first action, in the alarm itself. That is "
+        "the entire fix and it takes under a minute.",
+    ),
+    (
+        "Today was a bad day and I am already beating myself up about it.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Put one object back where it belongs -- the cup, the file, the shoes. One "
+        "item, and let that be the whole contribution of today.",
+    ),
+    (
+        "I do not think I can do this.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "You do not have to believe that to act on it. Do the first ninety seconds "
+        "anyway: open the thing and stay for one minute, then you may stop.",
+    ),
+    (
+        "I have tried starting a hundred times and it never sticks.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Give yourself the first two minutes and no obligation after them -- you commit "
+        "only to starting. Set the timer, start, and let yourself stop when it rings.",
+    ),
+    (
+        "The task feels enormous and I am frightened of it.",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write one line stating what finished would look like, in the crudest possible "
+        "wording, then stop. It is not a plan and it is not meant to be.",
+    ),
+)
+
+
 def build_teacher_prompt(
     prompt: str, constraint: str, digest: str, skill: str = "", lived: bool = False
 ) -> str:
@@ -340,7 +472,7 @@ DIAGNOSIS_PATTERNS = (
 )
 
 SMALL_ACTION_RE = re.compile(
-    r"\b(open|set|put|stand up|sit down|pick up|write|writing|fill in|click|drag|fold|take|do|start|begin|try|send|reply|email|call|read|schedule|list|choose|pick|outline|draft|jot|note down|look|find|gather|copy|check|review|define|name|break down|split|cut|measure|weigh|decide|move|stand|sit|lay|place|bring|get|grab|put away|tidy|clear|sort|mark|highlight|underline|print|say out loud|whisper|tell|ask)\b",
+    r"\b(open|set|put|stand up|sit down|pick up|write|writing|fill in|click|drag|fold|take|do|start|begin|try|send|reply|email|call|read|schedule|list|choose|pick|outline|draft|jot|note down|look|find|gather|copy|check|review|define|name|rename|relabel|break down|split|cut|measure|weigh|decide|move|stand|sit|lay|place|bring|get|grab|put away|tidy|clear|sort|mark|highlight|underline|print|say out loud|whisper|tell|ask)\b",
     re.IGNORECASE,
 )
 
@@ -351,6 +483,56 @@ def _matches_any(patterns: Iterable[str], text: str) -> str:
         if re.search(pattern, lowered):
             return pattern
     return ""
+
+
+# Does this constraint require a first action that is bounded in size? Kept as a
+# predicate over the constraint text rather than a literal substring so that a new
+# bounded-action constraint is gated automatically instead of silently skipping the
+# check. "one line, one item, one paragraph, or under two minutes" asks for a bounded
+# action just as much as "under two minutes" does, and it was being skipped.
+_BOUNDED_ACTION_HINTS: tuple[str, ...] = (
+    "under two minutes",
+    "bounded",
+    "one line",
+    "one item",
+    "one paragraph",
+    "first action",
+    "small first step",
+)
+
+
+def _asks_for_bounded_action(constraint: str) -> bool:
+    lowered = (constraint or "").lower()
+    return any(hint in lowered for hint in _BOUNDED_ACTION_HINTS)
+
+
+def _load_activation_scorer():
+    """Return the bench's ``score_activation``, or ``None`` if it truly is unavailable.
+
+    Loaded by path rather than by name. The bench and this script are siblings and are
+    both imported by path under generated module names (``cd_eval_bench``) in the test
+    suite, so ``from eval_bench import ...`` raises ImportError there. The first version
+    of this treated that as "scorer unavailable, carry on" -- and the gate silently
+    admitted a reply the bench rejects, which is how a safety gate becomes decorative.
+
+    So: a load failure is only tolerated if it is reported. Returning ``None`` makes the
+    caller fall back to the local check below rather than assume the answer is "accept".
+    """
+    import importlib.util
+
+    path = Path(__file__).resolve().parent / "eval_bench.py"
+    if not path.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("_cd_eval_bench_for_gate", path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    except Exception:  # pragma: no cover - defensive; see docstring
+        return None
+    return getattr(module, "score_activation", None)
 
 
 def quality_gate(response: str, *, constraint: str) -> tuple[bool, str]:
@@ -376,6 +558,25 @@ def quality_gate(response: str, *, constraint: str) -> tuple[bool, str]:
         return False, f"diagnosis language ({diagnosis})"
     if "under two minutes" in constraint and not SMALL_ACTION_RE.search(text):
         return False, "no concrete small first action detected"
+    # Any constraint that asks for a bounded first action is checked against the bench's
+    # own activation scorer rather than the substring test above.
+    #
+    # The substring test is why the 264-pair corpus is biased: it only fired on the exact
+    # phrase "under two minutes", so a constraint phrased as "one line, one item, one
+    # paragraph, or under two minutes" was treated as if it did not ask for a bounded
+    # action at all, and unbounded replies were accepted under it. Delegating keeps one
+    # definition of "bounded" shared by the corpus gate and the release gate -- when
+    # these disagree, a corpus gets built that its own bench then fails.
+    if _asks_for_bounded_action(constraint):
+        scorer = _load_activation_scorer()
+        if scorer is None:
+            # Fail closed. A bounded-action candidate is exactly the reply we cannot
+            # afford to wave through unchecked, and a gate that accepts when its own
+            # logic is unavailable is worse than no gate at all.
+            return False, "activation scorer unavailable; refusing to accept blind"
+        ok, reason = scorer(text)
+        if not ok:
+            return False, f"bounded action required but: {reason}"
     words = len(text.split())
     if words > 140:
         return False, f"too long ({words} words)"
@@ -534,6 +735,25 @@ def plan_pairs(config: dict[str, Any]) -> list[Pair]:
                     constraint=constraint,
                     response=response,
                     citation="docs/CHARTER.md",
+                )
+            )
+
+    if seeds.get("include_bounded_action_pairs", True):
+        # Hand-written, so these need no teacher and are never at risk of acceptance
+        # bias. Each is varied against a synthetic user so the same action is not
+        # anchored to one data digest.
+        for index, (prompt, constraint, response) in enumerate(BOUNDED_ACTIONS):
+            pairs.append(
+                Pair(
+                    id=f"bounded:{index:03d}",
+                    kind="bounded",
+                    situation=prompt,
+                    skill="task decomposition into a bounded first action",
+                    user=USER_POOL[index % len(USER_POOL)],
+                    prompt=prompt,
+                    constraint=constraint,
+                    response=response,
+                    citation="first-party: docs/ACTIVATION.md",
                 )
             )
     return pairs

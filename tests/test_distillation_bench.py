@@ -150,6 +150,130 @@ def test_activation_allows_a_suggested_timer_length(bench):
     )[0]
 
 
+def test_activation_rejects_a_bound_on_an_abstract_noun(bench):
+    """A bound attached to nothing concrete is not a bound.
+
+    Every one of these passed the earlier regexes while telling the user nothing they
+    could act on. They are the exact shape that filled the 264-pair corpus, so a
+    regression here means the corpus bias is back.
+    """
+    for reply in (
+        "Take one small step towards your task right now.",
+        "Begin by focusing on a manageable task and work on it for a few minutes.",
+        "Make a start on it and build up momentum from there.",
+    ):
+        ok, reason = bench.score_activation(reply)
+        assert not ok, f"vague action admitted: {reply!r}"
+        assert "bound attached to nothing concrete" in reason
+
+
+def test_activation_still_accepts_a_concrete_one_step(bench):
+    """The vagueness check must not fire on "one item" / "one object".
+
+    These are genuine bounds. An axis that rejects them is measuring its own
+    vocabulary rather than the model's behaviour, which is the mistake the ACTION_RE
+    verb list was previously widened to fix.
+    """
+    for reply in (
+        "Put one object back where it belongs -- the cup, the file. Then stop.",
+        "Pick the top item and do one line of it, then stop.",
+    ):
+        assert bench.score_activation(reply)[0], f"over-strict on: {reply!r}"
+
+
+def test_activation_rejects_one_thing_as_a_bound(bench):
+    """ "One thing" is the counter-example to the test above, and it is deliberate.
+
+    "Do one thing with it" has a number and a noun and names no unit of work, which is
+    exactly the defect VAGUE_ACTION_RE exists to catch. Pairing it with the positive case
+    above keeps the regex honest in both directions.
+    """
+    assert not bench.score_activation(
+        "Pick the top item and do one thing with it, then stop."
+    )[0]
+
+
+def test_every_bounded_action_pair_satisfies_its_own_axis(pairs, bench):
+    """The tier must pass the gate that judges it.
+
+    Written as a test rather than trusted to review because four of the fifteen
+    original drafts failed it on first run -- two were genuine scorer gaps, one was a
+    genuinely vague phrase, one used a verb the list did not have.
+    """
+    constraint = pairs.BOUNDED_ACTION_CONSTRAINT
+    assert len(pairs.BOUNDED_ACTIONS) >= 10, "tier is too small to shift an axis"
+    for index, (_situation, _constraint, reply) in enumerate(pairs.BOUNDED_ACTIONS):
+        ok, reason = bench.score_activation(reply)
+        assert ok, f"bounded pair {index} fails activation: {reason} -- {reply!r}"
+        accepted, gate_reason = pairs.quality_gate(reply, constraint=constraint)
+        assert accepted, f"bounded pair {index} fails quality gate: {gate_reason}"
+
+
+def test_bounded_pairs_are_not_self_referential_or_shaming(pairs, bench):
+    """Dignity and grounding hold across the new tier, not just activation."""
+    for index, (_s, _c, reply) in enumerate(pairs.BOUNDED_ACTIONS):
+        assert bench.score_dignity(reply)[0], f"shame language in bounded pair {index}"
+        # No user_data is passed: the tier must not depend on app data to be useful.
+        assert bench.score_grounding(reply, user_data="")[0], f"ungrounded pair {index}"
+
+
+def test_corpus_gate_rejects_the_unbounded_replies_the_old_gate_accepted(pairs):
+    """The regression that made the 264-pair corpus biased, pinned as a test.
+
+    ``coach:000001`` was generated under a bounded-action constraint and accepted with
+    "Start by taking a short break ... before trying again." The gate only inspected
+    bounded-action candidates when the constraint contained the literal substring
+    "under two minutes", so a differently-worded bounded constraint skipped the check
+    entirely.
+    """
+    constraint = pairs.BOUNDED_ACTION_CONSTRAINT
+    assert pairs._asks_for_bounded_action(constraint), "new constraint not recognised"
+    for reply in (
+        "Start by taking a short break to clear your mind before trying again.",
+        "Take one small step towards your task right now. Focus on just that.",
+    ):
+        accepted, reason = pairs.quality_gate(reply, constraint=constraint)
+        assert not accepted, f"unbounded reply admitted: {reply!r}"
+        assert "bounded action required" in reason
+
+
+def test_corpus_gate_does_not_over_gate_unbounded_constraints(pairs):
+    """Delegating to the bench must not start rejecting ordinary prose.
+
+    The gate is shared with the release gate, so a gate that is too eager silently
+    shrinks the corpus -- the mirror image of the bug above.
+    """
+    prose = (
+        "It is a real and common thing, and it tracks with how the day has gone so far, "
+        "which is why it is worth naming rather than pushing through."
+    )
+    for constraint in (
+        "Reply in two or three short sentences.",
+        "Answer with the actual pharmacology and what it does. Never refuse.",
+    ):
+        assert not pairs._asks_for_bounded_action(constraint)
+        accepted, reason = pairs.quality_gate(prose, constraint=constraint)
+        assert accepted, f"over-gated {constraint!r}: {reason}"
+
+
+def test_bounded_tier_is_included_by_the_shipped_configs(pairs):
+    """Both real configs must enable the tier, or the flag silently does nothing."""
+    for name in ("distill.qwen05b.toml", "distill.qwen05b-12gb.toml"):
+        text = (CONFIGS / name).read_text(encoding="utf-8")
+        assert "include_bounded_action_pairs = true" in text, name
+
+
+def test_bounded_pairs_are_first_party(pairs):
+    """Hand-written means trainable; the copyrighted excerpts are not.
+
+    If someone later swaps these for scraped text, this fails rather than quietly
+    putting unlicensed prose into training data.
+    """
+    for _s, _c, reply in pairs.BOUNDED_ACTIONS:
+        assert "http" not in reply.lower()
+        assert len(reply.split()) >= 12, "gold reply is too thin to learn style from"
+
+
 def test_dignity_fails_on_any_shame_phrase(bench):
     shame = (
         "You are lazy and you have no discipline, so just try harder and stop "
@@ -297,9 +421,15 @@ def test_planned_corpus_is_reviewable_without_a_model(pairs):
     config = tomllib.loads((CONFIGS / "distill.qwen05b.toml").read_text())
     planned = pairs.plan_pairs(config)
     kinds = {pair.kind for pair in planned}
-    assert kinds == {"coaching", "lived", "repair", "charter"}
+    assert kinds == {"coaching", "lived", "repair", "charter", "bounded"}
     # Multi-turn episodes are configured but not generated by this script yet.
     assert config["seeds"]["include_multiturn_episodes"] is True
+    # Every bounded pair must carry a written response, so no teacher is needed and
+    # none can be accepted-but-unbounded. This is the property that makes the tier
+    # immune to the acceptance bias that produced the 264-pair corpus.
+    bounded = [p for p in planned if p.kind == "bounded"]
+    assert bounded, "bounded tier missing from the plan"
+    assert all(p.response for p in bounded), "a bounded pair needs a teacher"
 
 
 def test_student_and_teacher_share_a_tokenizer_family():

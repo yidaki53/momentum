@@ -63,26 +63,65 @@ REPO_ROOT = ROOT.parent
 # behaviour. The step-size half is kept strict, because neither model did bound its
 # steps -- and that is a real failure worth keeping visible.
 ACTION_RE = re.compile(
-    r"\b(open|set|put|stand up|sit down|pick up|write|writing|fill in|click|drag|fold|take|do|start|begin|try|send|reply|email|call|read|schedule|list|choose|pick|outline|draft|jot|note down|look|find|gather|copy|check|review|define|name|break down|split|cut|measure|weigh|decide|move|stand|sit|lay|place|bring|get|grab|put away|tidy|clear|sort|mark|highlight|underline|print|say out loud|whisper|tell|ask)\b",
+    r"\b(open|set|put|stand up|sit down|pick up|write|writing|fill in|click|drag|fold|take|do|start|begin|try|send|reply|email|call|read|schedule|list|choose|pick|outline|draft|jot|note down|look|find|gather|copy|check|review|define|name|rename|relabel|break down|split|cut|measure|weigh|decide|move|stand|sit|lay|place|bring|get|grab|put away|tidy|clear|sort|mark|highlight|underline|print|say out loud|whisper|tell|ask)\b",
     re.IGNORECASE,
 )
 # What makes a step "small enough to start". Three ways a coach can bound it:
 # a time box, a single unit of work, or an immediate cue. The first draft only
 # recognised two phrases and failed seven of thirteen reference replies, which is a
 # reminder that an axis nobody can satisfy without reading the rubric is not an axis.
+#
+# "one" joins the number words and "item"/"object" join the unit nouns because both
+# are unambiguous bounds that the earlier lists missed: "stay for one minute" and "put
+# one item back" are bounded actions, and rejecting them was the scorer measuring
+# its own vocabulary rather than the model's behaviour. Same class of error as the
+# missing "write"/"start" verbs fixed above.
 MINUTE_STEP_RE = re.compile(
     r"(\b\d+[- ]minute"
-    r"|\b(two|three|five|ten|fifteen|twenty)[- ]minute"
-    r"|under two minutes"
-    r"|\bone\b\s*(line|sentence|paragraph|word|heading|email|message|step|thing)"
-    r"|\bfirst\s+(line|sentence|paragraph|heading|draft|minute|step)"
+    r"|\b(one|two|three|five|ten|fifteen|twenty|thirty|sixty|ninety)[- ]minute"
+    r"|\b\d+[- ]second"
+    r"|\b(one|two|three|five|ten|fifteen|twenty|thirty|sixty|ninety)[- ]second"
+    r"|\bone\s+(click|tap)\b"
+    r"|\bunder two minutes\b"
+    r"|\bone\b\s*(line|sentence|paragraph|word|heading|email|message|step|thing|item|object|section|page|note|question|example)"
+    r"|\b(first|top)\s+(line|sentence|paragraph|heading|draft|minute|step|item|section)"
     r"|\bjust the\b"
     r"|\bright now\b"
     r"|\bnow\b"
     r"|\buntil (it|they|the timer) (rings|ends)\b"
-    r"|\bthat is the whole (goal|thing|job)\b"
+    r"|\bthat is the whole (goal|thing|job|action)\b"
+    r"|\bthat is the entire\b"
     r"|\bthen stop\b"
+    r"|\bstop there\b"
+    r"|\bno obligation\b"
+    r"|\bonly to\b"
+    r"|\bthen you may stop\b"
     r"|\bin the next\b)",
+    re.IGNORECASE,
+)
+
+# A bound is only real if it is attached to a concrete unit of work. "Take one small
+# step towards your task right now" contains both a bound ("one", "right now") and a
+# task-sized noun ("step", "task"), and therefore sailed through MINUTE_STEP_RE while
+# telling the user nothing they could act on. This is the exact shape of reply that
+# filled the 264-pair corpus and left activation at 0.00: confident, plausible, and
+# impossible to start.
+#
+# Deliberately narrow. It names the specific unbounded idioms that were observed, not
+# "any abstract noun", because an activation axis that fires on ordinary prose measures
+# vocabulary rather than behaviour -- the failure mode documented twice in the comments
+# above this regex.
+VAGUE_ACTION_RE = re.compile(
+    r"(\b(one|a|another)\s+(small\s+|tiny\s+|little\s+)?(step|steps|task|tasks|thing|things|bit|move|moves|action|actions)\b(?!\s*(sentence|line|item|paragraph|word|heading|section|page|note|question|example|object))"
+    r"|\bstart (small|better|working|on it)\b"
+    r"|\bmake (a\s+)?(start|progress)\b"
+    r"|\btake (a\s+)?(small\s+)?(step|breath)\b(?!\s*(and\s+)?then)"
+    r"|\bbuild up momentum\b"
+    r"|\bwork (on|through) it\b"
+    r"|\bfocus on it\b"
+    r"|\bdo (a little|a bit)\b"
+    r"|\bget started\b"
+    r"|\bmake progress\b)",
     re.IGNORECASE,
 )
 
@@ -201,6 +240,9 @@ def load_lexicon(path: Path) -> tuple[str, ...]:
 
 def score_activation(response: str, **_kwargs: Any) -> tuple[bool, str]:
     """Pass when there is a concrete, deliberately small first action."""
+    vague = VAGUE_ACTION_RE.search(response)
+    if vague:
+        return False, f"bound attached to nothing concrete: {vague.group(0)!r}"
     if not ACTION_RE.search(response):
         return False, "no concrete action verb"
     if not MINUTE_STEP_RE.search(response):

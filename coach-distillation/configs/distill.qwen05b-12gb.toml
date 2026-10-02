@@ -94,6 +94,11 @@ knowledge_files = [
 pairs_per_combination = 1
 include_repair_pairs = true
 include_charter_pairs = true
+# Hand-written bounded first actions (scripts/build_distill_pairs.py BOUNDED_ACTIONS).
+# These need no teacher, so they are never subject to acceptance bias -- which is how
+# the 264-pair corpus ended up teaching "take one small step" instead of "type one
+# heading line". See docs/ACTIVATION.md. Disable only to reproduce the old corpus.
+include_bounded_action_pairs = true
 include_multiturn_episodes = true
 turns_min = 3
 turns_max = 6

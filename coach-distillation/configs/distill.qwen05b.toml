@@ -24,6 +24,14 @@ registry_name = "momentum-qwen05b"
 #
 # Raise this to the 7B only on hardware that can hold it in bf16 (>=18GB VRAM), where
 # the CPU is never involved and the quality difference is worth the memory.
+#
+# 7B STATUS (verified 2026-10-02, retried): the weights ARE fully present -- 15GB across
+# four complete shards, so "not downloaded" is wrong. The blocker is the environment:
+# torch/transformers/peft are absent from both .venv and .venv-build, so the teacher
+# raises ImportError before touching the GPU. That is a dependency problem, not a
+# thermal one -- the guarded probe wrote only a CSV header and never got the machine
+# warm. Reinstalling requirements.txt restores it; the 43s/pair figure above still
+# applies once it does.
 model_id = "Qwen/Qwen2.5-1.5B-Instruct"
 # bf16, not 4-bit: see above. Set true only alongside a teacher that fits in full.
 load_in_4bit = false
@@ -100,6 +108,7 @@ knowledge_files = [
 pairs_per_combination = 1
 include_repair_pairs = true
 include_charter_pairs = true
+include_bounded_action_pairs = true
 include_multiturn_episodes = true
 turns_min = 3
 turns_max = 6
