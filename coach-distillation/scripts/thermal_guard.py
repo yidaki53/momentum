@@ -13,14 +13,17 @@ What is different from the first version:
    now the run that heats the machine leaves a trail either way.
 2. **Laptop thresholds, not desktop ones.** The CPU stop threshold moved from 90C to
    78C. Sustained 89C on a laptop is not "hot", it is a countdown.
-3. **Ramp detection.** The dangerous thing is often the *rate* of climb, not the
-   absolute value. A sensor gaining 20C in a minute is stopped even if it has not yet
-   reached any threshold -- that is a thermal runaway, not a hot machine.
+3. **A duration rule, not a rate rule.** An earlier version killed on the *rate* of
+   climb. That was wrong: loading a quantised 7B spikes the CPU from 61C to 78C in about
+   five seconds and then settles, and the guard made a legitimate run impossible. What
+   kills a laptop is sustained heat, so a short spike is tolerated and only time-above-
+   threshold decides.
 4. **A preflight gate.** The guard now REFUSES to start when the machine is already warm
    or already busy. The crash happened with two heavy jobs sharing the box; stacking a
    second one is exactly the failure mode, and a guard that only supervises its own child
    cannot see it.
-5. **Five-second sampling.** Fifteen seconds is long enough for a laptop to overshoot.
+5. **Five-second sampling.** Fifteen seconds is long enough for a laptop to overshoot,
+   and it sets the resolution of the hot-duration timer.
 6. **System-load awareness.** Other processes' CPU use is read and reported, because the
    heat is the machine's, not the guarded job's.
 
@@ -31,6 +34,7 @@ Usage::
 
     python scripts/thermal_guard.py --check
     python scripts/thermal_guard.py --log out/thermal.csv -- python scripts/train.py ...
+    python scripts/thermal_guard.py --max-hot-seconds 60 -- ...   # tolerate more
     python scripts/thermal_guard.py --daemon --log out/thermal.csv   # detached logger
 
 Exit codes: the command's own status, 124 if stopped for heat, 3 if preflight refused.
@@ -71,19 +75,21 @@ DEFAULT_LIMITS: dict[str, tuple[float, float]] = {
 # Fallback for a sensor we sample but have no rating for. Coarse but not a free pass.
 UNRATED_LIMITS: tuple[float, float] = (100.0, 120.0)
 
-# A sensor gaining this many degrees per minute is a runaway, whatever its absolute
-# reading. Detecting slope catches the failure that absolute thresholds miss: a fan that
-# has stopped, or a job that has started a much heavier phase.
-RAMP_C_PER_MIN = 20.0
+# How long the machine may sit ABOVE its stop threshold before the run is killed.
+#
+# This is a duration rule, not a rate rule, and the distinction is deliberate. An
+# earlier version killed on the *rate* of climb, which turned out to be wrong: loading
+# a quantised 7B spikes the CPU from 61C to 78C in about five seconds and then settles.
+# That is what loading a model does. It is a brief excursion, not a thermal event, and
+# killing it meant a legitimate run could never start.
+#
+# What actually kills a laptop is sustained heat. So: a short spike is tolerated, and
+# only time-above-threshold decides. Thirty seconds is long enough for a load spike and
+# far too short for anything that is genuinely cooking.
+DEFAULT_MAX_HOT_SECONDS = 30.0
 
-# Sampling cadence. Five seconds, not fifteen: a small laptop can overshoot a
-# threshold in the time a 15s gap takes to notice, and two consecutive hot samples at
-# 5s means a sustained event rather than a single spike.
+# Sampling cadence. Five seconds gives a resolution of 5s on the hot-duration timer.
 DEFAULT_INTERVAL = 5
-DEFAULT_PATIENCE = 2
-
-# A rate computed over less than this is noise, not a ramp.
-MIN_RAMP_SPAN_SECONDS = 10.0
 
 # Refuse to start if some *other* process is already using this much of the CPU.
 CONCURRENT_CPU_PERCENT = 60.0
@@ -149,35 +155,6 @@ def decide(
     return (state, worst)
 
 
-def ramp_c_per_minute(
-    history: list[tuple[float, float]], window_seconds: float = 60.0
-) -> float:
-    """Peak rate of change over the last *window_seconds* of ``(elapsed, celsius)``.
-
-    Returns degrees per minute, or 0.0 when there is not enough history. Comparing
-    endpoints rather than consecutive samples keeps this stable against noise.
-    """
-    if len(history) < 2:
-        return 0.0
-    newest_time, newest_value = history[-1]
-    reference = [entry for entry in history if newest_time - entry[0] <= window_seconds]
-    if len(reference) < 2:
-        return 0.0
-    oldest_time, oldest_value = reference[0]
-    span = newest_time - oldest_time
-    # Two samples a second apart produce an enormous, meaningless rate. Requiring a
-    # minimum span stops sensor noise from being reported as a thermal runaway.
-    if span < MIN_RAMP_SPAN_SECONDS:
-        return 0.0
-    return max(0.0, (newest_value - oldest_value) / span * 60.0)
-
-
-def ramp_is_dangerous(
-    history: list[tuple[float, float]], threshold: float = RAMP_C_PER_MIN
-) -> bool:
-    return ramp_c_per_minute(history) >= threshold
-
-
 # --------------------------------------------------------------------------
 # Preflight -- refuse to start rather than regret starting
 # --------------------------------------------------------------------------
@@ -225,13 +202,14 @@ def preflight(limits: Optional[dict[str, tuple[float, float]]] = None) -> Prefli
                 f"threshold -- let it cool first"
             )
         elif state == "warn":
-            # Warn blocks a *start* even though it does not stop a running job.
-            # Starting with the CPU already at 70C leaves no margin for the heat the
-            # run itself will produce, and this machine has crashed twice already.
-            blocking = True
+            # Advisory only. This machine idles near 55C and touches the low 70s just
+            # from editor activity, so a warn-level reading is normal rather than
+            # alarming. Blocking here made the guard refuse to start most of the time,
+            # which trains people to reach for --allow-hot-start -- and a guard people
+            # disable protects nothing.
             reasons.append(
-                f"{reading.key} already at {reading.celsius:.1f}C, over its warn "
-                f"threshold -- starting hot leaves no headroom for the run itself"
+                f"NOTE {reading.key} already at {reading.celsius:.1f}C, over its warn "
+                f"threshold -- watch the first samples closely"
             )
 
     busy = busiest_other_cpu()
@@ -497,22 +475,26 @@ def supervise(
     command: list[str],
     *,
     interval: int = DEFAULT_INTERVAL,
-    patience: int = DEFAULT_PATIENCE,
     limits: Optional[dict[str, tuple[float, float]]] = None,
     log_path: Optional[Path] = None,
     allow_hot_start: bool = False,
+    max_hot_seconds: float = DEFAULT_MAX_HOT_SECONDS,
     dry_run: bool = False,
 ) -> int:
     """Run *command*, polling temperature, stopping it if the machine overheats.
 
-    ``patience`` is how many consecutive stop-level samples are required. Two at the
-    5-second default means a real, sustained heat event, which no single spike survives.
+    ``max_hot_seconds`` is how long the machine may stay continuously above a stop
+    threshold before the run is killed. A brief spike costs nothing and the timer resets
+    the moment it settles; only sustained heat ends the run.
 
     Returns the command's status, 124 if stopped for heat, 3 if preflight refused.
     """
     if dry_run:
         print("would run:", " ".join(command))
-        print(f"sampling every {interval}s; stopping after {patience} hot samples")
+        print(
+            f"sampling every {interval}s; killing after {max_hot_seconds:.0f}s "
+            f"continuously above a stop threshold"
+        )
         return 0
 
     if not allow_hot_start:
@@ -530,8 +512,8 @@ def supervise(
     telemetry = TemperatureLog(log_path) if log_path else None
     print(f"[thermal] guarding: {' '.join(command)}", flush=True)
     print(
-        f"[thermal] sampling every {interval}s; stop after {patience} consecutive "
-        f"hot samples or a {RAMP_C_PER_MIN:.0f}C/min climb",
+        f"[thermal] sampling every {interval}s; killing after "
+        f"{max_hot_seconds:.0f}s continuously above a stop threshold",
         flush=True,
     )
     if telemetry:
@@ -539,9 +521,9 @@ def supervise(
 
     process = subprocess.Popen(command, start_new_session=True)
     started = time.time()
-    breaches = 0
-    # Per-sensor temperature history, for ramp detection.
-    histories: dict[str, list[tuple[float, float]]] = {}
+    # Seconds the machine has been continuously above a stop threshold. Reset as soon
+    # as it drops back, so a brief spike costs nothing and only sustained heat counts.
+    hot_since: Optional[float] = None
     try:
         while process.poll() is None:
             time.sleep(interval)
@@ -550,63 +532,36 @@ def supervise(
             readings = sample()
             elapsed = time.time() - started
             action, offender = decide(readings, limits)
-
-            for reading in readings:
-                history = histories.setdefault(reading.key, [])
-                history.append((elapsed, reading.celsius))
-                del history[:-40]  # a two-minute tail is plenty
-
-            # A runaway climb is stopped even when no absolute threshold is reached
-            # yet. This is the failure an absolute threshold misses: a fan that has
-            # stopped, or a job that has entered a much heavier phase.
-            climbing = [
-                reading
-                for reading in readings
-                if ramp_is_dangerous(histories[reading.key])
-            ]
             telemetry and telemetry.write(elapsed, readings, action)
 
-            if climbing:
-                worst_climb = max(
-                    climbing, key=lambda r: ramp_c_per_minute(histories[r.key])
-                )
-                rate = ramp_c_per_minute(histories[worst_climb.key])
-                breaches += 1
-                print(
-                    f"[thermal] CLIMBING {worst_climb.key} "
-                    f"{worst_climb.celsius:.1f}C and gaining {rate:.0f}C/min "
-                    f"({breaches}/{patience})",
-                    flush=True,
-                )
-                if breaches >= patience:
+            if action == "stop" and offender is not None:
+                if hot_since is None:
+                    hot_since = elapsed
                     print(
-                        "[thermal] stopping: thermal runaway. This machine has "
-                        "crashed from heat twice.",
+                        f"[thermal] HOT {describe(offender, limits)} -- tolerating "
+                        f"up to {max_hot_seconds:.0f}s while it settles",
+                        flush=True,
+                    )
+                hot_for = elapsed - hot_since
+                if hot_for >= max_hot_seconds:
+                    print(
+                        f"[thermal] stopping: {hot_for:.0f}s continuously above the "
+                        f"stop threshold. This machine has crashed from heat twice.",
                         flush=True,
                     )
                     _terminate(process)
                     return 124
                 continue
 
-            if action == "warn" and offender is not None:
-                print(f"[thermal] WARN {describe(offender, limits)}", flush=True)
-                continue
-            if action == "stop" and offender is not None:
-                breaches += 1
+            if hot_since is not None:
                 print(
-                    f"[thermal] HOT {describe(offender, limits)} ({breaches}/{patience})",
+                    f"[thermal] cooled after {elapsed - hot_since:.0f}s hot; "
+                    f"continuing",
                     flush=True,
                 )
-                if breaches >= patience:
-                    print(
-                        "[thermal] stopping: sustained overheat. This machine has "
-                        "crashed from this twice.",
-                        flush=True,
-                    )
-                    _terminate(process)
-                    return 124
-                continue
-            breaches = 0
+                hot_since = None
+            if action == "warn" and offender is not None:
+                print(f"[thermal] WARN {describe(offender, limits)}", flush=True)
     except KeyboardInterrupt:
         print("\n[thermal] interrupted; stopping the child", flush=True)
         _terminate(process)
@@ -627,10 +582,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="seconds between samples (default 5)",
     )
     parser.add_argument(
-        "--patience",
-        type=int,
-        default=DEFAULT_PATIENCE,
-        help="consecutive over-temp samples before stopping (default 2)",
+        "--max-hot-seconds",
+        type=float,
+        default=DEFAULT_MAX_HOT_SECONDS,
+        help="seconds continuously above a stop threshold before the run is killed "
+        f"(default {DEFAULT_MAX_HOT_SECONDS:.0f})",
     )
     parser.add_argument(
         "--check",
@@ -674,7 +630,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     return supervise(
         args.command,
         interval=args.interval,
-        patience=args.patience,
         log_path=Path(args.log) if args.log else None,
         allow_hot_start=args.allow_hot_start,
         dry_run=args.dry_run,

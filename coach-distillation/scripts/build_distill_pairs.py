@@ -425,13 +425,29 @@ class Teacher:
         return self._pipe
 
     def generate(self, prompt: str, *, max_new_tokens: int = 220) -> str:
+        """Generate one coaching reply from the teacher.
+
+        The prompt is wrapped in the model's chat template. Passing a raw string to a
+        text-generation pipeline on an *instruct* model does not do this, and the teacher
+        then answers as if the text were some other kind of content -- it classified a
+        coaching request as "the sentiment of this tweet is mixed". A teacher that is not
+        being addressed properly produces a corpus that teaches the student to answer
+        the wrong shape of question.
+        """
         pipe = self._load()
+        tokenizer = getattr(pipe, "tokenizer", None)
+        if tokenizer is not None and getattr(tokenizer, "chat_template", None):
+            rendered = tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        else:
+            rendered = prompt
         outputs = pipe(
-            prompt,
+            rendered,
             max_new_tokens=max_new_tokens,
             # Low temperature: we want the teacher's best answer, not a sample of it.
-            # The student inherits the distribution via logit distillation anyway.
-            temperature=0.3,
             do_sample=False,
             return_full_text=False,
         )

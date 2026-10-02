@@ -307,7 +307,11 @@ def test_student_and_teacher_share_a_tokenizer_family():
 
     config = tomllib.loads((CONFIGS / "distill.qwen05b.toml").read_text())
     assert config["student"]["model_id"].startswith("Qwen/Qwen2.5-0.5B")
-    assert config["teacher"]["model_id"].startswith("Qwen/Qwen2.5-7B")
+    teacher = config["teacher"]["model_id"]
+    assert teacher.startswith("Qwen/Qwen2.5-"), (
+        f"teacher {teacher} is not in the student's family; a cross-family teacher "
+        "makes the student spend capacity on a new token distribution"
+    )
     # A cross-family teacher makes the student spend capacity on a new token
     # distribution rather than on executive-dysfunction coaching.
 

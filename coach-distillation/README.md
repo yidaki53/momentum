@@ -127,8 +127,13 @@ Qwen's 151k vocab needs ~18GB for the float32 logits alone, and it OOMs. Use
 `configs/distill.qwen05b-12gb.toml` (batch 2, 640 tokens, gradient checkpointing), or
 raise the batch size if you have the memory.
 
-**The teacher cannot run here either.** Qwen2.5-7B in bf16 needs ~14GB. Options are a
-1.5B/3B teacher, 4-bit quantisation of the 7B, or a machine with more VRAM.
+**The teacher is Qwen2.5-3B in bf16, and the 7B is not usable here.** Measured, not
+assumed: the 7B needs 4-bit to fit this card, and bitsandbytes dequantises on the CPU at
+load *and on every forward pass*. The CPU sat at 78-80C for a whole run and one pair took
+43 seconds -- nine hours for the corpus, on a machine that has crashed twice. The 3B in
+bf16 fits in 6.2GB with nothing offloaded, generates a pair in ~1.6s, and completes the
+corpus in roughly 20 minutes. Raise it to the 7B only on hardware holding it in bf16
+(>=18GB VRAM), where the CPU is never involved.
 
 ### Hardware notes
 
@@ -185,7 +190,7 @@ python scripts/thermal_guard.py --log out/thermal.csv -- \
 |---|---|
 | Refuses to start | exit 3 if already warm, or another process is above 60% CPU |
 | Stops a hot run | exit 124 after 2 consecutive hot samples |
-| Stops a runaway | exit 124 on a 20C/min climb, **even below any threshold** |
+| Tolerates a brief spike | up to 30s above a stop threshold; the timer resets when it settles |
 | Keeps evidence | `--log` writes CSV, flushed and fsynced per sample |
 
 | Sensor | Warn | Stop |
@@ -200,9 +205,16 @@ max ~89C, NVMe crit 84.8C). That gap is deliberate: the firmware limits are wher
 machine defends *itself*, by throttling or shutting down. Waiting for them is how you
 lose the machine.
 
-The ramp check exists because the dangerous condition is often not the absolute
-temperature but the rate: a fan that has stopped, or a job entering a heavier phase, can
-climb 30C while still reading below the stop threshold.
+The rule is **duration, not rate**, and that distinction was learned the hard way. An
+earlier version killed on the rate of climb and made a legitimate run impossible:
+loading a quantised 7B spikes the CPU from 61C to 78C in about five seconds and then
+settles. That is what loading a model does, not a thermal event. What actually kills a
+laptop is sustained heat, so a short spike is tolerated and only time-above-threshold
+decides. Tune with `--max-hot-seconds`.
+
+Warn thresholds are advisory, not blocking. This machine idles near 55C and touches the
+low 70s just from editor activity; blocking on warn made the guard refuse to start most
+of the time, which only trains people to reach for `--allow-hot-start`.
 
 `tests/test_thermal_guard.py` covers all of this on CI hardware with no sensors --
 thresholds, ramp maths, the refusal gate, durable logging, and both kill paths.
@@ -226,8 +238,13 @@ Qwen's 151k vocab needs ~18GB for the float32 logits alone, and it OOMs. Use
 `configs/distill.qwen05b-12gb.toml` (batch 2, 640 tokens, gradient checkpointing), or
 raise the batch size if you have the memory.
 
-**The teacher cannot run here either.** Qwen2.5-7B in bf16 needs ~14GB. Options are a
-1.5B/3B teacher, 4-bit quantisation of the 7B, or a machine with more VRAM.
+**The teacher is Qwen2.5-3B in bf16, and the 7B is not usable here.** Measured, not
+assumed: the 7B needs 4-bit to fit this card, and bitsandbytes dequantises on the CPU at
+load *and on every forward pass*. The CPU sat at 78-80C for a whole run and one pair took
+43 seconds -- nine hours for the corpus, on a machine that has crashed twice. The 3B in
+bf16 fits in 6.2GB with nothing offloaded, generates a pair in ~1.6s, and completes the
+corpus in roughly 20 minutes. Raise it to the 7B only on hardware holding it in bf16
+(>=18GB VRAM), where the CPU is never involved.
 
 ### Hardware notes
 

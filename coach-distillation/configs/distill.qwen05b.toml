@@ -14,7 +14,19 @@ registry_name = "momentum-qwen05b"
 [teacher]
 # Same family as the student. Cross-family teachers make the student spend capacity
 # learning a token distribution instead of learning executive-dysfunction coaching.
-model_id = "Qwen/Qwen2.5-7B-Instruct"
+#
+# 3B, not 7B, and that is a measured decision rather than a preference. The 7B needs
+# 4-bit to fit this card, and bitsandbytes dequantises on the CPU at load AND on every
+# forward pass: the CPU sat at 78-80C for the whole run and one pair took 43 seconds.
+# The 3B in bf16 fits in 6.2GB with nothing offloaded, generates a pair in ~1.6s, and
+# leaves the CPU alone. 780 pairs is roughly 20 minutes instead of nine hours on a
+# machine that has crashed twice from heat.
+#
+# Raise this to the 7B only on hardware that can hold it in bf16 (>=18GB VRAM), where
+# the CPU is never involved and the quality difference is worth the memory.
+model_id = "Qwen/Qwen2.5-3B-Instruct"
+# bf16, not 4-bit: see above. Set true only alongside a teacher that fits in full.
+load_in_4bit = false
 revision = "main"
 # KD. Logit distillation (forward-KL on token distributions) transfers more than the
 # teacher's sampled text, which matters when the student is this small.
