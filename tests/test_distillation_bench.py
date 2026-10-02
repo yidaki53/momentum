@@ -599,8 +599,37 @@ def test_training_arguments_are_version_tolerant():
     assert "warmup_steps" not in resolved
     assert "processing_class" in resolved
 
-    # bf16 is forced off when CUDA is unavailable, so a CPU-only box can run.
-    assert resolved["bf16"] is False
+    # bf16 handling: the key is only ever set to disable bf16, because asking for bf16 on
+    # CPU is an error rather than a silent downgrade. So when CUDA is available the key is
+    # ABSENT (TrainingArguments then defaults it to whatever the GPU supports), and when
+    # it is not available the key is present and False.
+    #
+    # The old assertion was `resolved["bf16"] is False`. That held only because torch was
+    # not installed anywhere on this machine, so CUDA could never be available -- which
+    # is precisely the state in which you cannot train. Installing the distillation
+    # requirements made the test fail, and the failure said nothing about the code. It
+    # now asserts the rule instead of the current hardware.
+    if _cuda_available():
+        assert "bf16" not in resolved, (
+            "bf16 must be left to TrainingArguments when a GPU is present"
+        )
+    else:
+        assert resolved["bf16"] is False, (
+            "bf16 must be explicitly disabled when no GPU is available"
+        )
+
+
+def _cuda_available() -> bool:
+    """True if torch is installed AND sees a GPU. False when torch is absent.
+
+    The distillation stack is deliberately not a runtime dependency of the app, so the
+    test suite has to keep working on a venv with no torch at all.
+    """
+    try:
+        import torch
+    except ImportError:
+        return False
+    return bool(torch.cuda.is_available())
 
 
 def test_tokenisation_masks_the_prompt_out_of_the_loss():
