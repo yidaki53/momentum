@@ -142,6 +142,78 @@ vagueness check costs the golden set one item, 13/13 → 12/13. The reference sh
 rewritten to name a concrete unit — or `g20` should stop declaring `activation`, on the
 grounds that a validation reply need not prescribe a task.
 
+# Progress log
+
+## 2026-10-03 — plan steps 1-3 done, step 2 running
+
+**Step 2 (regenerate) is the long pole and is thermally bounded.** A 3B teacher run of
+400 generations takes ~35 minutes of generation plus ~10 minutes of forced pauses on this
+machine. It will not finish in one sitting. It is resumable — `load_done()` skips ids
+already in the corpus, and accepted pairs are now written the moment they pass — so it can
+be re-launched until it completes.
+
+Scale of the bias being fixed: **158 of the 264 existing coaching pairs (60%) would be
+rejected by the corrected gate today.** Of those, 142 fail for "action not bounded to a
+small step" and 16 for a bound attached to an abstract noun.
+
+First 3B probe under the corrected gate: 14/25 accepted (56%), and the accepted pairs score
+**activation 0.71** against 0.08 from the trained model. Grounding 1.00, dignity 1.00,
+brevity 0.86. So the corrected gate produces a materially better training signal — it is
+rejecting roughly 44% of what the 3B produces, which is the point.
+
+Quality is not uniformly good, and it is worth saying so. Under a constraint that does not
+ask for it the 3B still produces filler: *"Let's dive right in and start your writing
+session together"* passed the gate because the constraint that slice used did not ask for
+an action. The gate is a floor, not a ceiling — it rejects what it knows about and nothing
+else. A per-slice review of accepted output is worth doing before training on a full
+regenerated corpus.
+
+### What the pause feature cost us, and the fix
+
+The first 400-pair attempt paused twice and was then stopped by the guard on the third
+overheat — correct behaviour. It had accepted **75 pairs, about twelve minutes of 3B
+generation, and wrote zero of them.** The corpus was only written after the whole slice
+returned, and the guard SIGKILLs without unwinding.
+
+So the pause feature was protecting a run whose entire output was then thrown away. That
+is worse than not having it, because it looks like progress. `generate()` now takes an
+`on_accept` callback and `_IncrementalWriter` appends and flushes each row as it passes.
+The second run had 26 pairs on disk through its first pause.
+
+This is the third distinct way this machine has taken work away, and the common thread is
+worth recording: on this laptop the binding constraint is thermal, and anything that does
+not checkpoint is at the mercy of it.
+
+### Step 1 — rebalance (done)
+
+`rebalance()` in `train_distill.py`, driven by `train.repeat_kinds`. Repeats named kinds
+deterministically and is applied *before* `--max-pairs`, so the ratio trained on is the
+rebalanced one. Deterministic on purpose: a sampled rebalance would make a run
+irreproducible, and an irreproducible run cannot be compared against the previous one.
+
+### Step 3 — brevity vs charter (done, and it was not a scorer bug)
+
+Investigated before changing anything. Charter's three failures are 34–35 characters
+against a 40-character floor. None contain a refusal marker; the Adderall refusal the
+charter pairs exist to fix **is** fixed. The floor is correct — it catches "Sure thing!"
+(11 characters, evasive, no refusal marker) and every golden reference clears it.
+
+So the axis was right and the corpus was wrong. Fixed with a 12-pair `SUBSTANTIVE_REPLIES`
+tier teaching the move the golden references make: answer the question, then add one clause
+of substance.
+
+Writing the tests for that tier caught three real defects in my own replies, which is the
+argument for writing them:
+
+- Two replies whose second clause named nothing concrete ("That is what today's session is
+  for").
+- One reply that cleared 40 characters by padding with reassurance *after* the answer
+  ("Nothing is lost, so there is no need to decide whether that was right").
+
+All three were fixed in the replies rather than by widening the assertions. A fourth test
+rejects hedging and padding outright, since both satisfy a length floor and both are worse
+than the terse reply they replaced.
+
 ## Retrain result (2026-10-02) — activation did NOT move
 
 Retrained from the base Qwen2.5-0.5B checkpoint on the 279-pair corpus (264 coaching
