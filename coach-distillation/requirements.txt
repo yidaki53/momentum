@@ -1,0 +1,29 @@
+# Runtime dependencies for the distillation pipeline.
+#
+# Deliberately SEPARATE from the project's pyproject.toml: Momentum the app must never
+# need torch. Install into a dedicated venv (see ../README.md).
+#
+# Licence note: all of these are MIT/Apache-2.0/BDS. Heretic is NOT listed here -- it is
+# AGPL-3.0 and is consumed as a pinned git submodule instead, never as a dependency.
+
+# --- distillation -------------------------------------------------------------
+torch>=2.4            # BSD-3-Clause
+transformers>=4.44     # Apache-2.0
+trl>=0.10              # Apache-2.0
+peft>=0.12             # Apache-2.0
+datasets>=2.20         # Apache-2.0
+accelerate>=0.33       # Apache-2.0
+sentencepiece          # Apache-2.0
+safetensors>=0.4       # Apache-2.0
+
+# --- quantisation -------------------------------------------------------------
+# llama.cpp's convert_hf_to_gguf.py + llama-quantize, run via subprocess against a
+# checkout of ggml-org/llama.cpp rather than installed as a Python package. Pin the
+# commit in ../scripts/quantize_gguf.py (LLAMA_CPP_REF) so a quantisation is
+# reproducible; quant formats do change between releases.
+# ggml-org/llama.cpp @ <pinned commit>
+
+# --- eval ---------------------------------------------------------------------
+# Only needed if you want teacher-judge scoring in addition to the deterministic
+# scorers. The deterministic axes (activation/dignity/grounding/brevity) need no model.
+scikit-learn>=1.5      # BSD-3-Clause

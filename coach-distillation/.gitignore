@@ -1,0 +1,13 @@
+# Pipeline outputs. Model weights are hundreds of MB and are redistributed as release
+# artefacts, not through git history.
+out/
+llama.cpp/
+.hf/
+checkpoints/
+
+# Heretic writes into its own checkout; keep that out of the submodule too.
+heretic/checkpoints/
+heretic/.hf/
+
+__pycache__/
+*.py[cod]
