@@ -54,9 +54,18 @@ REPO_ROOT = ROOT.parent
 
 # Concrete, small first actions. Deliberately narrow: the activation axis is about
 # whether the model hands over something startable, not about whether it is eloquent.
+# Concrete, small first actions. Deliberately broad on the verb and strict on the size.
+#
+# Calibration against the untrained base model showed the first version was far too
+# narrow: it scored 0.00 on both models while their replies plainly said "Write the
+# title of the first paper" and "Start with the first thing on your list". "write" and
+# "start" were missing from the verb list, so the axis was measuring the regex, not the
+# behaviour. The step-size half is kept strict, because neither model did bound its
+# steps -- and that is a real failure worth keeping visible.
 ACTION_RE = re.compile(
-    r"\b(open|set|put|stand up|sit down|pick up|write one|write down|fill in|click|"
-    r"drag|fold|take one|do one|do a|drink|book|send|reply|start a timer|set a timer)\b",
+    r"\b(open|set|put|stand up|sit down|pick up|write|writing|fill in|click|drag|fold|"
+    r"take|do|start|begin|try|send|reply|email|call|read|schedule|list|choose|pick|"
+    r"start a timer|set a timer)\b",
     re.IGNORECASE,
 )
 # What makes a step "small enough to start". Three ways a coach can bound it:

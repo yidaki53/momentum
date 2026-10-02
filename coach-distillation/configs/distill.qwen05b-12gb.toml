@@ -1,0 +1,100 @@
+# GPU-sized variant of distill.qwen05b.toml, for a 12GB card (RTX 4080).
+# The default config assumes more memory than we have: batch 8 x 1024 tokens with
+# Qwen's 151k vocab needs ~18GB for the float32 logits alone.
+
+# Distillation configuration for the Momentum coach.
+#
+# Nothing in this folder is a Momentum runtime dependency: torch/transformers/TRL are
+# installed separately (see README) so the app's own dependency set stays untouched.
+
+[student]
+# Exactly what the app already ships today. Same tokenizer, same quantisation family, so
+# the result drops straight into momentum/llm/downloader.py.
+model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+revision = "main"
+# The resulting GGUF is registered under this registry key.
+registry_name = "momentum-qwen05b"
+
+[teacher]
+# Same family as the student. Cross-family teachers make the student spend capacity
+# learning a token distribution instead of learning executive-dysfunction coaching.
+model_id = "Qwen/Qwen2.5-7B-Instruct"
+revision = "main"
+# KD. Logit distillation (forward-KL on token distributions) transfers more than the
+# teacher's sampled text, which matters when the student is this small.
+temperature = 1.0
+
+[train]
+method = "lora"
+lora_r = 32
+lora_alpha = 64
+lora_dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+learning_rate = 2e-4
+warmup_ratio = 0.03
+epochs = 3
+per_device_batch_size = 2
+gradient_accumulation_steps = 8
+max_seq_len = 640
+# At 0.5B a full fine-tune fits on a single 24GB card too; LoRA is chosen first so the
+# run is cheap and reversible, and full FT is the fallback if quality is short.
+seed = 20260901
+bf16 = true
+output_dir = "out/lora"
+# 12GB card: the logits tensor, not the weights, is what runs out of memory.
+gradient_checkpointing = true
+
+[merge]
+output_dir = "out/student-merged"
+
+[abliterate]
+enabled = true
+output_dir = "out/student-abliterated"
+config = "configs/heretic.momentum.toml"
+
+[quantize]
+# Q4_K_M is what the app ships today. The smaller candidates exist so we can measure the
+# smallest quantisation that still clears the bench -- specialisation is supposed to buy
+# headroom, and this is how we check that it did.
+primary = "Q4_K_M"
+candidates = ["Q4_K_M", "Q3_K_M", "IQ2_XXS"]
+output_dir = "out/gguf"
+
+[corpus]
+# NCBI E-utilities. No API key needed at these volumes; set one to be polite.
+email = "research@example.invalid"
+api_key = ""
+retmax_per_query = 200
+# Only records whose per-record licence is CC-BY or CC0 are kept. This list is the
+# allow-list; anything else is rejected by scripts/fetch_oa_corpus.py.
+allowed_licenses = ["CC0", "CC-BY", "CC-BY-2.0", "CC-BY-3.0", "CC-BY-4.0", "PD", "public domain"]
+queries = [
+  "\"executive function\" AND (depression OR ADHD)",
+  "\"behavioural activation\" AND (trial OR meta-analysis)",
+  "\"behavioral activation\" AND (trial OR meta-analysis)",
+  "\"acceptance and commitment therapy\" AND executive",
+  "\"self-compassion\" AND (depress* OR anxiety)",
+  "\"implementation intentions\" AND goal attainment",
+  "\"task initiation\" AND (adults OR children)",
+  "\"time blindness\" OR \"prospective memory\"",
+  "\"cognitive load\" AND \"task switching\"",
+  "\"motivational interviewing\" AND adherence",
+]
+
+[seeds]
+# Tier-1 first-party seeds: read at generation time, never vendored.
+knowledge_files = [
+  "../momentum/llm/knowledge.py",
+  "../SCIENCE.md",
+  "../ENCOURAGEMENTS.md",
+  "../momentum/domain/assessments/interpretation.py",
+]
+# Multiplier over the situation x skill x constraint cross-product. Quality gates, not
+# this number, decide the corpus size; the user asked for quality over quantity.
+pairs_per_combination = 1
+include_repair_pairs = true
+include_charter_pairs = true
+include_multiturn_episodes = true
+turns_min = 3
+turns_max = 6
+output = "data/synthetic/train.jsonl"

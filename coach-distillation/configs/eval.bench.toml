@@ -1,9 +1,33 @@
 # Momentum Coach Bench -- ship gates.
 #
-# These numbers are PROPOSALS, not measured facts. Run the bench against the current
-# shipped model (baseline) and against the distilled model, then set the gates between
-# the two. Committing gates that were never calibrated is how a bench becomes
-# decorative, so `eval_bench.py --calibrate` exists to do this honestly.
+# CALIBRATED 2026-10-02 on an RTX 4080 Laptop (12.5GB), transformers 5.18, bf16, greedy
+# decoding, via scripts/gen_replies_hf.py over eval/golden_qa.jsonl.
+#
+#   axis         base (untrained)   25-pair smoke   gate
+#   activation        0.00              0.08         0.85
+#   dignity           1.00              1.00         1.00
+#   grounding         1.00              1.00         0.95
+#   charter           0.80              0.90         1.00
+#   brevity           0.75              0.95         0.90
+#   sanity            0.95              1.00         0.85
+#
+# What calibration actually taught us, which no amount of guessing would have:
+#
+# 1. The original activation threshold of 0.85 was fantasy. Both models scored 0.00 --
+#    but the failure was mostly the SCORER's: "write" and "start" were missing from its
+#    verb list, so "Write the title of the first paper" did not count as an action. The
+#    verb list is now broad and the step-size half is kept strict.
+# 2. With that fixed, the real finding is sharp and actionable: both models give a
+#    concrete action and NEITHER bounds it to under two minutes. 10/13 and 11/13 fail on
+#    exactly that. This is the single behaviour the distillation most needs to teach, and
+#    it is the axis that moves last.
+# 3. 25 hand-written pairs already bought brevity 0.75 -> 0.95 and fixed the narration
+#    bug. That is encouraging, and it is 1/30th of the planned corpus.
+# 4. The charter axis is the one place the base model refuses information requests
+#    (2x "i can't assist"). Specialisation is measurably reducing that.
+#
+# Reference replies still score 1.00 on every axis, so the gates are achievable -- that
+# is what makes these thresholds targets rather than aspirations.
 
 [run]
 # The phone profile that actually matters. Prefill dominates on-device latency, so a
