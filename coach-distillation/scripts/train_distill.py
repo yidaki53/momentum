@@ -92,6 +92,44 @@ def read_pairs(path: Path, limit: int = 0) -> list[dict[str, Any]]:
     return rows
 
 
+def rebalance(
+    rows: list[dict[str, Any]], repeats: dict[str, int]
+) -> list[dict[str, Any]]:
+    """Duplicate the rows whose ``kind`` is named in *repeats*, keeping the input order.
+
+    A 0.5B student learns the distribution it is shown. The bounded-action tier was 15
+    pairs against 264 coaching pairs -- 5.4% -- and the bounded retrain moved activation by
+    a single golden item. Repeating the hand-written tiers is the cheapest lever on that
+    ratio, and it is safe in a way that adding more teacher output is not: the gold tiers
+    are first-party and cannot be acceptance-biased, so repeating them cannot dilute them.
+
+    Deterministic on purpose. Sampling which rows to repeat would make a run
+    irreproducible, and an irreproducible training run cannot be compared against the one
+    before it.
+
+    ``limit`` is applied afterwards by the caller, so an experiment can rebalance and then
+    truncate to a fixed pair count.
+    """
+    if not repeats:
+        return rows
+    out: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    for row in rows:
+        out.append(row)
+        kind = str(row.get("kind", ""))
+        extra = int(repeats.get(kind, 0))
+        if extra > 0:
+            counts[kind] = counts.get(kind, 0) + 1
+            for _ in range(extra):
+                out.append(row)
+    if counts:
+        log.info(
+            "rebalanced: repeated %s",
+            ", ".join(f"{k} x{v + 1}" for k, v in counts.items()),
+        )
+    return out
+
+
 def to_messages(row: dict[str, Any]) -> list[dict[str, str]]:
     """Convert a pair into the exact chat shape the app sends at runtime.
 
@@ -381,6 +419,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not pairs:
         print(f"Corpus at {pairs_path} is empty.")
         return 1
+
+    # Rebalance AFTER reading and BEFORE the limit, so that the ratio the model actually
+    # trains on is the rebalanced one rather than a truncation of the raw file.
+    repeats = config.get("train", {}).get("repeat_kinds", {})
+    if repeats:
+        pairs = rebalance(pairs, {str(k): int(v) for k, v in repeats.items()})
+        if args.max_pairs:
+            pairs = pairs[: args.max_pairs]
     print(f"training on {len(pairs)} pairs from {pairs_path}")
 
     max_seq_len = int(config.get("train", {}).get("max_seq_len", 1024))

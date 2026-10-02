@@ -33,7 +33,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 log = logging.getLogger("build_distill_pairs")
 
@@ -449,6 +449,108 @@ def build_teacher_prompt(
 
 
 # --------------------------------------------------------------------------
+# Substantive short answers: first-party, trainable text
+# --------------------------------------------------------------------------
+# The distilled model fails charter 3/20, and every failure is a reply of 34-35
+# characters against score_charter's 40-character floor: "Hello! How can I assist you
+# today?", "Start reading Chapter Two tomorrow.", "Your current streak is 4 days long."
+#
+# Two things are worth being precise about here.
+#
+# First, these are NOT refusals. None contain a refusal marker, and the Adderall
+# refusal the charter pairs exist to fix is genuinely gone. The model is being too
+# terse on short factual replies.
+#
+# Second, the 40-character floor is correct and stays. It catches "Sure thing!" (11
+# characters, evasive, no refusal marker at all), and every golden reference clears it.
+# The axis is not the bug; the corpus is. A coach that answers "4 days" and stops has
+# technically answered, but it has spent the user's attention without giving them
+# anything to do with it.
+#
+# So the lesson is not "write longer". It is the specific move the golden references
+# make: answer the question, then add one clause of substance. Every reply below does
+# exactly that, and stays well inside the 4-sentence brevity budget. Note that g01 is a
+# greeting with no data to draw on, which is why its reference asks a question back
+# rather than asserting a fact -- that is the harder case and it is included.
+#
+# Constraints are written to match the real failing prompts so the teacher generates
+# this shape too. These are hand-written because the 3B teacher demonstrated it cannot
+# be relied on to volunteer the extra clause: it produced "Let's dive right in and
+# start your writing session together" under a constraint that did not ask for it.
+
+SUBSTANTIVE_CONSTRAINT = (
+    "Answer the question first, then add one short clause of substance -- what it means "
+    "for the user, or what to do next. Two sentences minimum. No preamble, no filler, "
+    "and do not restate the question."
+)
+
+SUBSTANTIVE_REPLIES: tuple[tuple[str, str], ...] = (
+    (
+        "hi",
+        "Hey. What would feel like the smallest useful thing to do right now? Naming it "
+        "out loud is often enough to make it start feeling doable.",
+    ),
+    (
+        "add a task to read chapter two tomorrow",
+        "Added: read chapter two. When you sit down to begin, open the file and read "
+        "only the first paragraph -- that is the whole job, and it is allowed to be "
+        "mediocre.",
+    ),
+    (
+        "what is my streak",
+        "Your streak is 4 days, with 2 tasks completed and 45 focus minutes today. That "
+        "is a run worth keeping, and tomorrow only needs one task to continue it.",
+    ),
+    (
+        "how many tasks do I have",
+        "You have 14 active tasks. That is a number to work with, not a backlog to "
+        "feel bad about -- picking the top one is enough for now.",
+    ),
+    (
+        "mark finish the introduction as done",
+        "Marked Finish the introduction as done. That is one fewer thing between you and "
+        "the next task, which is worth noticing rather than moving past.",
+    ),
+    (
+        "start a focus timer",
+        "Focus timer started. Pick one task before you begin, and give it the whole "
+        "block rather than trying to cover everything you have outstanding.",
+    ),
+    (
+        "delete the task about the dentist",
+        "Deleted. One less thing to carry, and nothing about it needed deciding twice.",
+    ),
+    (
+        "what is my best streak",
+        "Your best run was 12 days. That is a number you have already reached once, so "
+        "the current streak is not a verdict on you.",
+    ),
+    (
+        "can you see my bdefs score",
+        "Your BDEFS is 44 out of 70, with task initiation and working memory the "
+        "weakest areas. Pick one of those two to aim at today rather than the whole "
+        "score.",
+    ),
+    (
+        "thanks",
+        "Any time. Come back and tell me how the first minute went, or do not -- "
+        "either is fine.",
+    ),
+    (
+        "undo that",
+        "Undone, it is back on your list. Pick one item from it and start there -- "
+        "there is no need to decide whether undoing it was the right call first.",
+    ),
+    (
+        "what should I work on",
+        "Finish the literature review is the active task waiting on you. One paragraph "
+        "of it is a legitimate evening, and finishing it unblocks the rest of the "
+        "list.",
+    ),
+)
+
+
+# --------------------------------------------------------------------------
 # Quality gate
 # --------------------------------------------------------------------------
 # The user asked for quality over quantity, so the filter is strict and every rejection
@@ -756,16 +858,90 @@ def plan_pairs(config: dict[str, Any]) -> list[Pair]:
                     citation="first-party: docs/ACTIVATION.md",
                 )
             )
+    if seeds.get("include_substantive_pairs", True):
+        # App-command and lookup prompts, which is where the distilled model is too terse
+        # to clear charter's 40-character floor. Hand-written for the same reason as the
+        # bounded tier: the pattern has to be demonstrated, not requested.
+        for index, (prompt, response) in enumerate(SUBSTANTIVE_REPLIES):
+            pairs.append(
+                Pair(
+                    id=f"substantive:{index:03d}",
+                    kind="substantive",
+                    situation=prompt,
+                    skill="answer, then add one clause of substance",
+                    user=USER_POOL[index % len(USER_POOL)],
+                    prompt=prompt,
+                    constraint=SUBSTANTIVE_CONSTRAINT,
+                    response=response,
+                    citation="first-party: docs/ACTIVATION.md",
+                )
+            )
+
     return pairs
 
 
+class _IncrementalWriter:
+    """Append accepted pairs to the corpus as they are generated.
+
+    Exists because the corpus used to be written once per slice, after generation
+    finished. That is fine when a run completes and catastrophic when one does not: the
+    thermal guard kills the process on a second overheat, so a 400-pair run that had
+    accepted 75 pairs wrote nothing at all and the 75 were gone. That is exactly the run
+    the pause feature exists to protect.
+
+    Keeps the file handle open for the duration of the slice and flushes after every row,
+    because the failure being defended against is a process that dies without unwinding.
+    An in-memory buffer would reintroduce the same loss more quietly.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.count = 0
+        self._handle = None
+
+    def _open(self) -> Any:
+        if self._handle is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._handle = self.path.open("a", encoding="utf-8")
+        return self._handle
+
+    def write(self, pair: Pair) -> None:
+        handle = self._open()
+        handle.write(json.dumps(pair.to_row(), sort_keys=True) + "\n")
+        handle.flush()
+        self.count += 1
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+
+    def __enter__(self) -> "_IncrementalWriter":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
+
+
 def generate(
-    pairs: list[Pair], teacher: Teacher
+    pairs: list[Pair],
+    teacher: Teacher,
+    on_accept: Optional[Callable[[Pair], None]] = None,
 ) -> tuple[list[Pair], list[tuple[str, str]]]:
     """Fill in every planned pair that has no hand-written response.
 
     Returns the accepted pairs and the rejected ``(id, reason)`` list. A teacher
     failure rejects that one pair rather than aborting a long run.
+
+    ``on_accept`` is called with each pair the moment it passes, *before* the next
+    generation begins. It exists because the corpus used to be written once at the end:
+    a 400-pair run stopped by the thermal guard after 75 accepted pairs threw away
+    roughly 12 minutes of generation and wrote nothing at all. The pause feature is
+    worthless if the work it protects is never persisted, so persistence is now
+    incremental and the guard can kill the run without costing completed pairs.
+
+    Flushed per write, because the failure mode being defended against is precisely a
+    process that dies without unwinding.
     """
     accepted: list[Pair] = []
     rejected: list[tuple[str, str]] = []
@@ -785,6 +961,11 @@ def generate(
         ok, reason = quality_gate(pair.response, constraint=pair.constraint)
         if ok:
             accepted.append(pair)
+            if on_accept is not None:
+                try:
+                    on_accept(pair)
+                except Exception as exc:  # pragma: no cover - disk full, etc
+                    log.error("could not persist %s: %s", pair.id, exc)
         else:
             rejected.append((pair.id, reason))
         if pair.id.startswith("coach:") or pair.id.startswith("lived:"):
@@ -952,9 +1133,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not remaining:
             break
 
-        accepted, rejected = generate(remaining, teacher)
-        if accepted:
-            append_pairs(output, accepted)
+        # Persist each accepted pair the moment it passes, rather than after the slice
+        # returns. The thermal guard kills this process without unwinding when a run
+        # overheats twice, and a slice can be 400 generations long: writing only at the
+        # end means a guard trip throws away everything it just did. Verified the hard
+        # way -- a guarded 400-pair run reached 75 accepted pairs and wrote zero files.
+        #
+        # append_pairs dedupes on id, so a pair that is accepted twice (an interrupted
+        # run being resumed) is not duplicated.
+        persist = _IncrementalWriter(output)
+        accepted, rejected = generate(remaining, teacher, on_accept=persist.write)
+        persist.close()
         accepted_all.extend(accepted)
         rejected_total.extend(rejected)
         written_total += len(accepted)

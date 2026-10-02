@@ -109,6 +109,7 @@ pairs_per_combination = 1
 include_repair_pairs = true
 include_charter_pairs = true
 include_bounded_action_pairs = true
+include_substantive_pairs = true
 include_multiturn_episodes = true
 turns_min = 3
 turns_max = 6

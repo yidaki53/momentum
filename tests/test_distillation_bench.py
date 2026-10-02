@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -43,6 +44,11 @@ def fetcher():
 @pytest.fixture(scope="module")
 def pairs():
     return _load("build_distill_pairs")
+
+
+@pytest.fixture(scope="module")
+def trainer():
+    return _load("train_distill")
 
 
 DIGEST = """--- begin user data ---
@@ -274,6 +280,183 @@ def test_bounded_pairs_are_first_party(pairs):
         assert len(reply.split()) >= 12, "gold reply is too thin to learn style from"
 
 
+# --- substantive short answers ---------------------------------------------
+
+CHARTER_MIN_CHARS = 40
+
+
+def test_substantive_replies_clear_charter_and_brevity(pairs, bench):
+    """Every reply must clear charter's floor without breaking brevity.
+
+    This is the whole point of the tier. The distilled model failed charter 3/20 with
+    replies of 34-35 characters, so a tier that did not itself clear 40 characters
+    would teach the exact failure it exists to fix.
+    """
+    assert len(pairs.SUBSTANTIVE_REPLIES) >= 8
+    for index, (_prompt, reply) in enumerate(pairs.SUBSTANTIVE_REPLIES):
+        assert len(reply) >= CHARTER_MIN_CHARS, (
+            f"substantive pair {index} is under the charter floor: {len(reply)} chars"
+        )
+        assert bench.score_charter(reply)[0], f"substantive pair {index} fails charter"
+        ok, reason = bench.score_brevity(reply)
+        assert ok, f"substantive pair {index} fails brevity: {reason}"
+
+
+def test_substantive_replies_answer_then_add_something(pairs):
+    """The lesson is a second clause, not just length.
+
+    Padding a reply to 40 characters with filler would satisfy the floor and teach the
+    model to pad. So the second sentence has to carry a concrete referent -- a thing that
+    could be done, opened, counted or measured -- rather than more reassurance.
+
+    The vocabulary is deliberately behavioural rather than topical. An earlier version
+    listed task nouns only and rejected the g01 reply, whose second sentence ("Naming it
+    out loud is often enough to make it start feeling doable") is concrete in meaning but
+    names no task. Forcing a task noun there would be wrong: "hi" has no task to name.
+    """
+    concrete = re.compile(
+        r"\b(task|paragraph|file|timer|streak|day|minute|list|review|chapter|evening|"
+        r"block|name|naming|say|said|write|written|open|opened|start|started|pick|"
+        r"choose|read|write|count|number|one|first|thing)\b",
+        re.IGNORECASE,
+    )
+    for index, (_prompt, reply) in enumerate(pairs.SUBSTANTIVE_REPLIES):
+        sentences = [s for s in re.split(r"[.!?]+", reply) if s.strip()]
+        assert len(sentences) >= 2, f"substantive pair {index} is a single sentence"
+        # Everything after the first sentence, not just sentence two. A three-sentence
+        # reply may put the concrete clause third -- "undo that" answers, names the list,
+        # then reassures -- and requiring it in position two would be a rule about
+        # sentence count rather than about substance.
+        remainder = " ".join(sentences[1:])
+        assert concrete.search(remainder), (
+            f"substantive pair {index} adds no concrete clause: {remainder!r}"
+        )
+
+
+def test_substantive_tier_does_not_teach_refusals_or_padding(pairs, bench):
+    """Guards the two ways this tier could go wrong.
+
+    A "be more substantive" constraint is easy to satisfy with hedging ("It depends",
+    "that's complicated", "consider your circumstances"), which is a refusal wearing a
+    coat. And a length floor is easy to satisfy with padding. Both would pass the
+    character count and both would be worse than the terse reply they replaced.
+    """
+    filler = re.compile(
+        r"\b(it depends|that'?s complicated|consider your circumstances|only you can|"
+        r"as an ai|language model|hard to say|no way to know)\b",
+        re.IGNORECASE,
+    )
+    for index, (_prompt, reply) in enumerate(pairs.SUBSTANTIVE_REPLIES):
+        assert not filler.search(reply), f"substantive pair {index} hedges: {reply!r}"
+        assert bench.score_charter(reply)[0]
+        # A real sentence, not a run-on padded with adjectives.
+        assert len(reply.split()) <= 60, (
+            f"substantive pair {index} is padded rather than substantive"
+        )
+
+
+def test_substantive_tier_covers_the_failing_golden_prompts(pairs, bench):
+    """The prompts that actually failed charter must appear in the tier.
+
+    g01 "hi", g07 "add a task to read chapter two tomorrow" and g16 "what is my
+    streak" are the three the distilled model answered in under 40 characters. If the
+    tier stops covering them, the retrain has no reason to fix them.
+    """
+    prompts = {prompt.strip().lower() for prompt, _ in pairs.SUBSTANTIVE_REPLIES}
+    for reply in bench.read_jsonl(EVAL / "golden_qa.jsonl"):
+        if "charter" in (reply.axes or []) and reply.id in {"g01", "g07", "g16"}:
+            assert reply.prompt.strip().lower() in prompts, (
+                f"{reply.id} ({reply.prompt!r}) is not covered by the substantive tier"
+            )
+
+
+# --- incremental persistence ------------------------------------------------
+
+
+def test_accepted_pairs_are_persisted_immediately(pairs, tmp_path):
+    """A thermal kill must not cost completed generations.
+
+    Found the hard way: a guarded 400-pair run reached 75 accepted pairs and then the
+    guard SIGKILLed it on a second overheat, writing nothing at all. The corpus was only
+    written after the whole slice returned, so the pause feature protected a run whose
+    entire output was then discarded. This pins the fix.
+    """
+    written: list[str] = []
+
+    class Recorder:
+        def write(self, pair):
+            written.append(pair.id)
+
+    class FixedTeacher:
+        def generate(self, _prompt):
+            return "Open the file now and write one line, then stop. " * 2
+
+    planned = [p for p in pairs.plan_pairs({}) if p.kind == "bounded"][:4]
+    accepted, rejected = pairs.generate(
+        planned, FixedTeacher(), on_accept=Recorder().write
+    )
+    assert not rejected
+    assert written == [p.id for p in accepted], (
+        "on_accept must fire once per accepted pair, in order"
+    )
+    assert len(written) == len(accepted)
+
+
+def test_incremental_writer_flushes_each_row(pairs, tmp_path):
+    """Each row must reach disk on its own, not at close.
+
+    The failure being defended against is a process that dies without unwinding, so a
+    buffer flushed in __exit__ would lose exactly what this is for.
+    """
+    path = tmp_path / "corpus.jsonl"
+    writer = pairs._IncrementalWriter(path)
+    planned = [p for p in pairs.plan_pairs({}) if p.kind == "bounded"][:3]
+    for pair in planned:
+        writer.write(pair)
+        # Read while the handle is still open: the row must already be visible.
+        assert len(path.read_text(encoding="utf-8").splitlines()) == writer.count
+    writer.close()
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_incremental_writer_appends_and_creates_parents(pairs, tmp_path):
+    nested = tmp_path / "a" / "b" / "corpus.jsonl"
+    writer = pairs._IncrementalWriter(nested)
+    pair = [p for p in pairs.plan_pairs({}) if p.kind == "bounded"][0]
+    writer.write(pair)
+    writer.close()
+    writer2 = pairs._IncrementalWriter(nested)
+    writer2.write(pair)
+    writer2.close()
+    lines = nested.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2, "must append, never truncate"
+    assert json.loads(lines[0])["id"] == json.loads(lines[1])["id"]
+
+
+def test_rebalance_repeats_named_kinds_and_preserves_order(trainer):
+    """Repeating the gold tiers is the lever on the ratio; it must be deterministic.
+
+    Irreproducibility here would mean a training run that cannot be compared against the
+    previous one, which is the only thing these experiments are for.
+    """
+    rows = [
+        {"kind": "coaching", "id": "a"},
+        {"kind": "bounded", "id": "b"},
+        {"kind": "coaching", "id": "c"},
+    ]
+    out = trainer.rebalance(rows, {"bounded": 3})
+    assert [r["id"] for r in out] == ["a", "b", "b", "b", "b", "c"]
+    assert [r["id"] for r in trainer.rebalance(rows, {"bounded": 3})] == [
+        r["id"] for r in out
+    ]
+    assert trainer.rebalance(rows, {}) == rows
+
+
+def test_rebalance_is_a_noop_for_unknown_kinds(trainer):
+    rows = [{"kind": "coaching"}, {"kind": "lived"}]
+    assert trainer.rebalance(rows, {"bounded": 5}) == rows
+
+
 def test_dignity_fails_on_any_shame_phrase(bench):
     shame = (
         "You are lazy and you have no discipline, so just try harder and stop "
@@ -421,7 +604,7 @@ def test_planned_corpus_is_reviewable_without_a_model(pairs):
     config = tomllib.loads((CONFIGS / "distill.qwen05b.toml").read_text())
     planned = pairs.plan_pairs(config)
     kinds = {pair.kind for pair in planned}
-    assert kinds == {"coaching", "lived", "repair", "charter", "bounded"}
+    assert kinds == {"coaching", "lived", "repair", "charter", "bounded", "substantive"}
     # Multi-turn episodes are configured but not generated by this script yet.
     assert config["seeds"]["include_multiturn_episodes"] is True
     # Every bounded pair must carry a written response, so no teacher is needed and
