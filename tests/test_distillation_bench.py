@@ -517,3 +517,41 @@ def test_tokenisation_masks_the_prompt_out_of_the_loss():
     # The unmasked tail must correspond to the assistant content.
     tail = labels[len(masked) :]
     assert tail == example["input_ids"][len(masked) :]
+
+
+def test_an_empty_generation_never_overwrites_an_existing_corpus(pairs, tmp_path):
+    """Generation fails in many ways, and the old corpus is the way back.
+
+    An OOM, an interrupted run, a teacher that will not load -- in every one of those
+    cases write_pairs() gets an empty list. Overwriting a good corpus with nothing, at
+    exactly that moment, is the worst possible time to discover the loss.
+    """
+    existing = tmp_path / "train.jsonl"
+    pairs.write_pairs(
+        existing,
+        [
+            pairs.Pair(
+                id="k",
+                kind="repair",
+                situation="s",
+                skill="s",
+                user=pairs.USER_POOL[0],
+                prompt="p",
+                constraint="c",
+                response="a real reply",
+            )
+        ],
+    )
+    before = existing.read_text(encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="refusing to overwrite"):
+        pairs.write_pairs(existing, [])
+
+    assert existing.read_text(encoding="utf-8") == before, "the corpus was lost"
+
+
+def test_an_empty_generation_may_still_create_a_new_file(pairs, tmp_path):
+    """The guard is against overwriting, not against starting empty."""
+    target = tmp_path / "nested" / "train.jsonl"
+    pairs.write_pairs(target, [])
+    assert target.exists()

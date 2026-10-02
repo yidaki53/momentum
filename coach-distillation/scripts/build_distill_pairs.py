@@ -567,7 +567,19 @@ def generate(
 
 
 def write_pairs(path: Path, pairs: list[Pair]) -> None:
-    """Write JSONL, creating parent directories."""
+    """Write JSONL, creating parent directories.
+
+    An empty result never overwrites an existing corpus. Generation can fail partway --
+    an OOM, an interrupted run, a teacher that refuses to load -- and in every one of
+    those cases the previous corpus is the only thing standing between a long
+    regeneration and starting again from nothing. Losing it silently would be the worst
+    possible time to find out.
+    """
+    if not pairs and path.exists() and path.stat().st_size > 0:
+        raise RuntimeError(
+            f"refusing to overwrite the existing corpus at {path} with an empty one. "
+            "Generation produced no usable pairs; keep what you have and investigate."
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for pair in pairs:
@@ -621,8 +633,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         config.get("teacher", {}).get("model_id", "Qwen/Qwen2.5-7B-Instruct")
     )
     accepted, rejected = generate(pairs, teacher)
-    write_pairs(output, accepted)
-
     print(f"accepted {len(accepted)} / {len(pairs)}")
     if rejected:
         print(f"rejected {len(rejected)}; first five reasons:")
