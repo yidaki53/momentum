@@ -97,3 +97,14 @@ def test_assistance_caches_generated_text(monkeypatch) -> None:
     assert second is None
     assert values == ["One small step.", "One small step."]
     assist.clear_cache()
+
+
+def test_background_snippets_use_the_compact_prompt() -> None:
+    """The knowledge-base prompt made a Home nudge's prefill outlast a chat wait."""
+    import inspect
+
+    from momentum.llm import assist, prompts
+
+    source = inspect.getsource(assist.request_assistance)
+    assert "CHAT_SYSTEM_PROMPT" in source
+    assert len(prompts.CHAT_SYSTEM_PROMPT) < len(prompts.SYSTEM_PROMPT) / 2

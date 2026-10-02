@@ -22,7 +22,7 @@ from momentum.llm.engine import (
     get_engine,
     is_llm_available,
 )
-from momentum.llm.prompts import SYSTEM_PROMPT
+from momentum.llm.prompts import CHAT_SYSTEM_PROMPT
 
 log = logging.getLogger(__name__)
 
@@ -150,7 +150,9 @@ def request_assistance(
             engine = get_engine(getattr(conf, "llm_model", "tinyllama"))
             text = engine.generate(
                 [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    # The full knowledge-base prompt took minutes of prefill on a
+                    # phone, holding the slot a waiting chat reply needed.
+                    {"role": "system", "content": CHAT_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
                 max_tokens=max_tokens,
