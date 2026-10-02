@@ -2687,6 +2687,15 @@ class MomentumApp:
         def _on_done(full_text: str) -> None:
             """Called when generation is complete."""
             _hide_typing()
+            from momentum.llm.context import is_narrated_reply
+
+            if is_narrated_reply(full_text):
+                _add_message(
+                    "assistant",
+                    "The coach got confused and described its instructions "
+                    "instead of answering. Please send your message again.",
+                )
+                return
             if full_text:
                 # Save assistant message
                 db.add_llm_chat_message(

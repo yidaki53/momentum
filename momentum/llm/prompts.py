@@ -138,9 +138,34 @@ def build_chat_prompt(
     ]
     if asks_for_task_creation(user_message):
         messages.append({"role": "system", "content": _TASK_CREATION_INSTRUCTION})
-    # Add chat history
-    for msg in chat_history:
-        messages.append(msg)
-    # Add the new user message
+    messages.extend(_clean_history(chat_history, user_message))
     messages.append({"role": "user", "content": user_message})
     return messages
+
+
+def _clean_history(
+    chat_history: list[dict[str, str]], user_message: str
+) -> list[dict[str, str]]:
+    """Return history the model can safely continue from.
+
+    Drops narrated replies (a small model copies them verbatim), keeps only the
+    last of consecutive user turns left by failed replies, and removes the
+    current message, which callers save before building history.
+    """
+    from momentum.llm.context import is_narrated_reply
+
+    cleaned: list[dict[str, str]] = []
+    for msg in chat_history:
+        if msg.get("role") == "assistant" and is_narrated_reply(msg.get("content", "")):
+            continue
+        if cleaned and msg.get("role") == "user" and cleaned[-1].get("role") == "user":
+            cleaned[-1] = msg
+            continue
+        cleaned.append(msg)
+    if (
+        cleaned
+        and cleaned[-1].get("role") == "user"
+        and cleaned[-1].get("content", "").strip() == user_message.strip()
+    ):
+        cleaned.pop()
+    return cleaned

@@ -98,3 +98,53 @@ def test_task_intent_detection() -> None:
         "make me a task for the laundry",
     ):
         assert prompts.asks_for_task_creation(message), message
+
+
+_NARRATION = (
+    "[This user is now creating a task for today. They will write a short "
+    'introduction, such as "Today\'s Focus: [task]".]'
+)
+
+
+def test_narrated_reply_is_detected_but_task_markers_are_not() -> None:
+    assert ctx_mod.is_narrated_reply(_NARRATION)
+    assert not ctx_mod.is_narrated_reply("[[task: Call Sam]]")
+    assert not ctx_mod.is_narrated_reply("Hi! How is your day going?")
+
+
+def test_chat_prompt_drops_poisoned_history() -> None:
+    """The phone's saved history: a narrated reply, orphaned 'hi's, and the
+    current message already saved before the prompt was built."""
+    from momentum.llm import prompts
+
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": _NARRATION},
+        {"role": "user", "content": "hi"},
+        {"role": "user", "content": "hi"},
+        {"role": "user", "content": "hello"},
+    ]
+    turns = [
+        m
+        for m in prompts.build_chat_prompt("hello", "ctx", history)
+        if m["role"] != "system"
+    ]
+
+    assert turns == [{"role": "user", "content": "hello"}]
+
+
+def test_chat_prompt_keeps_a_normal_exchange() -> None:
+    from momentum.llm import prompts
+
+    history = [
+        {"role": "user", "content": "I can't start"},
+        {"role": "assistant", "content": "That's common. Try two minutes."},
+        {"role": "user", "content": "ok"},
+    ]
+    turns = [
+        m
+        for m in prompts.build_chat_prompt("ok", "ctx", history)
+        if m["role"] != "system"
+    ]
+
+    assert turns == history

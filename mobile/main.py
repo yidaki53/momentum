@@ -360,6 +360,9 @@ try:
         extract_task_requests as _extract_task_requests,
     )
     from momentum.llm.context import (
+        is_narrated_reply as _is_narrated_reply,
+    )
+    from momentum.llm.context import (
         strip_task_markers as _strip_task_markers,
     )
 except Exception:  # pragma: no cover - the llm package is optional
@@ -372,6 +375,15 @@ except Exception:  # pragma: no cover - the llm package is optional
 
     def _strip_task_markers(text):  # type: ignore[misc]
         return (text or "").strip()
+
+    def _is_narrated_reply(text):  # type: ignore[misc]
+        return False
+
+
+_NARRATED_REPLY_MSG = (
+    "The coach got confused and described its instructions instead of "
+    "answering. Please send your message again."
+)
 
 
 def _available_model_specs() -> list:
@@ -3255,6 +3267,9 @@ class CoachScreen(Screen):
             if getattr(child, "_coach_reply", False):
                 chat.remove_widget(child)
                 break
+        if _is_narrated_reply(raw):
+            self._add_message("assistant", _NARRATED_REPLY_MSG)
+            return
         self._add_message("assistant", text)
         if task_titles:
             self._offer_task_creation(task_titles)

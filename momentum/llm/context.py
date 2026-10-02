@@ -167,6 +167,17 @@ def strip_task_markers(text: str) -> str:
     return cleaned.strip()
 
 
+def is_narrated_reply(text: str) -> bool:
+    """Return True for a reply that narrates instead of answering.
+
+    Small models sometimes answer with a bracketed description of the prompt
+    ("[This user is now creating a task...]"). Such a reply must be neither shown
+    as advice nor kept in history, where the model copies it on every later turn.
+    """
+    stripped = (text or "").lstrip()
+    return stripped.startswith("[") and not stripped.lower().startswith("[[task")
+
+
 def recency_halflife_weight(age: int, halflife: float) -> float:
     """Return an exponential recency weight for a message *age* turns back.
 
