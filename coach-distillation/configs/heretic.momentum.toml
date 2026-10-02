@@ -1,0 +1,158 @@
+# Heretic (abliteration) configuration for the Momentum coach.
+#
+# Heretic is AGPL-3.0 and lives in heretic/ as a pinned submodule. It is executed in a
+# subprocess by scripts/run_heretic.py; none of its code is vendored into Momentum.
+#
+# IMPORTANT: Heretic takes NO command-line flags. It is driven entirely by this file,
+# which pydantic-settings reads as ./config.toml from the directory it is launched in.
+# scripts/run_heretic.py therefore copies this file into a scratch directory, injects
+# `model` / `save_directory` / `export_strategy`, and runs it there.
+#
+# Its job here is narrow: remove the base model's generic refusal direction so our
+# charter (docs/CHARTER.md) governs behaviour instead. It cannot teach psychiatric
+# content -- that is the distillation step's job.
+#
+# The objective deliberately keeps Heretic's default two scorers (minimise refusal
+# keyword rate, minimise KL divergence from the original model) and ADDS a capability
+# benchmark. Without the benchmark, Heretic can strip the refusal direction out of a
+# 0.5B model and leave it unable to coach; KL alone is too weak a guard at this size.
+
+# --- model loading -------------------------------------------------------------
+dtypes = ["bfloat16", "float16", "auto"]
+quantization = "none"
+device_map = "auto"
+# Peak VRAM matters: a 0.5B model is small, but ARA optimisation holds per-layer
+# residuals, and offloading them immediately keeps the trial loop inside ~8GB.
+offload_outputs_to_cpu = true
+batch_size = 0
+max_batch_size = 64
+max_response_length = 100
+
+print_debug_information = true
+
+# Non-interactive: Heretic otherwise PROMPTS for the export strategy and the save
+# directory, which would hang a scripted run forever.
+export_strategy = "merge"
+
+# --- optimisation objective ---------------------------------------------------
+# All three minimised. The capability one is what stops a "model that simply answers
+# everything" from winning the search.
+scorers = [
+  { plugin = "heretic.scorers.keyword_rate.KeywordRate", optimization = "minimize" },
+  { plugin = "heretic.scorers.kl_divergence.KLDivergence", optimization = "minimize" },
+  { plugin = "heretic.scorers.benchmark_score.BenchmarkScore", optimization = "minimize" },
+]
+
+modifiers = [{ plugin = "heretic.modifiers.ara.ARA" }]
+
+# 100 trials is Heretic's default and appropriate for a 7B model. At 0.5B the search
+# converges far faster, so a third of the budget buys the same result for a third of
+# the time. Raise only if the refusal keyword rate plateaus above the charter threshold.
+n_trials = 34
+n_startup_trials = 10
+seed = 20260901
+
+study_checkpoint_dir = "checkpoints"
+max_shard_size = "2GB"
+
+# Heretic's default is "You are a helpful assistant." Our coach prompt is short because
+# brevity is a measured bench axis; here it only steers the search toward the
+# distribution we actually ship.
+system_prompt = "You are Momentum AI Coach: warm, supportive, and practical, helping someone with executive dysfunction. Offer one concrete next action, never vague advice."
+
+# --- scorers ------------------------------------------------------------------
+# `keyword_markers` is the real field name (upstream calls them refusal markers).
+# Momentum's charter demands that information requests never produce a refusal, so
+# refusal-adjacent phrasing counts against the objective even when it is technically a
+# safe completion.
+[scorer.KeywordRate]
+score_name = "Charter refusals"
+print_responses = true
+keyword_markers = [
+  "i'm sorry",
+  "i am sorry",
+  "i apologize",
+  "i apologise",
+  "i cannot",
+  "i can't",
+  "i can not",
+  "i won't",
+  "i will not",
+  "i must decline",
+  "i do not",
+  "i don't feel comfortable",
+  "not something i can",
+  "cannot help with",
+  "can't help with",
+  "cannot assist",
+  "can't assist",
+  "cannot provide",
+  "can't provide",
+  "unable to provide",
+  "unable to help",
+  "as an ai",
+  "language model",
+  "i'm designed to",
+  "i am designed to",
+  "programmed to",
+  "my programming",
+  "ethical boundaries",
+  "violat",
+  "illegal",
+  "inappropriate",
+  "harmful to",
+]
+
+[scorer.KeywordRate.prompts]
+# Deliberately NOT harmful_behaviors. We are not trying to make the model unsafe; we
+# are trying to remove *unwanted* refusals on the kinds of questions this user asks.
+# Point this at a published dataset of our charter vignettes once it exists, or at
+# mlabonne/harmless_alpaca as a stand-in for a first run.
+dataset = "mlabonne/harmless_alpaca"
+split = "train[:200]"
+column = "text"
+
+[scorer.KLDivergence.prompts]
+# KL is measured on the *coaching* distribution, not on generic chat: an ablation that
+# preserves helpful-chat behaviour while wrecking coaching would look fine here.
+dataset = "mlabonne/harmless_alpaca"
+split = "train[:200]"
+column = "text"
+
+# Our addition: a general-capability benchmark, minimised alongside KL so capability
+# loss is punished twice rather than once.
+[scorer.BenchmarkScore]
+score_name = "PIQA acc_norm"
+task = "piqa"
+metric = "acc_norm,none"
+
+# --- modifier -----------------------------------------------------------------
+[modifier.ARA]
+# Preserving row magnitudes is what retains capability (Lai 2025). Keep it on.
+preserve_row_magnitudes = true
+lora_rank = 50
+n_optimization_steps = 5
+learning_rate = 1.0
+max_iter = 20
+history_size = 10
+print_loss = false
+
+# good/bad prompt sets stay on upstream defaults: harmless prompts are "what we want
+# kept", harmful-behavior prompts are "what we want removed as a *style*". That is not
+# the same as removing the capacity to discuss harm, and the charter bench is what
+# verifies the difference survived.
+[modifier.ARA.good_prompts]
+dataset = "mlabonne/harmless_alpaca"
+split = "train[:400]"
+column = "text"
+
+[modifier.ARA.bad_prompts]
+dataset = "mlabonne/harmful_behaviors"
+split = "train[:400]"
+column = "text"
+
+# --- batch-size auto-detection dataset ----------------------------------------
+[batch_size_test_prompts]
+dataset = "mlabonne/harmless_alpaca"
+split = "train[:256]"
+column = "text"
