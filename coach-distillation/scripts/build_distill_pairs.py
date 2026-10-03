@@ -569,6 +569,41 @@ SHAME_PATTERNS = (
     r"\bsnap out of it\b",
 )
 
+# The gate's own shame list was a hardcoded copy of a subset of eval/shame_lexicon.txt,
+# and the two drifted apart the moment the lexicon grew. Observed directly: a retried
+# 7B reply of "Take a deep breath, and write down one sentence..." was ACCEPTED here and
+# REJECTED by the bench's dignity axis on the same phrase.
+#
+# That is the worst kind of disagreement between these two files. The corpus gate decides
+# what the student trains on; the bench decides whether the student ships. When the gate
+# is weaker than the bench, the pipeline builds a corpus that teaches the student to fail
+# a release gate, and every later number is measuring our own plumbing rather than the
+# model.
+#
+# So the lexicon file is the single source and is loaded here too. SHAME_PATTERNS is kept
+# only for the regex forms the lexicon cannot express; if the two ever disagree, the
+# lexicon wins.
+SHAME_LEXICON_PATH = (
+    Path(__file__).resolve().parent.parent / "eval" / "shame_lexicon.txt"
+)
+
+
+def _load_shame_lexicon(path: Optional[Path] = None) -> tuple[str, ...]:
+    """Read the shared shame lexicon, lower-cased, ignoring comments and blanks."""
+    target = path or SHAME_LEXICON_PATH
+    try:
+        text = target.read_text(encoding="utf-8")
+    except OSError:  # pragma: no cover - only if the file is missing
+        return ()
+    return tuple(
+        line.strip().lower()
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    )
+
+
+SHAME_LEXICON: tuple[str, ...] = _load_shame_lexicon()
+
 DIAGNOSIS_PATTERNS = (
     r"\byou (have|are suffering from|might have) (adhd|depression|anxiety)\b",
     r"\bdiagnos(is|e|ed)\b",
@@ -657,6 +692,12 @@ def quality_gate(response: str, *, constraint: str) -> tuple[bool, str]:
     shame = _matches_any(SHAME_PATTERNS, text)
     if shame:
         return False, f"shame language ({shame})"
+    lowered = text.lower()
+    for phrase in SHAME_LEXICON:
+        if phrase in lowered:
+            # The same phrase the bench's dignity axis would fail on. Using one shared
+            # lexicon is what stops the corpus gate and the release gate disagreeing.
+            return False, f"shame language ({phrase!r})"
     diagnosis = _matches_any(DIAGNOSIS_PATTERNS, text)
     if diagnosis:
         return False, f"diagnosis language ({diagnosis})"
@@ -752,7 +793,14 @@ class Teacher:
         self._pipe = pipeline("text-generation", model=model, tokenizer=tokenizer)
         return self._pipe
 
-    def generate(self, prompt: str, *, max_new_tokens: int = 220) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_new_tokens: int = 220,
+        retry_note: str = "",
+        temperature: float = 0.0,
+    ) -> str:
         """Generate one coaching reply from the teacher.
 
         The prompt is wrapped in the model's chat template. Passing a raw string to a
@@ -764,6 +812,14 @@ class Teacher:
         """
         pipe = self._load()
         tokenizer = getattr(pipe, "tokenizer", None)
+        if retry_note:
+            # Greedy decoding means asking again returns a byte-identical answer, so a
+            # naive retry loop would burn N times the heat for zero extra yield. Naming
+            # the rule that was broken is what makes attempt 2 differ from attempt 1.
+            prompt = (
+                f"{prompt}\n\nYour previous attempt was rejected: {retry_note}\n"
+                "Write a different reply that avoids that specific problem."
+            )
         if tokenizer is not None and getattr(tokenizer, "chat_template", None):
             rendered = tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt}],
@@ -775,8 +831,11 @@ class Teacher:
         outputs = pipe(
             rendered,
             max_new_tokens=max_new_tokens,
-            # Low temperature: we want the teacher's best answer, not a sample of it.
-            do_sample=False,
+            # Greedy by default: the teacher's best answer, not a sample of it. Retries
+            # pass a retry_note instead, which changes the prompt rather than the
+            # sampling, so the first attempt stays deterministic and reproducible.
+            do_sample=temperature > 0,
+            **({"temperature": temperature} if temperature > 0 else {}),
             return_full_text=False,
         )
         return str(outputs[0]["generated_text"]).strip()
@@ -944,10 +1003,71 @@ class _IncrementalWriter:
         self.close()
 
 
+def _retry_hint(reason: str) -> str:
+    """Turn a gate rejection into an instruction the teacher can act on.
+
+    The raw reason is a diagnostic written for us ("action not bounded to a small step").
+    Pasting that at the teacher wastes the retry, because the model has no way to know
+    what the phrase is *supposed to mean*. Each reason maps to the concrete writing
+    instruction that would satisfy it.
+
+    Unmapped reasons fall through to the raw text rather than a generic message: a vague
+    hint is no worse than the diagnostic, and inventing a mapping for a reason we have
+    not seen would be guessing at the rubric.
+    """
+    if "bound attached to nothing concrete" in reason:
+        return (
+            'your action was named only in the abstract ("one thing", "get started"). '
+            "Name the actual item: one line of a specific document, one named task, one "
+            "named object."
+        )
+    if "action not bounded" in reason:
+        return (
+            "your action was not small enough to start. Make it one unit of work: one "
+            "line, one sentence, one paragraph, one item, or something that takes under "
+            "two minutes."
+        )
+    if "no concrete action verb" in reason:
+        return (
+            "your reply did not tell the user to do anything. Name one physical or "
+            "on-screen action they can take right now."
+        )
+    if "too short" in reason:
+        return (
+            "your reply was too short to be useful. Answer the question, then add one "
+            "clause of substance about what it means or what to do next."
+        )
+    if "too long" in reason:
+        return "your reply was too long. Cut it to two or three short sentences."
+    if "narrated" in reason or "bracketed" in reason:
+        return (
+            "you narrated your own process or used brackets. Reply only, in plain prose, "
+            "with no description of what you are doing."
+        )
+    if "shame language" in reason:
+        return (
+            "your reply used language that blames the user. Rewrite it to describe the "
+            "pattern as a brain behaviour rather than a character flaw."
+        )
+    if "diagnosis" in reason:
+        return (
+            "your reply diagnosed the user. Remove any diagnosis; describe the situation "
+            "without naming a condition."
+        )
+    if "cited figure" in reason:
+        return (
+            "your reply quoted a number that is not in the data block. Copy figures "
+            "exactly from the data, or do not state them."
+        )
+    return reason
+
+
 def generate(
     pairs: list[Pair],
     teacher: Teacher,
     on_accept: Optional[Callable[[Pair], None]] = None,
+    max_attempts: int = 1,
+    retry_temperature: float = 0.0,
 ) -> tuple[list[Pair], list[tuple[str, str]]]:
     """Fill in every planned pair that has no hand-written response.
 
@@ -963,22 +1083,53 @@ def generate(
 
     Flushed per write, because the failure mode being defended against is precisely a
     process that dies without unwinding.
+
+    ``max_attempts`` retries a rejected pair with a corrective note naming the rule it
+    broke. Decoding is greedy, so without the note a retry returns an identical answer
+    and the extra attempts are pure wasted heat -- which is why this is off by default
+    and has to be asked for.
     """
     accepted: list[Pair] = []
     rejected: list[tuple[str, str]] = []
     generated = 0
+    attempts_made = 0
     started = time.time()
     for pair in pairs:
         if not pair.response:
             prompt = build_teacher_prompt(
                 pair.prompt, pair.constraint, pair.user.digest(), pair.skill
             )
-            try:
-                pair.response = teacher.generate(prompt)
-            except Exception as exc:  # pragma: no cover - environment dependent
-                log.error("teacher failed for %s: %s", pair.id, exc)
-                rejected.append((pair.id, f"teacher error: {exc}"))
+            note = ""
+            for attempt in range(max(1, max_attempts)):
+                try:
+                    pair.response = teacher.generate(
+                        prompt,
+                        retry_note=note,
+                        temperature=retry_temperature if attempt else 0.0,
+                    )
+                except Exception as exc:  # pragma: no cover - environment dependent
+                    log.error("teacher failed for %s: %s", pair.id, exc)
+                    rejected.append((pair.id, f"teacher error: {exc}"))
+                    pair.response = ""
+                    break
+                attempts_made += 1
+                ok, reason = quality_gate(pair.response, constraint=pair.constraint)
+                if ok:
+                    break
+                note = _retry_hint(reason)
+                if attempt + 1 < max(1, max_attempts):
+                    log.info(
+                        "%s attempt %d rejected (%s); retrying with a corrective note",
+                        pair.id,
+                        attempt + 1,
+                        reason,
+                    )
+            else:
+                pass
+            if not pair.response:
                 continue
+            if pair.id.startswith("coach:") or pair.id.startswith("lived:"):
+                generated += 1
         ok, reason = quality_gate(pair.response, constraint=pair.constraint)
         if ok:
             accepted.append(pair)
@@ -1243,7 +1394,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         # append_pairs dedupes on id, so a pair that is accepted twice (an interrupted
         # run being resumed) is not duplicated.
         persist = _IncrementalWriter(output)
-        accepted, rejected = generate(remaining, teacher, on_accept=persist.write)
+        accepted, rejected = generate(
+            remaining,
+            teacher,
+            on_accept=persist.write,
+            max_attempts=int(config.get("seeds", {}).get("max_attempts", 1)),
+            retry_temperature=float(
+                config.get("seeds", {}).get("retry_temperature", 0.0)
+            ),
+        )
         persist.close()
         accepted_all.extend(accepted)
         rejected_total.extend(rejected)

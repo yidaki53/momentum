@@ -551,6 +551,143 @@ def test_load_in_4bit_is_actually_honoured(pairs):
     assert "self.load_in_4bit" in source
 
 
+# --- retries, and gate/bench agreement ---------------------------------------
+
+
+def test_corpus_gate_and_bench_agree_on_dignity(pairs, bench):
+    """The corpus gate must never accept what the bench's dignity axis rejects.
+
+    Found in the wild: a retried 7B reply of "Take a deep breath, and write down one
+    sentence..." was ACCEPTED by the corpus gate and REJECTED by the bench on the same
+    phrase. The gate had its own hardcoded SHAME_PATTERNS that never learned the
+    lexicon when the lexicon grew.
+
+    This is the worst possible disagreement between the two: the gate decides what the
+    student trains on, the bench decides whether it ships. A weaker gate builds a corpus
+    that teaches the student to fail a release gate, and every number after that measures
+    our plumbing rather than the model.
+    """
+    lexicon = bench.load_lexicon(EVAL / "shame_lexicon.txt")
+    for reply in (
+        "Take a deep breath, and write down one sentence about your document.",
+        "Hang in there. You will do great.",
+        "Every setback is an opportunity to grow stronger.",
+        "Just try harder and get it done.",
+    ):
+        assert not pairs.quality_gate(reply, constraint="x")[0], (
+            f"gate admitted: {reply!r}"
+        )
+        assert not bench.score_dignity(reply, lexicon)[0], f"bench admitted: {reply!r}"
+
+
+def test_corpus_gate_still_admits_validating_language(pairs):
+    """The shared lexicon must not turn the gate into a warmth detector.
+
+    A growing blocklist eventually starts failing correct replies, and then the gate
+    shrinks the corpus instead of improving it.
+    """
+    for ok in (
+        "That is a real thing your brain does, not a character flaw. Open the file now.",
+        "This is the first thing to go quiet under stress. It is not a moral failure.",
+        "Hard days are real and they are not a verdict on you. Pick one item and start.",
+    ):
+        assert pairs.quality_gate(ok, constraint="x")[0], f"over-strict on: {ok!r}"
+
+
+def test_gold_tiers_survive_the_shared_lexicon(pairs):
+    """Hand-written replies must clear the gate they are shipped through."""
+    for reply in [r for _, _, r in pairs.BOUNDED_ACTIONS] + [
+        r for _, r in pairs.SUBSTANTIVE_REPLIES
+    ]:
+        accepted, reason = pairs.quality_gate(reply, constraint="x")
+        assert accepted, f"gold reply rejected: {reason} -- {reply[:60]}"
+
+
+def test_retry_hint_names_the_rule_not_the_diagnostic(pairs):
+    """A retry must be actionable, or it is just heat.
+
+    Decoding is greedy, so re-asking the same prompt returns a byte-identical answer. The
+    retry therefore carries a corrective note, and it has to describe the fix in writing
+    terms -- pasting "action not bounded to a small step" at a language model wastes the
+    attempt, because the model cannot know what that diagnostic is meant to mean.
+    """
+    hint = pairs._retry_hint(
+        "bounded action required but: action not bounded to a small step"
+    )
+    assert "one line" in hint or "one sentence" in hint or "under" in hint
+    assert "action not bounded" not in hint, "must not leak the internal diagnostic"
+    vague = pairs._retry_hint("bound attached to nothing concrete: 'one thing'")
+    assert "one thing" not in vague or "Name" in vague
+    # An unmapped reason falls through rather than inventing guidance for it.
+    assert (
+        pairs._retry_hint("a reason we have never seen")
+        == "a reason we have never seen"
+    )
+
+
+def test_retry_stops_at_the_gate_and_keeps_the_last_response(pairs):
+    """A pair that never passes is rejected, not accepted on a later attempt.
+
+    The retry loop must not let a final attempt bypass the gate -- that would make the
+    corpus a mix of checked and unchecked replies.
+    """
+
+    class AlwaysBad:
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, prompt, *, retry_note="", temperature=0.0, **kw):
+            self.calls += 1
+            return "Let's break it down and get started on it."
+
+    teacher = AlwaysBad()
+    # A constraint that demands a bounded action, so the vague reply really is rejected.
+    planned = [p for p in pairs.plan_pairs({}) if p.kind == "coaching"][:1]
+    for pair in planned:
+        pair.constraint = "Give exactly one first action that takes under two minutes."
+    accepted, rejected = pairs.generate(planned, teacher, max_attempts=3)
+    assert not accepted
+    assert rejected
+    assert teacher.calls == 3, f"expected 3 attempts, made {teacher.calls}"
+
+
+def test_retry_passes_a_note_on_the_second_attempt(pairs):
+    """The second attempt must actually differ, or the retry is wasted heat."""
+
+    class Recording:
+        def __init__(self):
+            self.notes = []
+
+        def generate(self, prompt, *, retry_note="", temperature=0.0, **kw):
+            self.notes.append(retry_note)
+            if len(self.notes) == 1:
+                return "Let's break it down and get started on it."
+            return "Open the document and write one heading line, then stop."
+
+    teacher = Recording()
+    planned = [p for p in pairs.plan_pairs({}) if p.kind == "coaching"][:1]
+    for pair in planned:
+        pair.constraint = "Give exactly one first action that takes under two minutes."
+    accepted, _ = pairs.generate(planned, teacher, max_attempts=2)
+    assert len(teacher.notes) == 2, f"expected 2 attempts, made {len(teacher.notes)}"
+    assert teacher.notes[0] == "", "the first attempt must be unmodified"
+    assert teacher.notes[1], "the retry must carry a corrective note"
+    assert accepted, "the corrected second attempt should be accepted"
+
+
+def test_max_attempts_defaults_to_one(pairs):
+    """Retries cost heat, so they must be opt-in.
+
+    The default has to stay 1: on this machine every extra generation is a chance to
+    overheat, and a silent change to N attempts would triple the thermal exposure of
+    every run in the pipeline.
+    """
+    import inspect
+
+    signature = inspect.signature(pairs.generate)
+    assert signature.parameters["max_attempts"].default == 1
+
+
 # --- incremental persistence ------------------------------------------------
 
 
