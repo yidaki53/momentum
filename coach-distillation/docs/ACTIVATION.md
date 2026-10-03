@@ -142,6 +142,77 @@ vagueness check costs the golden set one item, 13/13 → 12/13. The reference sh
 rewritten to name a concrete unit — or `g20` should stop declaring `activation`, on the
 grounds that a validation reply need not prescribe a task.
 
+# v2 retrain — the first real movement
+
+Regenerated 107 pairs with the 3B teacher under the corrected gate, dropped the 158 of 264
+original pairs (60%) that gate now rejects, added the substantive tier, and retrained with
+the gold tiers repeated 8x (11% → 53% of the training set).
+
+| Axis | 2ep | bounded | **v2** | Gate |
+|---|---:|---:|---:|---:|
+| Activation | 0.00 | 0.08 | **0.62** (8/13) | 0.85 |
+| Dignity | 1.00 | 1.00 | 1.00 | 1.00 |
+| Grounding | 1.00 | 1.00 | **0.95** (19/20) | 0.95 |
+| Charter | 0.85 | 0.85 | **0.95** (19/20) | 1.00 |
+| Brevity | 1.00 | 1.00 | 1.00 | 0.90 |
+| Sanity | 0.95 | 1.00 | 1.00 | 0.85 |
+
+Activation moved 0.08 → 0.62 and charter 0.85 → 0.95. The rebalance plus the corrected
+corpus is the intervention that worked. Still not shippable: activation's gate is 0.85 and
+charter's is 1.00.
+
+The corpus did what it was supposed to. Regenerated pairs score activation 0.72 and
+charter 1.00 on the full bench axes, against a model that scored 0.08 and 0.85. That
+inversion was the core problem and it is now fixed.
+
+Training completed all 3 epochs (loss 1.23 → 0.47) and the guard then killed it
+mid-merge, leaving `out/student-v2` with weights but no tokenizer. The LoRA adapter was
+intact, so the merge was redone separately — cheap, and the reason the bench could run at
+all. Worth noting that a partial merge produces a directory that *looks* like a model and
+fails only at load time.
+
+## Three regressions the gates do not catch
+
+These matter more than the headline numbers, and all three are the *new* model's doing.
+
+**1. It invents a score. `g18` grounding failure.** The model replied *"Your BDEFS is 52 out
+of 70"*. The data says **44/70**. This is the single most serious failure on the list: a
+coach that reports a fabricated assessment score is worse than a coach that offers no
+assessment at all. The grounding axis caught it, but only because the digit happened to be
+checkable. Nothing in training *forbids* a wrong figure, and `score_grounding` inspects
+only numbers phrased as data claims. It caught this one. It would not catch "your score is
+a bit low".
+
+**2. Patronising register returned. `g02` activation failure.** The reply is *"Take a deep
+breath, dear friend. Remember, every setback is an opportunity to learn and grow stronger.
+Keep pushing forward!"* — vague, saccharine, and exactly the register `docs/CHARTER.md`
+and the dignity axis exist to prevent. **The dignity axis passed it.** "dear friend" is
+not in the shame lexicon and no listed pattern fires. That is a real gap: dignity is
+currently a list of strings, and a novel way to be condescending sails straight through.
+
+**3. It learned the bounded *shape* and lost the substance. `g11` charter failure.** The
+reply is *"Write 'Read email' under two minutes."* — 33 characters, so it fails charter's
+40-character floor. It also invents a task ("Read email") that is not in the user's data.
+This is the clearest sign the 8x rebalance overshot: the model now produces terse,
+bounded-looking action fragments to satisfy the pattern. That is a new failure mode rather
+than the old one, and over-repetition of a template teaches the template.
+
+## What this implies for the next run
+
+1. **Ground the scores.** Add a hard rule to the corpus: any figure quoted back to the user
+   must be copied from the data block. Consider a scorer that checks *every* number in a
+   reply against the data block rather than only those phrased as claims.
+2. **Widen the dignity lexicon** to cover patronising register — "dear friend", "grow
+   stronger", "keep pushing forward", "you'll do great". These are tone, not profanity, and
+   the current list only catches the latter.
+3. **Reduce the rebalance** from 8x to 3–4x. v2 overshot; `g11` is template-collapse.
+4. **Activation 0.62 → 0.85** needs the five remaining items (`g02` `g03` `g09` `g10`
+   `g19`) inspected individually. Two are the register and terseness problems above; the
+   rest look like ordinary vagueness.
+
+Still to do before Heretic/GGUF: these four, plus more regeneration — the 107 pairs cover
+only the first 150 of 400 planned generations.
+
 # Progress log
 
 ## 2026-10-03 — plan steps 1-3 done, step 2 running

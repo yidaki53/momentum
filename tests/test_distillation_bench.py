@@ -370,6 +370,122 @@ def test_substantive_tier_covers_the_failing_golden_prompts(pairs, bench):
             )
 
 
+# --- dignity: patronising register -----------------------------------------
+
+
+def test_dignity_catches_patronising_register(bench):
+    """Warm condescension is the same clinical harm as hostility, and it was passing.
+
+    v2 replied to g02 with "Take a deep breath, dear friend. Remember, every setback
+    is an opportunity to learn and grow stronger. Keep pushing forward!" and scored
+    dignity 1.00. The lexicon only knew anticipated phrasings, so a new way to be
+    condescending sailed through.
+
+    Patronising register is harder to catch than hostility precisely because it carries
+    no accusation: it is being kind *at* someone rather than *with* them. "Every setback
+    is an opportunity" also hands a person with executive dysfunction the reframe the app
+    exists to dismantle.
+
+    The lexicon is passed explicitly, exactly as ``evaluate()`` does. Calling the scorer
+    bare was how the first version of this test failed while the scorer was working
+    perfectly -- the failure was in the test, not the code, and it is easy to mistake one
+    for the other.
+    """
+    lexicon = bench.load_lexicon(EVAL / "shame_lexicon.txt")
+    assert not bench.score_dignity(
+        "Take a deep breath, dear friend. Remember, every setback is an opportunity to "
+        "learn and grow stronger. Keep pushing forward!",
+        lexicon,
+    )[0]
+    for phrase in (
+        "You will do great, just keep pushing forward.",
+        "Hang in there, believe in yourself.",
+        "Every setback is an opportunity to grow.",
+        "Take a deep breath. You are stronger than you think.",
+    ):
+        assert not bench.score_dignity(phrase, lexicon)[0], f"admitted: {phrase!r}"
+
+
+def test_dignity_still_admits_plain_validation(bench):
+    """Widening the lexicon must not reject warm, non-patronising validation.
+
+    The failure mode of a growing blocklist is that it starts failing correct replies and
+    the dignity gate becomes noise. Validating language is allowed and required.
+    """
+    lexicon = bench.load_lexicon(EVAL / "shame_lexicon.txt")
+    for ok in (
+        "That is a real thing your brain does, not a character flaw. Open the file now.",
+        "You got 44 out of 70 today, which is data rather than a verdict.",
+        "This is the first thing to go quiet under stress. It is not a moral failure.",
+        "Hard days are real and they are not a verdict on you. Pick one item and start.",
+    ):
+        assert bench.score_dignity(ok, lexicon)[0], f"over-strict on: {ok!r}"
+
+
+def test_gold_references_still_clear_dignity(bench):
+    """The reference set is the ceiling; widening a scorer must not lower it."""
+    replies = bench.read_jsonl(EVAL / "golden_qa.jsonl")
+    lexicon = bench.load_lexicon(EVAL / "shame_lexicon.txt")
+    failing = [r.id for r in replies if not bench.score_dignity(r.response, lexicon)[0]]
+    assert not failing, f"lexicon now rejects the golden references: {failing}"
+
+
+# --- grounding: figures must come from the data ----------------------------
+
+
+def test_grounding_rejects_an_invented_bdefs_score(bench):
+    """A fabricated assessment score is the worst reply the model can give.
+
+    v2 answered g18 with "Your BDEFS is 52 out of 70" when the data says 44/70. A coach
+    that reports a made-up score is worse than one that reports none, because the user
+    cannot tell it apart from a real one.
+    """
+    user_data = (
+        "--- begin user data ---\n"
+        "Active tasks: Write introduction\n"
+        "BDEFS: 44/70, task initiation and working memory lowest\n"
+        "--- end user data ---"
+    )
+    assert not bench.score_grounding(
+        "Your BDEFS is 52 out of 70, with task initiation the weakest area.",
+        user_data=user_data,
+    )[0]
+    assert bench.score_grounding(
+        "Your BDEFS is 44 out of 70, with task initiation the weakest area.",
+        user_data=user_data,
+    )[0]
+
+
+def test_substantive_constraint_forbids_invented_figures(pairs):
+    """The corpus must state the rule, not merely be checked for it.
+
+    Every substantive reply that quotes a score must quote the one in the user data, so
+    the constraint has to tell the teacher that. Without it the teacher is free to
+    invent figures and the gate only notices afterwards.
+    """
+    lowered = pairs.SUBSTANTIVE_CONSTRAINT.lower()
+    assert "copied exactly from the data" in lowered
+    assert "do not state it" in lowered
+
+
+def test_substantive_replies_only_quote_figures_present_in_the_data(pairs, bench):
+    """No reply may quote a score absent from the digest it is trained against.
+
+    This caught two replies in the tier doing exactly what v2 did on g18 — stating
+    "14 active tasks" and "your best run was 12 days" when the digest the student is
+    trained against says 2 tasks and streak 0. Inventing a figure is the failure this
+    whole tier has to avoid, and hand-written gold is not exempt from it: the author
+    knows the shape of a good reply and invents a plausible number to fill it.
+    """
+    golden = bench.read_jsonl(EVAL / "golden_qa.jsonl")
+    digests = "\n".join(r.user_data for r in golden)
+    for index, (_prompt, reply) in enumerate(pairs.SUBSTANTIVE_REPLIES):
+        for figure in re.findall(r"\b(\d+)\b", reply):
+            assert figure in digests, (
+                f"substantive pair {index} quotes {figure!r}, which is in no digest"
+            )
+
+
 # --- incremental persistence ------------------------------------------------
 
 

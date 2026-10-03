@@ -481,7 +481,8 @@ def build_teacher_prompt(
 SUBSTANTIVE_CONSTRAINT = (
     "Answer the question first, then add one short clause of substance -- what it means "
     "for the user, or what to do next. Two sentences minimum. No preamble, no filler, "
-    "and do not restate the question."
+    "and do not restate the question. Every figure you quote must be copied exactly "
+    "from the data block; if it is not there, do not state it."
 )
 
 SUBSTANTIVE_REPLIES: tuple[tuple[str, str], ...] = (
@@ -503,8 +504,8 @@ SUBSTANTIVE_REPLIES: tuple[tuple[str, str], ...] = (
     ),
     (
         "how many tasks do I have",
-        "You have 14 active tasks. That is a number to work with, not a backlog to "
-        "feel bad about -- picking the top one is enough for now.",
+        "You have 2 active tasks, Write introduction and Email supervisor. That is a "
+        "number to work with, not a backlog -- picking the top one is enough for now.",
     ),
     (
         "mark finish the introduction as done",
@@ -522,8 +523,9 @@ SUBSTANTIVE_REPLIES: tuple[tuple[str, str], ...] = (
     ),
     (
         "what is my best streak",
-        "Your best run was 12 days. That is a number you have already reached once, so "
-        "the current streak is not a verdict on you.",
+        "I cannot see your best streak in the data I have, only the current one. Your "
+        "streak is 0 days today, so there is nothing to defend yet -- it is a starting "
+        "line rather than a verdict.",
     ),
     (
         "can you see my bdefs score",
