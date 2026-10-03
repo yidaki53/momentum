@@ -38,7 +38,7 @@ import re
 import statistics
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
@@ -669,12 +669,60 @@ def print_report(
             )
         print(f"    ttft slope: {slope:.2f}s per 1k prompt tokens")
 
+    vignettes = report.get("vignettes")
+    if vignettes:
+        unmeasured = vignettes.get("unmeasured", 0)
+        print(f"\n  Charter vignettes ({vignettes['source']}) -- not a release gate")
+        for axis in vignettes.get("axes", []):
+            if axis["total"]:
+                print(
+                    f"    {axis['axis']:<11} {axis['score']:.2f}"
+                    f"  ({axis['passed']}/{axis['total']})"
+                )
+        if unmeasured:
+            # The important line. A duty we have never scored against a model is a duty we
+            # cannot claim passes.
+            print(
+                f"    UNMEASURED: {unmeasured} of {vignettes.get('count', 0) + unmeasured}"
+                f" vignette(s) have no generated reply. Their duties are unverified,"
+                " not passing."
+            )
+
     print(f"\n  SHIP: {'yes' if report['ship'] else 'no'}")
     if not report["ship"]:
         print(
             "  Every axis must clear its gate. Do not register this model in "
             "momentum/llm/downloader.py yet."
         )
+
+
+def _replies_for_vignettes(vignette_path: Path, replies: list[Reply]) -> list[Reply]:
+    """Pair each vignette prompt with the model's reply to it, by exact prompt match.
+
+    Matching on prompt rather than id is deliberate: the vignette ids (c01..c10) do not
+    correspond to the golden ids (g01..g20), so an id join would silently drop
+    everything. Only the vignettes we actually have a reply for are returned -- a missing
+    one is reported as an unmeasured count, not scored as a pass.
+
+    The returned replies keep the vignette's own ``axes``, so the vignette is scored on
+    the axes its author intended rather than inheriting the golden set's.
+    """
+    by_prompt = {reply.prompt: reply for reply in replies if reply.response}
+    out: list[Reply] = []
+    for vignette in read_jsonl(vignette_path):
+        reply = by_prompt.get(vignette.prompt)
+        if reply is None:
+            continue
+        out.append(
+            replace(
+                reply,
+                id=vignette.id,
+                kind=vignette.kind,
+                axes=vignette.axes,
+                user_data=vignette.user_data or reply.user_data,
+            )
+        )
+    return out
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -698,6 +746,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="report scores without applying gates (for baselining)",
     )
     parser.add_argument("--skip-latency", action="store_true")
+    parser.add_argument(
+        "--vignettes",
+        default=None,
+        help=(
+            "score this charter vignette set as well, e.g. eval/asimov_vignettes.jsonl"
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -724,6 +779,44 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
 
     report = evaluate(replies, config)
+
+    # Charter vignettes are scored separately and deliberately kept OUT of report["ship"].
+    #
+    # docs/CHARTER.md's three duties were, until now, measured by nothing: the vignette
+    # file existed, eval.bench.toml named it, and one test checked its shape. Only 3 of its
+    # 10 prompts overlap the golden set, so 7 vignettes -- including both harm-adjacent,
+    # both disclosure and both autonomy -- had never been scored against any model.
+    #
+    # Reporting it separately rather than folding it into the gates is the honest choice:
+    # a number nobody has ever baselined cannot be a release gate tonight. It is printed
+    # and stored so the gap is visible, and can be promoted once there is a baseline to
+    # calibrate it against.
+    if args.vignettes:
+        vignette_path = Path(args.vignettes)
+        vignette_replies = _replies_for_vignettes(vignette_path, replies)
+        all_vignettes = read_jsonl(vignette_path)
+        if vignette_replies:
+            vignette_report = evaluate(vignette_replies, config)
+            report["vignettes"] = {
+                "source": str(vignette_path),
+                "count": len(vignette_replies),
+                # Stated explicitly because it is the whole point: a vignette with no
+                # reply is unmeasured, and silently omitting it would make a 3/10 score
+                # look like a pass rate rather than a coverage problem.
+                "unmeasured": len(all_vignettes) - len(vignette_replies),
+                "axes": vignette_report["axes"],
+                "failures": vignette_report["failures"],
+                # Not a gate. See the comment above.
+                "ship": None,
+            }
+        else:
+            report["vignettes"] = {
+                "source": str(vignette_path),
+                "count": 0,
+                "unmeasured": len(all_vignettes),
+                "note": "no generated replies matched the vignette prompts",
+            }
+
     if args.calibrate:
         report["ship"] = False
         report["calibrated"] = True

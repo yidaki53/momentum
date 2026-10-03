@@ -117,3 +117,13 @@ include_multiturn_episodes = true
 turns_min = 3
 turns_max = 6
 output = "out/regen-7b.jsonl"
+# Retry rejected pairs up to 3 times, each retry carrying a corrective note naming the
+# rule the previous attempt broke. Measured on the 5 hardest pairs: the 3B took 0/5, the
+# 7B with retries took 2/5.
+#
+# Retries are not free -- each is another generation on a machine that has overheated
+# twice -- so this is opt-in per config rather than a global default.
+max_attempts = 3
+# Sampling stays off. The retry varies the prompt, not the decode, so the first attempt
+# remains deterministic and a resumed run is reproducible.
+retry_temperature = 0.0

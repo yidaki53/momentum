@@ -688,6 +688,100 @@ def test_max_attempts_defaults_to_one(pairs):
     assert signature.parameters["max_attempts"].default == 1
 
 
+# --- charter vignettes ------------------------------------------------------
+
+
+def test_vignettes_are_paired_by_prompt_not_id(bench):
+    """Vignette ids (c01..) and golden ids (g01..) do not correspond.
+
+    An id join would silently drop every vignette and report a vacuous pass. Matching on
+    the prompt text is the only thing that works across the two files.
+    """
+    vignettes = bench.read_jsonl(EVAL / "asimov_vignettes.jsonl")
+    golden = bench.read_jsonl(EVAL / "golden_qa.jsonl")
+    assert {v.id for v in vignettes} & {g.id for g in golden} == set(), (
+        "this test assumes disjoint ids; if they ever overlap, revisit the join"
+    )
+    # Build replies for every vignette prompt so all should be matched.
+    replies = [
+        bench.Reply(
+            id=g.id,
+            prompt=g.prompt,
+            response="Adderall raises dopamine signalling in the prefrontal cortex; a "
+            "prescriber is the only way to get dosing right.",
+            user_data=g.user_data,
+        )
+        for g in golden
+    ]
+    for vignette in vignettes:
+        replies.append(
+            bench.Reply(
+                id=vignette.id,
+                prompt=vignette.prompt,
+                response="Information first, then context. A prescriber should be "
+                "involved and here is the mechanism.",
+                user_data=vignette.user_data,
+            )
+        )
+    matched = bench._replies_for_vignettes(EVAL / "asimov_vignettes.jsonl", replies)
+    assert len(matched) == len(vignettes), "every vignette must find its reply"
+    # Each must take the vignette's own id and axes, not the golden set's.
+    assert {m.id for m in matched} == {v.id for v in vignettes}
+    assert all("charter" in (m.axes or []) for m in matched)
+
+
+def test_unmeasured_vignettes_are_counted_not_scored_as_passing(bench):
+    """A vignette with no reply is unmeasured, and must be reported as such.
+
+    This is the failure the whole change exists to fix: 7 of 10 vignettes had no
+    generated reply, and reporting only the 3 that did would let a coverage gap read as a
+    100% pass rate.
+    """
+    golden = bench.read_jsonl(EVAL / "golden_qa.jsonl")
+    vignettes = bench.read_jsonl(EVAL / "asimov_vignettes.jsonl")
+    golden_prompts = {g.prompt for g in golden}
+    covered = sum(1 for v in vignettes if v.prompt in golden_prompts)
+    unmatched = len(vignettes) - covered
+
+    # Build replies only for the golden set, as gen_replies does today.
+    replies = [
+        bench.Reply(
+            id=g.id,
+            prompt=g.prompt,
+            response="Information first, then context, then a prescriber note.",
+            user_data=g.user_data,
+        )
+        for g in golden
+    ]
+    matched = bench._replies_for_vignettes(EVAL / "asimov_vignettes.jsonl", replies)
+    assert len(matched) == covered
+    assert len(vignettes) - len(matched) == unmatched
+    if unmatched:
+        # This is a live gap in our own coverage, recorded so it cannot be forgotten.
+        assert unmatched > 0, (
+            "if the golden set now covers every vignette, this test should be replaced "
+            "with one asserting unmeasured == 0"
+        )
+
+
+def test_vignette_scores_do_not_gate_ship(bench, capsys):
+    """The vignette suite is reported but must not silently become a release gate.
+
+    Nobody has ever baselined these numbers, so promoting them to a gate tonight would be
+    inventing a threshold. They are reported so the gap is visible, and can be gated once
+    there is a baseline to calibrate against.
+    """
+    import inspect
+    import re as _re
+
+    source = inspect.getsource(bench.main)
+    # The vignette block must set ship to None rather than feeding evaluate()'s ship.
+    assert '"ship": None' in source
+    assert _re.search(r"vignette_report\[[\"']ship", source) is None, (
+        "vignette results must not be merged into the main ship decision"
+    )
+
+
 # --- incremental persistence ------------------------------------------------
 
 
