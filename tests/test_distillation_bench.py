@@ -486,6 +486,71 @@ def test_substantive_replies_only_quote_figures_present_in_the_data(pairs, bench
             )
 
 
+# --- resume must not re-attempt known rejections ----------------------------
+
+
+def test_rejections_are_remembered_across_runs(pairs, tmp_path):
+    """A rejected pair must not be paid for again on the next run.
+
+    Only accepted ids were recorded (``load_done`` reads the corpus), so every resume
+    retried every rejection. Combined with ``plan_pairs`` grouping the grid by
+    constraint, that put the hardest slice first and the run spent its entire budget
+    re-attempting pairs the teacher had already failed -- two consecutive resumes made
+    zero progress, reporting "0 accepted, 50 rejected" in forty seconds.
+    """
+    corpus = tmp_path / "corpus.jsonl"
+    pairs.record_rejected(corpus, [("coach:1", "too short"), ("coach:2", "no action")])
+    assert pairs.load_rejected(corpus) == {
+        "coach:1": "too short",
+        "coach:2": "no action",
+    }
+    assert pairs.load_rejected(tmp_path / "missing.jsonl") == {}
+
+
+def test_rejection_sidecar_appends_rather_than_truncates(pairs, tmp_path):
+    """Same reason the corpus is appended: a kill must not lose the record."""
+    corpus = tmp_path / "corpus.jsonl"
+    pairs.record_rejected(corpus, [("a", "one")])
+    pairs.record_rejected(corpus, [("b", "two")])
+    assert set(pairs.load_rejected(corpus)) == {"a", "b"}
+
+
+def test_teacher_errors_stay_retryable(pairs, tmp_path):
+    """A teacher that failed to load is transient, not a verdict on the pair.
+
+    Blanket-skipping every rejection would permanently blacklist a whole corpus because
+    transformers was missing once -- which is exactly what happened earlier in this
+    project, where every pair was rejected as "teacher error: transformers is not
+    installed".
+    """
+    corpus = tmp_path / "corpus.jsonl"
+    pairs.record_rejected(corpus, [("coach:1", "teacher error: transformers missing")])
+    refused = {
+        pair_id
+        for pair_id, reason in pairs.load_rejected(corpus).items()
+        if not reason.startswith("teacher error")
+    }
+    assert not refused, "a transient teacher failure must not blacklist a pair"
+
+
+def test_load_in_4bit_is_actually_honoured(pairs):
+    """The flag was accepted and then ignored, so every run offloaded to the CPU.
+
+    That is the 78-80C failure the thermal guard exists to prevent, and it was reachable
+    by editing a config file that looked like it controlled it. Pinned as a source-level
+    check because the failure only appears as a slow, hot run in production.
+    """
+    import inspect
+
+    source = inspect.getsource(pairs.Teacher._load)
+    assert "load_in_4bit" in source, "Teacher._load no longer references the flag"
+    assert "BitsAndBytesConfig" in source, (
+        "4-bit must go through BitsAndBytesConfig; transformers 5.x rejects a bare kwarg"
+    )
+    # The guard: the flag must not be dropped when the kwarg dict is assembled.
+    assert "self.load_in_4bit" in source
+
+
 # --- incremental persistence ------------------------------------------------
 
 

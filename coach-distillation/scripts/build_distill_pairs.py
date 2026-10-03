@@ -724,12 +724,31 @@ class Teacher:
                 "venv, or use --plan to inspect the grid without generating."
             ) from exc
         tokenizer = AutoTokenizer.from_pretrained(self.model_id, revision=self.revision)
-        model = AutoModelForCausalLM.from_pretrained(
-            self.model_id,
-            revision=self.revision,
-            torch_dtype="auto",
-            device_map="auto",
-        )
+        # load_in_4bit was previously accepted by __init__ and then never used, so every
+        # teacher run offloaded to the CPU regardless of what the config said. That is the
+        # 78-80C failure this whole guard exists to prevent, and it was reachable by
+        # editing a config file that looked like it controlled it.
+        #
+        # transformers 5.x rejects a bare load_in_4bit kwarg; it has to arrive inside a
+        # BitsAndBytesConfig. Only build that config when 4-bit is actually wanted, so the
+        # common bf16 path stays free of bitsandbytes entirely.
+        kwargs: dict[str, Any] = {
+            "revision": self.revision,
+            "torch_dtype": "auto",
+            "device_map": "auto",
+        }
+        if self.load_in_4bit:
+            from transformers import (
+                BitsAndBytesConfig,  # type: ignore[import-not-found]
+            )
+
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype="float16",
+                bnb_4bit_quant_type="nf4",
+            )
+            kwargs["device_map"] = "auto"
+        model = AutoModelForCausalLM.from_pretrained(self.model_id, **kwargs)
         self._pipe = pipeline("text-generation", model=model, tokenizer=tokenizer)
         return self._pipe
 
@@ -989,6 +1008,63 @@ def generate(
     return accepted, rejected
 
 
+def load_rejected(path: Path) -> dict[str, str]:
+    """Ids previously rejected, mapped to the reason, from the ``.rejected.jsonl`` sidecar.
+
+    Accepted ids are recorded in the corpus itself (``load_done``), but rejections were
+    previously remembered nowhere, so every resume retried them first. Because
+    ``plan_pairs`` interleaves all five constraints, the hardest slice is always at the
+    front of the remaining list -- so a resume spent its entire budget re-attempting the
+    same pairs the teacher had already failed, and made no forward progress. That is
+    what turned a 50-minute run into a non-event.
+
+    A rejection is a statement about the teacher meeting that constraint, not a transient
+    error, so retrying it unchanged is wasted heat. The sidecar is advisory and best
+    effort: a missing or corrupt file costs one redundant attempt, not correctness.
+    """
+    sidecar = path.with_suffix(path.suffix + ".rejected.jsonl")
+    if not sidecar.exists():
+        return {}
+    out: dict[str, str] = {}
+    import json
+
+    with sidecar.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+                out[row["id"]] = row.get("reason", "")
+            except (json.JSONDecodeError, KeyError):
+                continue
+    return out
+
+
+def record_rejected(path: Path, rejected: Iterable[tuple[str, str]]) -> None:
+    """Append ``(id, reason)`` pairs to the rejection sidecar, deduplicated.
+
+    Written per row and flushed, for the same reason the corpus is: this process is
+    routinely killed by the thermal guard, and a rejection that is not recorded before
+    the kill is a rejection that gets paid for again.
+    """
+    if not rejected:
+        return
+    sidecar = path.with_suffix(path.suffix + ".rejected.jsonl")
+    try:
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        import json
+
+        with sidecar.open("a", encoding="utf-8") as handle:
+            for pair_id, reason in rejected:
+                handle.write(
+                    json.dumps({"id": pair_id, "reason": reason}, sort_keys=True) + "\n"
+                )
+            handle.flush()
+    except OSError as exc:  # pragma: no cover - disk full, permissions
+        log.error("could not record rejections to %s: %s", sidecar, exc)
+
+
 def load_done(path: Path) -> set[str]:
     """Ids already present in an existing corpus, so slicing can resume."""
     if not path.exists():
@@ -1096,6 +1172,29 @@ def main(argv: Optional[list[str]] = None) -> int:
             len(already),
             len(pairs),
         )
+
+    # Skip pairs the teacher has already failed. Without this, every resume re-attempts
+    # the same rejections first -- and because plan_pairs interleaves all five constraints,
+    # those sit at the front of the remaining list, so the run burns its whole budget on
+    # them and produces nothing. Observed directly: two resumes made zero progress while
+    # reporting "0 accepted, 25 rejected" in 22 seconds.
+    #
+    # Retryable (a teacher that failed to load) rejections are deliberately NOT skipped:
+    # a transient ImportError should not permanently blacklist a pair.
+    refused = {
+        pair_id
+        for pair_id, reason in load_rejected(output).items()
+        if not reason.startswith("teacher error")
+    }
+    if refused:
+        before = len(pairs)
+        pairs = [pair for pair in pairs if pair.id not in refused]
+        log.info(
+            "skipping %d previously rejected pairs (%d remaining to generate)",
+            before - len(pairs),
+            len(pairs),
+        )
+
     if not pairs:
         print(f"Nothing to do: {output} already holds {len(already)} pairs.")
         return 0
@@ -1148,6 +1247,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         persist.close()
         accepted_all.extend(accepted)
         rejected_total.extend(rejected)
+        # Record rejections immediately, for the same reason the corpus is written
+        # per-pair: the guard kills this process routinely, and a rejection that is not
+        # remembered before the kill is one the next run pays for again.
+        record_rejected(output, rejected)
         written_total += len(accepted)
         left = len(pairs) - len(accepted_all)
         print(
