@@ -215,6 +215,93 @@ only the first 150 of 400 planned generations.
 
 # Progress log
 
+## 2026-10-03 — 7B teacher with retries: the 3B ceiling was real and is now passed
+
+The 3B could not meet the four hardest constraints: **0 accepted out of 50**, every
+rejection genuine (*"Outline the main points you want to cover in your introduction"* against
+"give exactly one first action under two minutes"). That was a teacher-capability ceiling,
+not plumbing — and the 7B clears it.
+
+**Three fixes made it work**, each found by a probe rather than by reading:
+
+1. **`bitsandbytes` was missing.** Every 7B rejection was
+   `Using bitsandbytes 4-bit quantization requires bitsandbytes`. The 7B had never actually
+   run in this environment, which means the 43s/pair and 78–80°C figures recorded in
+   `distill.qwen05b.toml` are untested here and should not be trusted.
+2. **`Teacher._load` ignored `load_in_4bit` entirely** (fixed in `a3157a6`). Every teacher
+   run had been CPU-offloading regardless of config.
+3. **Rejections were never remembered**, so every resume re-attempted known failures and
+   made no forward progress.
+
+**Retries were the decisive change**, and only because decoding is greedy: re-asking the
+same prompt returns a byte-identical answer, so a naive retry loop would be N× the heat for
+zero yield. The retry carries a corrective note naming the rule that was broken, translated
+out of our diagnostic vocabulary into writing instructions the teacher can act on.
+
+Measured on the 5 hardest pairs:
+
+| Teacher | Attempts | Accepted |
+|---|---|---|
+| 3B | 1 | **0/5** |
+| 7B + 3 corrective retries | 3 | **2/5** |
+
+Full 7B run, in two guarded segments (each stopped by the guard on a third overheat, as
+designed):
+
+| | 3B corpus | **7B corpus** |
+|---|---:|---:|
+| pairs | 107 | **113** (and growing) |
+| activation | 0.72 | **0.84** |
+| dignity | 1.00 | 1.00 |
+| grounding | 1.00 | 1.00 |
+| charter | 1.00 | 1.00 |
+
+## The gate was weaker than the bench
+
+Found while testing retries: the 7B returned *"Take a deep breath, and write down one
+sentence…"*, which the **corpus gate accepted** and the **bench's dignity axis rejected**,
+on the same phrase. The gate carried its own hardcoded `SHAME_PATTERNS`, a subset copy of
+`eval/shame_lexicon.txt` that never learned the lexicon when it grew.
+
+This is the worst possible disagreement between these two files. The gate decides what the
+student trains on; the bench decides whether it ships. A weaker gate builds a corpus that
+teaches the student to *fail* a release gate, and every number after that measures our
+plumbing rather than the model.
+
+Both now read the one lexicon. Measured scope: gate and bench agree exactly; both gold
+tiers still pass (15/15, 12/12); all 20 golden references still pass; and only **4 of 107**
+existing pairs are newly caught — all of them the patronising register this was for.
+
+## The charter's three duties were measured by nothing
+
+`asimov_vignettes.jsonl` existed, `eval.bench.toml` named it, and one test checked its
+shape. **No code scored it.** Only 3 of its 10 prompts overlap the golden set, so 7
+vignettes had never been scored against any model — including both harm-adjacent, both
+disclosure and both autonomy.
+
+The bench now pairs vignettes with replies **by prompt, not id** (the ids `c01..c10` and
+`g01..g20` do not correspond, so an id join would silently drop everything and report a
+vacuous pass), and reports coverage explicitly:
+
+```
+Charter vignettes (eval/asimov_vignettes.jsonl) -- not a release gate
+  charter     1.00  (3/3)
+  UNMEASURED: 7 of 10 vignette(s) have no generated reply. Their duties are unverified, not passing.
+```
+
+Deliberately **not** folded into `ship`: nobody has baselined these numbers, so promoting
+them to a release gate would be inventing a threshold. On the three measurable duties the
+model passes charter and dignity 3/3. The other seven remain unverified — that is a
+coverage gap in `gen_replies_hf.py`, which only walks the golden set.
+
+## Still open
+
+- Generation is **resumable and incomplete** (113 of ~400 planned). Re-run
+  `configs/regen.7b.toml` until `load_done` reports nothing left.
+- No GGUF yet: `llama.cpp` is not cloned and `llama-quantize` is not built.
+- No model registration: activation is 0.62 on the bench against a 0.85 gate, and no HF
+  repo exists to point at.
+
 ## 2026-10-03 — plan steps 1-3 done, step 2 running
 
 **Step 2 (regenerate) is the long pole and is thermally bounded.** A 3B teacher run of
