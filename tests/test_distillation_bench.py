@@ -243,6 +243,106 @@ def test_corpus_gate_rejects_the_unbounded_replies_the_old_gate_accepted(pairs):
         assert "bounded action required" in reason
 
 
+def test_bounded_action_guidance_examples_agree_with_the_gate(pairs, bench):
+    """Every example in the teacher guidance must be true of the real gate.
+
+    The guidance was added because the 7B teacher kept producing the motivational-
+    register phrasing ("take one small step") that the activation axis rejects. It
+    works by demonstration, which means it is only worth anything while it agrees
+    with the scorer: an example the gate would reject teaches the teacher to fail,
+    and one the gate would accept but the bench rejects teaches it to overreach.
+
+    The first draft of this block listed "Type the subject line only" as accepted.
+    It has no ACTION_RE verb, so the gate rejected it. Pinning the examples stops
+    that class of drift being reintroduced silently.
+    """
+    guidance = pairs.BOUNDED_ACTION_GUIDANCE
+    # The rejected block is every quoted example ABOVE the "These are accepted" line.
+    # Filtering per-line on the word "rejected" does not work: only the block header
+    # carries that word, so its examples get parsed as accepted ones.
+    accepted_block = guidance.split("These are accepted")[1]
+    rejected_block = guidance.split("These are rejected")[1].split(
+        "These are accepted"
+    )[0]
+    accepted = [
+        line.split('"')[1] for line in accepted_block.splitlines() if '"' in line
+    ]
+    rejected = [
+        line.split('"')[1] for line in rejected_block.splitlines() if '"' in line
+    ]
+    assert len(accepted) >= 3, "guidance lost its worked examples"
+    assert len(rejected) >= 3, "guidance lost its rejected examples"
+    for reply in accepted:
+        ok, reason = bench.score_activation(reply)
+        assert ok, (
+            f"guidance shows a rejected example as accepted: {reason} -- {reply!r}"
+        )
+        accepted_by_gate, gate_reason = pairs.quality_gate(
+            reply, constraint=pairs.BOUNDED_ACTION_CONSTRAINT
+        )
+        # Refused, and that is correct: the corpus gate rejects guidance examples
+        # verbatim so a teacher that copies one is not rewarded for it. So these must
+        # pass the scorer that defines quality while still being gated out of the
+        # corpus. Asserting gate-acceptance here would contradict
+        # test_gate_rejects_a_reply_that_copies_a_guidance_example.
+        assert not accepted_by_gate, (
+            f"guidance example should be refused as a copy: {gate_reason}"
+        )
+        assert "copies a guidance example" in gate_reason
+    for reply in rejected:
+        ok, _ = bench.score_activation(reply)
+        assert not ok, f"guidance shows a failing example as rejected: {reply!r}"
+
+
+def test_bounded_action_guidance_is_only_sent_when_the_constraint_asks(pairs):
+    """Adding the guidance to every prompt would bias the whole corpus, not just
+    the bounded-action tier -- and the bias would be invisible at scoring time
+    because the bounded replies would simply look better."""
+    bounded = pairs.build_teacher_prompt(
+        "I cannot start.", pairs.BOUNDED_ACTION_CONSTRAINT, "digest"
+    )
+    assert "specific unit of work" in bounded
+
+    plain = pairs.build_teacher_prompt(
+        "I cannot start.", "Reply in two or three short sentences.", "digest"
+    )
+    assert "specific unit of work" not in plain
+
+
+def test_gate_rejects_a_reply_that_copies_a_guidance_example(pairs, bench):
+    """A bounded reply the teacher memorised is not a bounded reply it understood.
+
+    The guidance took the bounded-action acceptance rate from roughly 30% to 100% on a
+    20-pair probe. But 13 of those 20 accepted replies were the same string, verbatim
+    from the guidance: a perfect acceptance rate over a corpus with one distinct reply
+    in it. Every axis the gate scores is satisfied by one memorised sentence, so no
+    amount of axis-checking would have caught it.
+    """
+    copied = "Open the document and write one heading line, then stop."
+    assert copied in pairs.BOUNDED_ACTION_GUIDANCE
+    # It is a genuinely good reply -- this is not the gate rejecting it for weakness.
+    assert bench.score_activation(copied)[0]
+    accepted, reason = pairs.quality_gate(
+        copied, constraint=pairs.BOUNDED_ACTION_CONSTRAINT
+    )
+    assert not accepted, "guidance example accepted verbatim into the corpus"
+    assert "copies a guidance example" in reason
+
+
+def test_gate_still_accepts_a_reply_that_only_adapts_the_example(pairs):
+    """The anti-copy rule must catch reuse, not punish using the pattern.
+
+    Anchoring the guidance to a document example invites every reply to be about
+    documents. A reply that borrows the shape and changes the object is exactly what
+    the guidance is meant to produce, so it has to survive.
+    """
+    adapted = "Open the door and put your shoes on, then stop."
+    accepted, reason = pairs.quality_gate(
+        adapted, constraint=pairs.BOUNDED_ACTION_CONSTRAINT
+    )
+    assert accepted, f"adapted reply rejected: {reason}"
+
+
 def test_corpus_gate_does_not_over_gate_unbounded_constraints(pairs):
     """Delegating to the bench must not start rejecting ordinary prose.
 
@@ -662,7 +762,9 @@ def test_retry_passes_a_note_on_the_second_attempt(pairs):
             self.notes.append(retry_note)
             if len(self.notes) == 1:
                 return "Let's break it down and get started on it."
-            return "Open the document and write one heading line, then stop."
+            # Deliberately not a guidance example: those are now refused verbatim, and
+            # this test is about the retry note reaching the teacher, not about copies.
+            return "Write the date you need in the message, then stop."
 
     teacher = Recording()
     planned = [p for p in pairs.plan_pairs({}) if p.kind == "coaching"][:1]

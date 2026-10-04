@@ -440,6 +440,9 @@ def build_teacher_prompt(
             "any warmth or humour natural."
         )
     parts.append(f"Reply constraints: {constraint}")
+    if _asks_for_bounded_action(constraint):
+        parts.append("")
+        parts.append(BOUNDED_ACTION_GUIDANCE)
     parts.append("")
     parts.append(
         "Reply only, with no preamble, no brackets, and no description of what "
@@ -640,6 +643,47 @@ _BOUNDED_ACTION_HINTS: tuple[str, ...] = (
 )
 
 
+# Shown to the teacher ONLY when the constraint asks for a bounded action.
+#
+# Measured, not assumed. Tallying every rejection across the 7B runs:
+#
+#   144  action not bounded to a small step
+#    47  shame language ('take a deep breath', 'breathe deeply')
+#    31  no concrete small first action detected
+#    35  bound attached to nothing concrete:
+#         'one small step' 'start small' 'get started' 'one task' 'a task' ...
+#
+# The dominant failure is not that the teacher ignores the constraint -- it is that
+# "one first action under two minutes" has no single reading, and the reading it picks
+# is the motivational-register phrasing its training data is full of. "Take one small
+# step" is what a coach says when coaching is the topic. It is addressed to a person
+# considering beginning, not to a person who needs a verb and a unit.
+#
+# The corrective retry already names the broken rule, and it did not fix this: greedy
+# decoding means the retry re-derives the same phrasing from the same prior. Naming the
+# failure is not enough because the gap is a missing example, not a missing rule.
+BOUNDED_ACTION_GUIDANCE = """\
+The first action must name a specific verb and a specific unit of work, in the \
+imperative, before anything else happens in the reply.
+
+These are rejected, because they give the reader no unit of work to perform:
+  "Take one small step towards your task."      (step is not a unit)
+  "Start small."                                (no verb, no unit)
+  "Get started."                                (defers the task)
+  "Work on it for a few minutes."               (no verb)
+  "Take a deep breath and begin."               (not an action on the task)
+
+These are accepted, because each can be done badly and still count:
+  "Open the document and write one heading line, then stop."
+  "Set a two-minute timer for Finish the methods section, start, stop when it rings."
+  "Put the letter in your bag now, without walking to the postbox."
+  "Write the subject line and nothing else, then stop."
+
+Name an object from the user's own data where one fits. Do not begin by taking a \
+breath, a break, or a walk. Do not tell the reader to start, try, focus, or be gentle \
+with themselves. Give the action first; any warmth goes after it."""
+
+
 def _asks_for_bounded_action(constraint: str) -> bool:
     lowered = (constraint or "").lower()
     return any(hint in lowered for hint in _BOUNDED_ACTION_HINTS)
@@ -722,6 +766,23 @@ def quality_gate(response: str, *, constraint: str) -> tuple[bool, str]:
         ok, reason = scorer(text)
         if not ok:
             return False, f"bounded action required but: {reason}"
+        # Copying a guidance example verbatim is not the teacher applying the pattern,
+        # it is the teacher memorising one sentence. Measured on a 20-pair probe: 13 of
+        # 20 accepted replies were the identical string "Open the document and write one
+        # heading line, then stop." -- an acceptance rate of 100% and a corpus with one
+        # distinct reply in it. The gate would have called that a success, because every
+        # axis it scores is satisfied by a single memorised string.
+        #
+        # This is the acceptance-bias failure docs/ACTIVATION.md describes, reached from
+        # the opposite direction: not an unbounded reply waved through, but a bounded one
+        # repeated until the corpus is a parrot. The student would learn the example
+        # rather than the shape, and would give "write one heading line" to someone whose
+        # problem is not a document at all.
+        if text in BOUNDED_ACTION_GUIDANCE:
+            return (
+                False,
+                "reply copies a guidance example verbatim; adapt it to the user",
+            )
     words = len(text.split())
     if words > 140:
         return False, f"too long ({words} words)"
