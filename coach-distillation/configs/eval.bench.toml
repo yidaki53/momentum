@@ -44,6 +44,13 @@ n_gpu_layers = 0
 # "hi" must feel instant; longer answers can stream.
 max_tokens_short = 96
 max_tokens_long = 256
+# A 0.5B model at temperature 0.5 will fall into a decode loop and repeat one sentence
+# dozens of times without a penalty. Measured on v7: brevity 0.88, 14 failures, the
+# worst being the same "Rename the file named ..." line 82 times. 1.15 is the usual
+# default for this class of model; higher starts distorting the specific wording that
+# the activation axis depends on, so this is deliberately mild.
+temperature = 0.5
+repeat_penalty = 1.15
 
 # Markers used by scripts/eval_bench.py to stream the reply into the app.
 task_marker = "[[TASK:"

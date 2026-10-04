@@ -529,6 +529,17 @@ def generate_replies(
     )
     short_budget = int(run_cfg.get("max_tokens_short", 96))
     long_budget = int(run_cfg.get("max_tokens_long", 256))
+    # Repetition penalty, because without one a 0.5B model can fall into a decode loop
+    # and emit the same sentence dozens of times. v7 measured this: brevity 0.88, with
+    # 14 failures that were almost all "Rename the file named Documents/Resume.pdf."
+    # repeated up to 82 times.
+    #
+    # That was NOT corpus contamination -- the v7 training rows are clean, only 4 of 491
+    # were repetitive. It is the decoder: temperature 0.5 with no penalty, which is a
+    # standing defect in the app's engine too, not only here. Fixing it in the corpus
+    # would have been treating the symptom, so the bench now generates the way a
+    # penalised decoder would and the app gets the same change.
+    repeat_penalty = float(run_cfg.get("repeat_penalty", 1.15))
 
     generated: list[Reply] = []
     for reply in replies:
@@ -537,7 +548,8 @@ def generate_replies(
         result = llm.create_chat_completion(
             messages=messages,  # type: ignore[arg-type]
             max_tokens=budget,
-            temperature=0.5,
+            temperature=float(run_cfg.get("temperature", 0.5)),
+            repeat_penalty=repeat_penalty,
         )
         content = result["choices"][0]["message"]["content"] or ""
         generated.append(

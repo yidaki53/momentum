@@ -444,6 +444,44 @@ def test_rejection_sample_seeds_are_distinct_from_each_other():
     assert len(sampler.RFT_SEEDS) == len(set(sampler.RFT_SEEDS))
 
 
+def test_engine_penalises_repetition_on_every_generation_path():
+    """A 0.5B model at temperature 0.5 falls into a decode loop without a penalty.
+
+    Measured on the v7 coach: the bench scored brevity 0.88, and 13 of the 14 failures
+    were one sentence repeated -- "Rename the file named Documents/Resume.pdf." -- up to
+    82 times. The training rows were clean, so this was the decoder and not the corpus,
+    which makes it a defect the *shipped* engine shares rather than a corpus problem to
+    filter out.
+
+    Both call sites are asserted. Adding it to ``generate`` alone would leave the
+    streaming path -- the one the chat UI actually uses -- looping.
+    """
+    import inspect
+
+    import momentum.llm.engine as engine_mod
+
+    for name in ("generate", "generate_async"):
+        method = getattr(engine_mod.LlmEngine, name, None)
+        assert method is not None, f"LlmEngine.{name} disappeared"
+        params = inspect.signature(method).parameters
+        assert "repeat_penalty" in params, f"{name} takes no repeat_penalty"
+        assert params["repeat_penalty"].default > 1.0, (
+            f"{name} defaults repeat_penalty to "
+            f"{params['repeat_penalty'].default}; a value of 1.0 is no penalty at all"
+        )
+
+    source = Path(engine_mod.__file__).read_text()
+    # Both native call sites must pass it through; the defaults alone would be dead
+    # parameters. Counted as create_chat_completion calls rather than as raw substring
+    # matches so a docstring mention cannot satisfy this.
+    calls = source.count("create_chat_completion(")
+    passed = source.count("repeat_penalty=repeat_penalty")
+    assert calls >= 2, f"expected two native generation calls, found {calls}"
+    assert passed >= 2, (
+        f"only {passed} of {calls} native generation calls pass repeat_penalty"
+    )
+
+
 def test_rejection_sample_row_ids_are_unique():
     """Row ids must be unique within a sampler run.
 

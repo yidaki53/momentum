@@ -626,6 +626,21 @@ def _release_inference_slot() -> None:
 # attempt rather than a permanent "busy".
 _INFERENCE_STALL_S = 240.0
 
+# Repetition penalty applied to every generation, streaming and not.
+#
+# A 0.5B model at the default temperature of 0.7 will sometimes fall into a decode
+# loop and emit the same sentence dozens of times. Measured on the v7 coach: the bench
+# scored brevity 0.88 with 14 failures, the worst being one "Rename the file named ..."
+# line repeated 82 times.
+#
+# This was not corpus contamination -- the v7 training rows contain 4 repetitive rows out
+# of 491 -- so filtering the corpus would have treated the symptom. It is the decoder, and
+# this engine is the decoder the app ships, so a user is as exposed to it as the bench is.
+#
+# 1.15 is mild on purpose. Higher values start rewriting the specific nouns and numbers
+# that the grounding axis checks, so a stronger penalty trades one axis for another.
+_DEFAULT_REPEAT_PENALTY = 1.15
+
 
 def _schedule_stall_release() -> Optional[threading.Timer]:
     """Return the inference slot automatically if a generation overruns.
@@ -787,6 +802,7 @@ class LlmEngine:
         stop: Optional[list[str]] = None,
         stream: bool = False,
         background: bool = False,
+        repeat_penalty: float = _DEFAULT_REPEAT_PENALTY,
     ) -> str:
         """Generate a response from the model.
 
@@ -796,6 +812,7 @@ class LlmEngine:
             temperature: Sampling temperature (0.0 = deterministic).
             top_p: Nucleus sampling parameter.
             top_k: Top-k sampling parameter.
+            repeat_penalty: Penalty for repeating tokens already generated.
             stop: Optional list of stop sequences.
             stream: If True, use streaming (returns full text at end).
             background: If True, this is an optional snippet rather than
@@ -848,6 +865,7 @@ class LlmEngine:
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k,
+                repeat_penalty=repeat_penalty,
                 stop=stop or [],
                 stream=True if background else stream,
             )
@@ -892,6 +910,7 @@ class LlmEngine:
         # narration and invented formats at the higher setting, and the coach's
         # replies gain nothing from the extra randomness.
         temperature: float = 0.5,
+        repeat_penalty: float = _DEFAULT_REPEAT_PENALTY,
     ) -> threading.Thread:
         """Generate a response asynchronously, streaming tokens to *on_token*.
 
@@ -902,6 +921,7 @@ class LlmEngine:
             on_error: Called with the exception if generation fails.
             max_tokens: Maximum tokens to generate.
             temperature: Sampling temperature.
+            repeat_penalty: Penalty for repeating tokens already generated.
 
         Returns:
             The background thread.
@@ -941,6 +961,7 @@ class LlmEngine:
                         messages=cast("Any", fitted_messages),
                         max_tokens=budget,
                         temperature=temperature,
+                        repeat_penalty=repeat_penalty,
                         stream=True,
                     )
                     _trace(

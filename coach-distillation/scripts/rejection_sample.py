@@ -203,7 +203,13 @@ def main() -> int:
 
     rows: list[dict] = []
     shape_counts: dict[str, int] = {}
-    stats = {"samples": 0, "passed": 0, "rejected_shape": 0, "rejected_language": 0}
+    stats = {
+        "samples": 0,
+        "passed": 0,
+        "rejected_shape": 0,
+        "rejected_language": 0,
+        "rejected_brief": 0,
+    }
 
     for index, (situation, constraint, _reference) in enumerate(seeds):
         digest = pairs_mod.USER_POOL[index % len(pairs_mod.USER_POOL)].digest()
@@ -243,6 +249,28 @@ def main() -> int:
             if not bench.score_dignity(text, lexicon)[0]:
                 continue
             if not bench.score_grounding(text, user_data=digest)[0]:
+                continue
+            # Brevity, and repetition with it. v7 failed brevity at 0.88 with replies
+            # like "Rename the file named Documents/Resume.pdf." repeated four times --
+            # the classic small-model decoding loop. Neither the corpus gate nor the
+            # sampler looked at brevity, and the gate's own 140-word ceiling is looser
+            # than the bench's 4-sentence rule, so a looping reply passed on length and
+            # on everything else the gate checks.
+            #
+            # It is also self-reinforcing: training on looping replies teaches the
+            # model to loop. This axis was 1.00 for v6 and the only regression in v7,
+            # and the corpus that caused it was one I verified against four axes and
+            # not this one. Verification is only as good as the properties it checks.
+            if not bench.score_brevity(text)[0]:
+                stats["rejected_brief"] += 1
+                continue
+            # Cheap belt-and-braces against near-duplicate sentences, which can pass
+            # the sentence count while still reading as a stuck model.
+            sentences = [
+                s.strip().lower() for s in re.split(r"[.!?]", text) if s.strip()
+            ]
+            if len(sentences) != len(set(sentences)):
+                stats["rejected_brief"] += 1
                 continue
             # No axis checks that a reply is in English. The 0.5B occasionally emits a
             # trailing fragment in another language ("...then stop.一封简单的邮件解决了
@@ -299,6 +327,7 @@ def main() -> int:
     print(f"kept             : {stats['passed']}")
     print(f"dropped as shape : {stats['rejected_shape']}")
     print(f"dropped as lang  : {stats['rejected_language']}")
+    print(f"dropped as brief : {stats['rejected_brief']}")
     print(f"distinct shapes  : {len(shape_counts)}")
     print(f"pass rate        : {100 * stats['passed'] / max(1, stats['samples']):.1f}%")
     print(f"wrote {len(rows)} rows to {out}")
