@@ -126,6 +126,20 @@ verbatim copies, dignity/grounding/charter clean. The two activation misses are 
 non-bounded constraints, where it is correct that no bounded action was demanded. That is a
 real acceptance rate rather than a memorised one, and roughly double the previous figure.
 
+A full run with both changes reached 256 pairs before the thermal guard stopped it on its
+second pause. 87 accepted of 100 attempted in the final slice, against roughly 30% before.
+The corpus is 256 unique ids over 216 distinct replies with zero verbatim copies, and its
+most repeated reply appears 11 times.
+
+One residual shape is worth naming, because it is close to the same failure in a milder
+form. The most repeated replies are the timer template with the object swapped —
+"Set a two-minute timer for finishing the methods section, start, stop when it rings" and
+its siblings. Each names a real task from the user's data and each is a usable action, so
+they pass honestly. But a student trained on many of them learns that the answer to a
+stuck user is a two-minute timer, which is the generic-phrasing bias wearing a different
+hat. Worth watching when v4 is benched, rather than assuming a clean diversity count means
+clean coverage of *shapes* as well as of sentences.
+
 ## Sources consulted
 
 Clinical and practitioner material on task initiation, read for technique rather than
