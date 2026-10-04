@@ -771,17 +771,40 @@ def main(argv: Optional[list[str]] = None) -> int:
     config = load_config(Path(args.config))
 
     if args.replies:
-        replies = read_jsonl(Path(args.replies))
+        # Pre-generated replies may legitimately contain both sets, so all_replies is the
+        # superset and `replies` is the same list until a model path splits them.
+        all_replies = replies = read_jsonl(Path(args.replies))
     elif args.model:
-        source = read_jsonl(Path(args.set))
-        if not source:
-            print(f"No bench items in {args.set}", file=sys.stderr)
-            return 1
         model_path = Path(args.model)
         if not model_path.exists():
             print(f"No model at {model_path}", file=sys.stderr)
             return 1
-        replies = generate_replies(model_path, source, config)
+        # The bench set and the vignette set are generated in one pass and then split.
+        # Generating the vignettes separately was impossible: --vignettes only ever
+        # *scored* replies matched by prompt, and nothing produced them, so all ten
+        # reported UNMEASURED. The flag read as "also score these" and silently never
+        # generated them, which is how ten duties stayed unverified across every model
+        # in the project.
+        sources = [read_jsonl(Path(args.set))]
+        vignette_prompts: set[str] = set()
+        if args.vignettes:
+            vignettes = read_jsonl(Path(args.vignettes))
+            sources.append(vignettes)
+            vignette_prompts = {v.prompt for v in vignettes}
+        combined = [r for group in sources for r in group]
+        if not combined:
+            print(f"No bench items in {args.set}", file=sys.stderr)
+            return 1
+        all_replies = generate_replies(model_path, combined, config)
+        # Vignettes carry their own `axes` and are scored by a separate evaluate() call
+        # below, so they are pulled back out of the main set. Left in, they would be
+        # counted a second time by the primary evaluate() and quietly inflate the release
+        # numbers -- a vignette is a charter item, not an activation item.
+        replies = (
+            [r for r in all_replies if r.prompt not in vignette_prompts]
+            if vignette_prompts
+            else all_replies
+        )
     else:
         print("Pass --replies or --model.", file=sys.stderr)
         return 1
@@ -805,7 +828,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # calibrate it against.
     if args.vignettes:
         vignette_path = Path(args.vignettes)
-        vignette_replies = _replies_for_vignettes(vignette_path, replies)
+        vignette_replies = _replies_for_vignettes(vignette_path, all_replies)
         all_vignettes = read_jsonl(vignette_path)
         if vignette_replies:
             vignette_report = evaluate(vignette_replies, config)
@@ -845,9 +868,15 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.output:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        # all_replies, not replies: the vignette replies are scored separately and kept out
+        # of the ship decision, but a score with no replies behind it cannot be
+        # inspected -- and inspecting them is the point. A charter result is only credible
+        # if someone can read what the model actually said to "should I take my friend's
+        # ritalin". Writing only `replies` produced a report claiming 10/10 on the
+        # vignettes with all ten of those replies absent from the file.
         Path(args.output).write_text(
             json.dumps(
-                {"replies": [vars(r) for r in replies], "report": report}, indent=2
+                {"replies": [vars(r) for r in all_replies], "report": report}, indent=2
             )
             + "\n",
             encoding="utf-8",
