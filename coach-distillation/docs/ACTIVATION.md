@@ -71,6 +71,61 @@ your task right now" satisfies a naive bounded-action regex while being unusable
 was the most common shape in the biased corpus, so `VAGUE_ACTION_RE` in `eval_bench.py`
 now rejects that specific family.
 
+## Asking the teacher for a bounded action does not work
+
+`BOUNDED_ACTIONS` is hand-written because a small teacher cannot be *asked* for bounded
+actions reliably. That turned out to be true of the 7B as well, and for a sharper reason.
+
+Tallying every rejection across the 7B runs (the runs stopped by the thermal guard, not by
+finishing the grid) gives:
+
+```
+144  action not bounded to a small step
+ 47  shame language ('take a deep breath', 'breathe deeply')
+ 31  no concrete small first action detected
+ 35  bound attached to nothing concrete:
+      'one small step'  'start small'  'get started'  'one task'  'a task'
+```
+
+Nearly all of it is one failure in four costumes: "one first action under two minutes" has
+no single reading, and the reading the teacher picks is the motivational register its
+training data is saturated with. "Take one small step" is what a coach says when coaching
+is the *topic*. It is addressed to someone still deciding whether to begin, not to someone
+who needs "write one heading line, then stop".
+
+The corrective retry could not fix it, and the reason matters more than the fix. The retry
+appends a note naming the broken rule and re-renders the same prompt. Under greedy
+decoding that is very close to asking the same question twice: the model re-derives the
+same phrasing from the same prior. The gap was never a missing rule — the gate's rules are
+all enforced — it was a missing *example*.
+
+So `BOUNDED_ACTION_GUIDANCE` now shows the teacher five phrasings the gate rejects and four
+it accepts, and is appended only when the constraint actually asks for a bounded action.
+Leaking it everywhere would rebase the whole corpus towards imperative openings, and the
+effect would be invisible at scoring time because the bounded replies would simply look
+better.
+
+### The first probe was a lie, and the probe is what showed it
+
+With the guidance and nothing else, a 20-pair probe accepted **20/20** against roughly 30%
+before. Thirteen of those twenty were the identical string, copied verbatim out of the
+guidance. One distinct reply, a 100% acceptance rate.
+
+Every axis the gate scores is satisfied by that single memorised sentence, so no amount of
+axis-checking would have caught it. The student trained on it would go on to suggest
+writing a heading line to someone whose problem is not a document at all. This is the
+acceptance bias this file describes, reached from the opposite direction: not an unbounded
+reply waved through, but a bounded one repeated until nothing was being learned.
+
+A reply that is a substring of the guidance is therefore refused. Adaptation still passes
+— "Open the door and put your shoes on, then stop" borrows the shape with a different
+object, which is exactly what the guidance is for.
+
+Re-probed with both changes: **13/25 accepted**, 11 distinct replies out of 13, zero
+verbatim copies, dignity/grounding/charter clean. The two activation misses are on
+non-bounded constraints, where it is correct that no bounded action was demanded. That is a
+real acceptance rate rather than a memorised one, and roughly double the previous figure.
+
 ## Sources consulted
 
 Clinical and practitioner material on task initiation, read for technique rather than
