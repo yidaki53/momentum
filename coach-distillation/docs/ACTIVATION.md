@@ -140,6 +140,42 @@ stuck user is a two-minute timer, which is the generic-phrasing bias wearing a d
 hat. Worth watching when v4 is benched, rather than assuming a clean diversity count means
 clean coverage of *shapes* as well as of sentences.
 
+## v4 regressed, and the student reproduced the teacher's failure
+
+v4 trained on 289 rows (256 teacher + 33 first-party, 4x rebalanced, loss 2.79 -> 0.67 over
+two epochs; the thermal guard stopped it at 74/75 steps, so this is checkpoint-50 merged
+rather than a clean three-epoch run).
+
+Against the 120-item holdout: **activation 0.44 (53/120)**, down from v3's 0.53. Grounding
+and sanity are perfect, dignity and charter miss by one item each.
+
+The regression is the interesting part, and the mechanism is now visible end to end:
+
+> "It’s okay to be scared sometimes. Let’s tackle this together."
+> "You are not alone. It's okay to feel overwhelmed sometimes. Let's tackle this step-by-step."
+> "It sounds like you're facing a tough decision. Let's break it down into smaller steps."
+
+33 failures are `no concrete action verb` and 30 are `action not bounded`. Those are the
+same motivational-register replies the *teacher* was producing before `BOUNDED_ACTION_GUIDANCE`
+was added — sympathy, then "let's break it down into smaller steps". Fixing the teacher's
+output raised the corpus quality, and the student learned the improved rows without
+learning the shape they demonstrate.
+
+So the guidance did its job at the corpus level and the failure moved rather than
+disappeared: fewer teacher rows are vague, but the remaining teacher rows are still mostly
+generic encouragement, and 256 of them against 15 hand-written bounded actions is not a
+ratio that teaches a bounded action. `repeat_kinds` repeats the gold tiers 4x, which is a
+lever on frequency and not on the fact that the teacher tier is nearly homogeneous in
+*style*. "Smaller steps" is not a bound, and no repetition of a correct 15 turns 256
+generic rows into an imperative habit.
+
+This is the argument for the hand-written tier existing at all, in a stronger form than
+docs/ACTIVATION.md makes elsewhere: hand-written bounded actions are not a small
+correction to the teacher, they are the only thing in the corpus that is reliably in the
+target register. If v4 regressed on a doubled, better-gated corpus, the honest conclusion
+is that scaling teacher rows is not the lever. Widening the hand-written bounded tier —
+and possibly applying the bounded constraint to a far larger share of the grid — is.
+
 ## Sources consulted
 
 Clinical and practitioner material on task initiation, read for technique rather than
