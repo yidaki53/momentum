@@ -782,6 +782,94 @@ def test_vignette_scores_do_not_gate_ship(bench, capsys):
     )
 
 
+# --- bench expansion: wider activation denominator --------------------------
+
+
+def test_extra_activation_items_are_winnable(bench):
+    """Every new reference must pass every axis it will be scored on.
+
+    A bench item whose own reference fails its axis makes the axis unwinnable by
+    construction, and the failure looks like a model defect. This caught 11 of the 17
+    first-draft references, which is the argument for checking rather than assuming.
+    """
+    sys.path.insert(0, str(EVAL))
+    import extra_activation_items as items  # type: ignore[import-not-found]
+
+    lexicon = bench.load_lexicon(EVAL / "shame_lexicon.txt")
+    assert len(items.ITEMS) >= 15, "too few items to narrow the interval usefully"
+    for index, (_prompt, reference) in enumerate(items.ITEMS):
+        assert bench.score_activation(reference)[0], f"item {index} is not bounded"
+        assert bench.score_dignity(reference, lexicon)[0], f"item {index} fails dignity"
+        assert bench.score_grounding(reference, user_data=items.DIGEST)[0], (
+            f"item {index} fails grounding"
+        )
+        assert bench.score_charter(reference)[0], f"item {index} fails charter"
+        assert bench.score_brevity(reference)[0], f"item {index} fails brevity"
+        assert bench.score_sanity(reference)[0], f"item {index} fails sanity"
+
+
+def test_bench_items_do_not_leak_into_training(bench):
+    """A bench prompt that also appears in training data measures recall, not skill.
+
+    The golden set already had 7 such overlaps (g01/g07/g16 via the hand-written gold
+    tiers, g12-g14 via the charter vignettes), so this is checked rather than assumed.
+    New items must not add to it.
+    """
+    corpora = [
+        "data/synthetic/train.jsonl",
+        "data/synthetic/train-v2.jsonl",
+        "data/synthetic/train-v3.jsonl",
+        "out/regen-3b.jsonl",
+        "out/regen-7b.jsonl",
+    ]
+    train_prompts = set()
+    for rel in corpora:
+        path = ROOT / "coach-distillation" / rel
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                row = json.loads(line)
+                prompt = (row.get("prompt") or row.get("situation") or "").strip()
+                if prompt:
+                    train_prompts.add(prompt.lower())
+
+    extended = bench.read_jsonl(EVAL / "golden_qa_extended.jsonl")
+    assert extended, "the extended bench should not be empty"
+    leaked = [r.id for r in extended if r.prompt.strip().lower() in train_prompts]
+    assert not leaked, f"extended bench items leak into training: {leaked}"
+
+
+def test_extended_bench_really_widens_the_activation_denominator(bench):
+    """The point of the new file is a narrower confidence interval.
+
+    13 items cannot separate the model differences we are chasing; 30 can start to.
+    Asserting the count keeps a future edit from quietly shrinking it back.
+    """
+    golden = bench.read_jsonl(EVAL / "golden_qa.jsonl")
+    extended = bench.read_jsonl(EVAL / "golden_qa_extended.jsonl")
+    ids = [r.id for r in golden + extended]
+    assert len(ids) == len(set(ids)), "ids collide between the two bench files"
+    activation_items = [
+        r for r in golden + extended if "activation" in (r.axes or ["activation"])
+    ]
+    assert len(activation_items) >= 28, (
+        f"activation denominator is only {len(activation_items)}"
+    )
+
+
+def test_extended_bench_is_not_wired_into_the_release_gate(bench):
+    """Reported, not gated: a wider number nobody has baselined is not a threshold.
+
+    Same reasoning as the charter vignettes. Folding this into ship would silently
+    invent a bar out of a single day's measurement.
+    """
+    config_text = (CONFIGS / "eval.bench.toml").read_text(encoding="utf-8")
+    assert "golden_qa_extended" not in config_text, (
+        "the extended bench must not become a release gate without a baseline"
+    )
+
+
 # --- incremental persistence ------------------------------------------------
 
 

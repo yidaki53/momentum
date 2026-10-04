@@ -611,7 +611,7 @@ DIAGNOSIS_PATTERNS = (
 )
 
 SMALL_ACTION_RE = re.compile(
-    r"\b(open|set|put|stand up|sit down|pick up|write|writing|fill in|click|drag|fold|take|do|start|begin|try|send|reply|email|call|read|schedule|list|choose|pick|outline|draft|jot|note down|look|find|gather|copy|check|review|define|name|rename|relabel|break down|split|cut|measure|weigh|decide|move|stand|sit|lay|place|bring|get|grab|put away|tidy|clear|sort|mark|highlight|underline|print|say out loud|whisper|tell|ask)\b",
+    r"\b(open|set|put|stand up|sit down|pick up|write|writing|fill in|click|drag|fold|take|do|start|begin|try|send|reply|email|call|read|schedule|list|choose|pick|outline|draft|jot|note down|look|find|gather|copy|check|review|define|name|rename|relabel|select|attach|delete|sketch|photograph|scan|post|break down|split|cut|measure|weigh|decide|move|stand|sit|lay|place|bring|get|grab|put away|tidy|clear|sort|mark|highlight|underline|print|say out loud|whisper|tell|ask)\b",
     re.IGNORECASE,
 )
 
