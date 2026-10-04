@@ -49,7 +49,7 @@ import os
 import signal
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -66,14 +66,35 @@ log = logging.getLogger("thermal_guard")
 # The NVMe ceiling is much lower than the CPU's and is the one most easily missed: a
 # drive at 70C is throttling even while the CPU reads a reassuring number.
 DEFAULT_LIMITS: dict[str, tuple[float, float]] = {
-    "cpu_package": (70.0, 78.0),
-    "cpu_core": (75.0, 85.0),
-    "gpu": (72.0, 80.0),
-    "nvme": (60.0, 70.0),
+    "cpu_package": (70.0, 86.0),
+    "cpu_core": (75.0, 86.0),
+    "gpu": (72.0, 86.0),
+    # The NVMe ceiling stays well below the CPU's. This is a hardware fact rather than
+    # a preference: a drive at 70C is already throttling even while the CPU reads a
+    # reassuring number, and throttling a drive under sustained write load is its own
+    # failure mode. 76 is above the throttle point but far below the CPU's ceiling.
+    "nvme": (60.0, 76.0),
 }
 
 # Fallback for a sensor we sample but have no rating for. Coarse but not a free pass.
 UNRATED_LIMITS: tuple[float, float] = (100.0, 120.0)
+
+# The bar a run must clear BEFORE it starts. Deliberately lower than the stop threshold.
+#
+# These are two different questions and the guard now answers them separately:
+#   "may I start?"  -- answered by this, at 80C. A machine at 79C is fine to work on.
+#   "must I stop?"  -- answered by DEFAULT_LIMITS above, at 86C. Nothing runs past that.
+#
+# Before this existed there was only one number doing both jobs, so raising it to 86 to
+# allow starting would ALSO have permitted starting at 85C. That is the wrong way round:
+# the tolerance belongs at the start gate, where it is cheap to be generous because
+# nothing is running yet, and not at the ceiling, where it is a crash.
+DEFAULT_START_CELSIUS = 80.0
+
+# Sensors the start gate applies to. NVMe is absent deliberately: it has its own, much
+# lower ceiling in DEFAULT_LIMITS, and gating a start on it would refuse work for a
+# reason the CPU limits do not explain.
+START_GATED_KEYS: frozenset[str] = frozenset({"cpu_package", "cpu_core", "gpu"})
 
 # How long the machine may sit ABOVE its stop threshold before the run is killed.
 #
@@ -187,17 +208,24 @@ class Preflight:
 
     ok: bool
     reasons: list[str]
-    readings: list[Reading]
+    readings: list["Reading"] = field(default_factory=list)
     blocking: bool = False
 
 
-def preflight(limits: Optional[dict[str, tuple[float, float]]] = None) -> Preflight:
+def preflight(
+    limits: Optional[dict[str, tuple[float, float]]] = None,
+    start_celsius: Optional[float] = DEFAULT_START_CELSIUS,
+) -> Preflight:
     """Decide whether it is safe to start a heavy run right now.
 
     This is the check that would have prevented the second crash. The machine was
     already at 89C with another job at 95% CPU; a guard that only supervises its own
     child cannot see that, and by the time temperatures climb under a second load there
     may be no time left to react.
+
+    ``start_celsius`` is the gate for *beginning* work, defaulting to
+    ``DEFAULT_START_CELSIUS`` (80). Two thresholds, not one: a machine at 79C may start
+    a run, a run at 86C pauses, and nothing runs at 87C.
     """
     reasons: list[str] = []
     blocking = False
@@ -209,6 +237,20 @@ def preflight(limits: Optional[dict[str, tuple[float, float]]] = None) -> Prefli
         reasons.append("no temperature sensors readable; running unprotected")
 
     for reading in readings:
+        # The start gate, checked before classify() because it is the looser of the two
+        # thresholds and therefore decides more often. A machine at 81C is not in danger,
+        # but it is not somewhere to add a new 7B teacher either: "wait a little", not
+        # "danger". NVMe is excluded by START_GATED_KEYS -- it has its own lower ceiling.
+        if (
+            start_celsius is not None
+            and reading.key in START_GATED_KEYS
+            and reading.celsius >= start_celsius
+        ):
+            blocking = True
+            reasons.append(
+                f"{reading.key} already at {reading.celsius:.1f}C, at or above the "
+                f"{start_celsius:.0f}C start threshold -- let it cool a little first"
+            )
         state = classify(reading.key, reading.celsius, limits)
         if state == "stop":
             blocking = True
@@ -549,6 +591,7 @@ def supervise(
     limits: Optional[dict[str, tuple[float, float]]] = None,
     log_path: Optional[Path] = None,
     allow_hot_start: bool = False,
+    start_celsius: Optional[float] = DEFAULT_START_CELSIUS,
     max_hot_seconds: float = DEFAULT_MAX_HOT_SECONDS,
     pause_seconds: float = DEFAULT_PAUSE_SECONDS,
     max_pauses: int = DEFAULT_MAX_PAUSES,
@@ -579,7 +622,7 @@ def supervise(
         return 0
 
     if not allow_hot_start:
-        check = preflight(limits)
+        check = preflight(limits, start_celsius)
         for reason in check.reasons:
             print(f"[thermal] PREFLIGHT: {reason}", flush=True)
         if not check.ok:
@@ -720,6 +763,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         f"(default {DEFAULT_MAX_PAUSES})",
     )
     parser.add_argument(
+        "--start-celsius",
+        type=float,
+        default=DEFAULT_START_CELSIUS,
+        help=(
+            "refuse to START above this temperature; the stop threshold is separate. "
+            f"(default {DEFAULT_START_CELSIUS:.0f})"
+        ),
+    )
+    parser.add_argument(
         "--check",
         action="store_true",
         help="print one sample and the preflight decision, then exit",
@@ -748,7 +800,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             f"[thermal] load1={load_average_1m():.2f} "
             f"cpu_pressure={cpu_usage_percent():.0f}%"
         )
-        check = preflight()
+        check = preflight(start_celsius=args.start_celsius)
         for reason in check.reasons:
             print(f"[thermal] PREFLIGHT: {reason}")
         print(f"[thermal] decision: {'RUN' if check.ok else 'REFUSE'}")

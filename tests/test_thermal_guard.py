@@ -220,14 +220,30 @@ def test_thresholds_leave_real_headroom_below_the_firmware_limits(guard):
 
     The CPU reports high=100C / crit=100C. The first guard stopped at 90C, which on a
     laptop is not a margin -- it is a countdown, and it crashed anyway.
+
+    CHANGED 2026-10-03, deliberately and at the owner's instruction: the ceiling moved
+    from 80C to 86C, and this test previously asserted ``<= 80``. The owner runs this
+    machine and has twice seen it crash from heat, so the judgement is theirs to make --
+    but the assertion now encodes the real risk rather than pretending 86 is as safe as
+    80 was:
+
+    - 86C is still 14C below the firmware's own 100C trip point.
+    - The 80C figure did not disappear. It is now ``DEFAULT_START_CELSIUS``, and it is
+      enforced by preflight, so a machine at 81C will not accept new work even though
+      a machine at 85C will keep an existing run alive.
+    - The margin test below asserts we stay under the firmware limit, which is the
+      property that actually prevents the shutdown, rather than a specific number that
+      was only ever a guess.
     """
-    assert guard.DEFAULT_LIMITS["cpu_package"][1] <= 80.0
-    assert (
-        guard.DEFAULT_LIMITS["cpu_package"][0] < guard.DEFAULT_LIMITS["cpu_package"][1]
-    )
+    for key, (_warn, stop) in guard.DEFAULT_LIMITS.items():
+        assert stop <= 100.0, f"{key} stop threshold is at or above the firmware limit"
+    assert guard.DEFAULT_LIMITS["cpu_package"][1] == 86.0
+    # The start gate is the tighter of the two, and is what protects an idle-then-worked
+    # machine from the first sample.
+    assert guard.DEFAULT_START_CELSIUS == 80.0
+    assert guard.DEFAULT_START_CELSIUS < guard.DEFAULT_LIMITS["cpu_package"][1]
     for key, (warn, stop) in guard.DEFAULT_LIMITS.items():
         assert warn < stop, key
-        assert stop <= 85.0, f"{key} stop threshold is too permissive for a laptop"
 
 
 def test_nvme_ceiling_is_watched_separately_and_is_lower_than_the_cpu(guard):
@@ -287,7 +303,11 @@ def test_sustained_heat_pauses_before_it_kills(guard, monkeypatch):
     A killed training run loses its checkpoint. Pausing costs five minutes and keeps
     the work, which is the better trade every time the run is resumable.
     """
-    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", 85.0)])
+    # Read the real stop threshold rather than hardcoding one: a literal 85C silently
+    # stopped being "too hot" when the ceiling moved to 86C, and three tests went green
+    # without pausing anything.
+    hot = guard.DEFAULT_LIMITS["cpu_package"][1] + 1.0
+    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", hot)])
     pauses = []
     original = guard._pause_child
 
@@ -368,7 +388,11 @@ def test_pause_budget_is_finite(guard, monkeypatch):
     Otherwise a workload that cannot be cooled looks like a run that is merely slow,
     and the failure is discovered hours later.
     """
-    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", 85.0)])
+    # Read the real stop threshold rather than hardcoding one: a literal 85C silently
+    # stopped being "too hot" when the ceiling moved to 86C, and three tests went green
+    # without pausing anything.
+    hot = guard.DEFAULT_LIMITS["cpu_package"][1] + 1.0
+    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", hot)])
     pauses = []
     monkeypatch.setattr(
         guard,
@@ -389,7 +413,11 @@ def test_pause_budget_is_finite(guard, monkeypatch):
 
 def test_pause_seconds_zero_keeps_the_kill_only_behaviour(guard, monkeypatch):
     """Some commands are cheap to re-run and should not be paused at all."""
-    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", 85.0)])
+    # Read the real stop threshold rather than hardcoding one: a literal 85C silently
+    # stopped being "too hot" when the ceiling moved to 86C, and three tests went green
+    # without pausing anything.
+    hot = guard.DEFAULT_LIMITS["cpu_package"][1] + 1.0
+    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", hot)])
     paused = []
     monkeypatch.setattr(
         guard,
@@ -412,6 +440,59 @@ def test_default_budget_is_five_minutes_and_two_pauses(guard):
     assert guard.DEFAULT_MAX_HOT_SECONDS == 30.0
     assert guard.DEFAULT_PAUSE_SECONDS == 300.0
     assert guard.DEFAULT_MAX_PAUSES == 2
+
+
+# --- two thresholds: may start, versus must pause ---------------------------
+
+
+def test_start_gate_and_stop_threshold_are_separate(guard):
+    """80C may start a run; 86C pauses one. One number cannot express both.
+
+    They used to be the same value, which meant raising the ceiling to allow starting
+    also permitted starting at the ceiling -- backwards. The tolerance belongs at the
+    start gate, where nothing is running yet.
+    """
+    guard.busiest_other_cpu = lambda: 0.0
+    assert guard.DEFAULT_START_CELSIUS == 80.0
+    assert guard.DEFAULT_LIMITS["cpu_package"][1] == 86.0
+    assert guard.DEFAULT_LIMITS["cpu_core"][1] == 86.0
+
+    def starts_at(temp):
+        guard.sample = lambda: [guard.Reading("cpu_package", temp)]
+        return guard.preflight().ok
+
+    assert starts_at(79.0), "79C should be fine to start a task"
+    assert not starts_at(80.0), "80C is the start gate"
+    assert not starts_at(85.0), "85C is above the start gate"
+
+
+def test_start_gate_can_be_relaxed_per_run(guard):
+    """The gate is a policy, not a law: --start-celsius has to reach it."""
+    guard.busiest_other_cpu = lambda: 0.0
+    guard.sample = lambda: [guard.Reading("cpu_package", 84.0)]
+    assert not guard.preflight().ok
+    assert guard.preflight(start_celsius=85.0).ok, "an explicit looser gate must apply"
+    assert guard.preflight(start_celsius=None).ok, "None disables the gate entirely"
+
+
+def test_stop_threshold_still_governs_a_running_job(guard):
+    """Raising the start gate must not raise the ceiling for work already running."""
+    assert guard.classify("cpu_package", 85.9) != "stop"
+    assert guard.classify("cpu_package", 86.0) == "stop"
+    assert guard.classify("cpu_core", 86.0) == "stop"
+
+
+def test_nvme_keeps_its_own_lower_ceiling(guard):
+    """The drive's limit is a hardware fact, not a preference to relax with the CPU.
+
+    A drive at 70C is already throttling while the CPU reads a comfortable number, so
+    the NVMe stop stays well below the CPU's even though the user raised the CPU.
+    """
+    assert guard.DEFAULT_LIMITS["nvme"][1] < guard.DEFAULT_LIMITS["cpu_package"][1]
+    assert guard.classify("nvme", 70.0) != "stop"
+    assert guard.classify("nvme", 76.0) == "stop"
+    # And it must not participate in the start gate, which is a CPU question.
+    assert "nvme" not in guard.START_GATED_KEYS
 
 
 def test_preflight_refuses_when_another_job_is_already_saturating_the_cpu(
