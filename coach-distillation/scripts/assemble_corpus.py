@@ -24,6 +24,12 @@ import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 GOLD_KINDS = ("bounded", "substantive", "repair", "charter")
+# Self-generated and verifier-approved. Kept separate from GOLD_KINDS because it has a
+# different provenance: the student wrote these and the bench admitted them, so they are
+# on-policy rather than first-party. Both are equally free of acceptance bias -- a reply
+# that failed the scorer was never written down -- but they are not equally
+# human-authored, and conflating the two would overstate what the corpus contains.
+RFT_KIND = "rft"
 
 
 def load_module():
@@ -50,6 +56,16 @@ def read_jsonl(path: pathlib.Path) -> list[dict]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--accepted", required=True, help="accepted teacher rows")
+    parser.add_argument(
+        "--rft",
+        default=None,
+        help="verified on-policy rows from rejection_sample.py",
+    )
+    parser.add_argument(
+        "--drop-teacher",
+        action="store_true",
+        help="omit the teacher tier entirely (v6: the 7B rows measured as a tax)",
+    )
     parser.add_argument("--output", required=True, help="corpus to write")
     parser.add_argument("--config", default="configs/regen.7b.toml")
     args = parser.parse_args()
@@ -62,22 +78,30 @@ def main() -> int:
     gold = [p for p in planned if p.kind in GOLD_KINDS]
 
     accepted = read_jsonl(pathlib.Path(args.accepted))
+    if args.drop_teacher:
+        accepted = []
+    on_policy = read_jsonl(pathlib.Path(args.rft)) if args.rft else []
+
     seen: set[str] = set()
     merged: list[dict] = []
-    for row in accepted + [
-        {
-            "id": p.id,
-            "kind": p.kind,
-            "situation": p.situation,
-            "skill": p.skill,
-            "prompt": p.prompt,
-            "constraint": p.constraint,
-            "response": p.response,
-            "citation": p.citation,
-            "user_data": p.user.digest(),
-        }
-        for p in gold
-    ]:
+    for row in (
+        accepted
+        + on_policy
+        + [
+            {
+                "id": p.id,
+                "kind": p.kind,
+                "situation": p.situation,
+                "skill": p.skill,
+                "prompt": p.prompt,
+                "constraint": p.constraint,
+                "response": p.response,
+                "citation": p.citation,
+                "user_data": p.user.digest(),
+            }
+            for p in gold
+        ]
+    ):
         if row["id"] in seen:
             continue
         if not (row.get("response") or "").strip():
