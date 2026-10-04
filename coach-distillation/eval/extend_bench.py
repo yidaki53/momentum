@@ -32,6 +32,7 @@ CORPORA = [
     pathlib.Path("data/synthetic/train.jsonl"),
     pathlib.Path("data/synthetic/train-v2.jsonl"),
     pathlib.Path("data/synthetic/train-v3.jsonl"),
+    pathlib.Path("data/synthetic/train-v4.jsonl"),
     pathlib.Path("out/regen-3b.jsonl"),
     pathlib.Path("out/regen-7b.jsonl"),
     pathlib.Path("eval/asimov_vignettes.jsonl"),
