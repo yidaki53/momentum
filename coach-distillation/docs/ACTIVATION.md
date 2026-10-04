@@ -176,6 +176,40 @@ target register. If v4 regressed on a doubled, better-gated corpus, the honest c
 is that scaling teacher rows is not the lever. Widening the hand-written bounded tier —
 and possibly applying the bounded constraint to a far larger share of the grid — is.
 
+## v5: widening the tier worked, and the shape risk did not materialise
+
+Two changes together, both aimed at the mechanism rather than at the score. The bounded
+tier went from 15 hand-written actions to 57 (75 first-party rows, 23% raw against 11%),
+and the repeat dropped from 4x to 2x so first-party lands near 38% rather than past half.
+469 pairs, three full epochs, final loss 1.209, no thermal kill.
+
+Against the same 120-item holdout:
+
+```
+                v3      v4      v5
+activation     0.53    0.44    0.55
+dignity        1.00    0.99    1.00
+grounding      1.00    1.00    1.00
+charter        1.00    0.99    0.99
+brevity        1.00    0.99    0.97
+sanity         1.00    1.00    1.00
+```
+
+0.55 clears v3 for the first time in three runs, and dignity and grounding are perfect.
+Still far short of the 0.85 gate, so this is a real improvement and not a ship.
+
+The diversity worry did not materialise, which is the more interesting half. v4's outputs
+were dominated by two shapes at 14% between them; v5 produces **120 distinct shapes across
+120 holdout items**, most frequent at 0.8%, with timer-shaped replies at 12.5%. So
+lowering the repeat to 2x while tripling the tier widened coverage rather than
+concentrating it — the v2 template pathology needs the shape to be scarce, and 57
+different actions is enough scatter to prevent that.
+
+What this settles, and what it does not: the teacher tier is not the bottleneck, and
+adding more of it made things worse rather than better. Whether the 7B is still needed at
+all is now a fair question — 256 teacher rows in a generic register may be worth less than
+zero against 57 hand-written rows in the right one.
+
 ## Sources consulted
 
 Clinical and practitioner material on task initiation, read for technique rather than
