@@ -410,6 +410,268 @@ BOUNDED_ACTIONS: tuple[tuple[str, str, str], ...] = (
         "Write one line stating what finished would look like, in the crudest possible "
         "wording, then stop. It is not a plan and it is not meant to be.",
     ),
+    # --- second batch -------------------------------------------------------
+    # Written after v4 scored 0.44 on activation while reproducing the teacher's own
+    # motivational register: "let's tackle this together", "let's break it down into
+    # smaller steps". Fifteen hand-written actions could not outweigh 256 teacher rows,
+    # so the tier is widened rather than the teacher scaled.
+    #
+    # Prompts here are deliberately distinct from every prompt in
+    # eval/golden_qa_extended.jsonl. Those 120 items are the holdout that caught the
+    # regression; training on them would make the only measurement that has ever
+    # separated v3 from v4 worthless. A test asserts the overlap is zero.
+    (
+        "the reimbursement paperwork has sat on my desk since the spring",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open the reimbursement form and fill in the date field, then stop. One field "
+        "is the whole action; the rest is a different sitting.",
+    ),
+    (
+        "I bought the textbook weeks ago and cannot bring myself to open it",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open the textbook to the first page of the chapter you bought it for, then "
+        "stop. Reading is not required and underlining is not expected.",
+    ),
+    (
+        "my code works locally and submitting it feels like standing in front of a room",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write the first line of the commit message, then stop before you push. The "
+        "message is the hard part and pushing is a separate decision for tomorrow.",
+    ),
+    (
+        "the draft email to my landlord has been rewritten eleven times",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open the draft and write the date the problem started, then stop. One fact, no "
+        "apology, no tone -- tone is added to something that exists.",
+    ),
+    (
+        "there are four hundred unread messages in the group chat and I cannot begin",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open the chat and archive the first five, then stop. Five is a number small "
+        "enough that refusing it feels unreasonable.",
+    ),
+    (
+        "I said yes to more than I can carry and now I cannot decide what to drop",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open your calendar and move the one with the nearest deadline, then stop. One "
+        "item moved is defensible on its own.",
+    ),
+    (
+        "it is four in the afternoon and I have achieved nothing today",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Pick the nearest task and write its first heading line, then stop. Four "
+        "o'clock is late for a day and early enough for one line.",
+    ),
+    (
+        "I keep tidying my desk instead of the work the desk is for",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Stop tidying and write one line about the actual task, then stop. The "
+        "tidying felt like progress and was not the task.",
+    ),
+    (
+        "the form asks for things I cannot remember and I have closed it twice",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open the form and fill in whatever you do remember, then stop. Partial is a "
+        "state a form can be in; closed twice is not progress.",
+    ),
+    (
+        "I need to make a phone call and have rehearsed it for a week",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write the first sentence you would say out loud, then stop. One sentence in "
+        "writing is not the call, and the call is easier when it exists.",
+    ),
+    (
+        "the laundry has been in the machine since yesterday and I keep avoiding it",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open the machine and hang up one load, then stop. The rest can wait; a machine "
+        "left closed is the thing you see every time you look.",
+    ),
+    (
+        "I have not moved my body in days and starting exercise feels monumental",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Put your shoes on and stand by the door, then stop. Shoes on is the entire task "
+        "and going outside is tomorrow's decision.",
+    ),
+    (
+        "I keep snoozing and then punishing myself for snoozing",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Move the alarm to the far side of the room, then stop. The alarm now costs "
+        "something to silence, which is most of the difference.",
+    ),
+    (
+        "my medication is nearly out and I have not reordered it",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open the pharmacy site and start the reorder page, then stop before submitting. "
+        "Finding the button is the whole action today.",
+    ),
+    (
+        "I have not been sleeping and everything feels harder than it is",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write one line about the time you actually went to bed last night, then stop. "
+        "One line, and no conclusions drawn from it.",
+    ),
+    (
+        "I missed three days of the habit and now the streak feels gone",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open the thing and do the first line, then stop. The streak is a number on a "
+        "screen and the line is the actual habit.",
+    ),
+    (
+        "everyone around me seems to cope and I cannot see how",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write one line about something you did today that they would not know about, "
+        "then stop. You see their front and yours is out of frame.",
+    ),
+    (
+        "I feel like a fraud for being on the team at all",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write one line naming something you have actually done on it, then stop. One "
+        "line of evidence is worth more than the feeling.",
+    ),
+    (
+        "I read the same three pages and remember none of it",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write one sentence about what you just read, then stop. One sentence is not "
+        "notes and it is not comprehension, it is proof the page happened.",
+    ),
+    (
+        "my notes from the last month are a mess I cannot face",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write the first heading the section needs, then stop. Rereading is what made "
+        "the notes unusable, not the notes.",
+    ),
+    (
+        "the spreadsheet formula has defeated me for two days",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write one line saying what you expected the formula to return, then stop. One "
+        "line turns hunting into comparing.",
+    ),
+    (
+        "the test passes on my machine and I am convinced it will fail elsewhere",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Add one print statement and run the test once, then stop. One run tells you "
+        "more than a day of imagining what it says.",
+    ),
+    (
+        "the data is a mess and I do not know which end to start",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Delete one column you are certain you do not need, then stop. Cleaning by "
+        "removal is faster than deciding what to keep.",
+    ),
+    (
+        "I have two hundred pages to read and cannot turn to the first",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Read one page, then stop. Two hundred is not one job, it is one page "
+        "repeated, and one page is today.",
+    ),
+    (
+        "I keep waiting for the motivation to turn up",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Set a timer for five minutes and start when it rings, then stop. Motivation is "
+        "not a precondition for five minutes.",
+    ),
+    (
+        "I keep postponing it to tomorrow and tomorrow is not arriving",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open the file and set a timer for ten minutes, then stop. Ten minutes exists "
+        "inside every day and tomorrow never gets it.",
+    ),
+    (
+        "I feel behind on everything at once",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write the name of what would make today count, then stop. One line, and "
+        "everything else is genuinely a tomorrow problem.",
+    ),
+    (
+        "I have half-finished four things and finished none of them",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open the one you would most like to have closed and write its next line, then "
+        "stop. Closed beats new and one line is a closing movement.",
+    ),
+    (
+        "I do not know what finishing actually looks like",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write one line describing done in the crudest terms available, then stop. An "
+        "invisible end cannot be walked towards.",
+    ),
+    (
+        "the instructions were vague and I have been waiting for clarity",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write one line asking what outcome they want, then stop. One question costs "
+        "less than a week of the wrong work.",
+    ),
+    (
+        "I am waiting for permission that nobody is going to give",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write the smallest version you would not need permission for, then stop. One "
+        "line, and some of it was always yours to decide.",
+    ),
+    (
+        "I cannot focus long enough to do any of it properly",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Set a timer for ten minutes and open the file, then stop. Ten minutes of "
+        "proper attention is a real unit of work.",
+    ),
+    (
+        "I keep interrupting myself to check something else",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write one line naming what you were doing before the interruption, then stop. "
+        "One line is what stops the next lap around.",
+    ),
+    (
+        "my phone is the only reason I get anything done and also the reason I do not",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Put the phone in another room and set a timer for ten minutes, then stop. Ten "
+        "minutes and one room; the phone needs neither.",
+    ),
+    (
+        "I got some good work done this morning and it has all come apart since",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Set a timer for ten minutes and reopen the thing, then stop. Ten minutes gets "
+        "the thread back and does not need the morning to have been perfect.",
+    ),
+    (
+        "I need to book something I have been putting off for a month",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open the booking page and look at the first available slot, then stop. Looking "
+        "is the whole action; booking is a second and braver one.",
+    ),
+    (
+        "the paperwork is a wall and I cannot find the first page",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Put your address in the first field, then stop. One field turns a wall into a "
+        "form, and a form can be partly done.",
+    ),
+    (
+        "I keep making plans instead of doing any of them",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write one line naming the first physical action, then stop. One line converts "
+        "a plan into something with a verb in it.",
+    ),
+    (
+        "I am too tired for any of this to be done properly",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open the file and write one line badly, then stop. Badly is available when "
+        "properly is not, and one line still exists tomorrow.",
+    ),
+    (
+        "I stopped again this week and I am sick of it",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open the thing and do the first line, then stop. This is a description, and it "
+        "is not a sentence about who you are.",
+    ),
+    (
+        "I cannot stop thinking about yesterday instead of today",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Write one line about what you would do differently, then stop. One line turns "
+        "a loop into something that can be closed.",
+    ),
+    (
+        "everyone else finished on time and I did not",
+        BOUNDED_ACTION_CONSTRAINT,
+        "Open your task and write the next heading, then stop. Their deadline was not "
+        "your deadline and one heading is still yours.",
+    ),
 )
 
 

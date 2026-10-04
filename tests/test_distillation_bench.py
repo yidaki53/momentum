@@ -343,6 +343,54 @@ def test_gate_still_accepts_a_reply_that_only_adapts_the_example(pairs):
     assert accepted, f"adapted reply rejected: {reason}"
 
 
+def test_bounded_action_prompts_do_not_appear_in_the_holdout(pairs, bench):
+    """The bounded tier must not train on the 120-item activation holdout.
+
+    That set is the only measurement that has ever separated v3 from v4 -- it caught
+    v4's regression to 0.44, where the 20-item original set could not. Writing
+    hand-written training pairs whose prompts overlap it would buy an activation
+    score that means nothing, and it would do so invisibly: the score would improve.
+
+    Widening this tier is the current lever on activation, which is exactly why it is
+    the place the leak would be introduced.
+    """
+    import importlib.util
+    import sys as _sys
+
+    spec = importlib.util.spec_from_file_location(
+        "cd_extra_activation_items", EVAL / "extra_activation_items.py"
+    )
+    assert spec and spec.loader
+    items = importlib.util.module_from_spec(spec)
+    _sys.modules["cd_extra_activation_items"] = items
+    spec.loader.exec_module(items)
+
+    train = {situation.strip().lower() for situation, _c, _r in pairs.BOUNDED_ACTIONS}
+    holdout = {prompt.strip().lower() for prompt, _r in items.ITEMS}
+    overlap = train & holdout
+    assert not overlap, f"bounded tier trains on holdout prompts: {sorted(overlap)}"
+
+
+def test_bounded_action_prompts_are_distinct_from_each_other(pairs):
+    """Duplicate prompts would silently inflate the tier's apparent weight.
+
+    ``rebalance`` repeats by row, so two identical situations contribute twice to the
+    gold ratio while teaching one thing. The tier looks bigger than its coverage.
+    """
+    prompts = [s.strip().lower() for s, _c, _r in pairs.BOUNDED_ACTIONS]
+    assert len(prompts) == len(set(prompts)), "duplicate prompts in the bounded tier"
+
+
+def test_bounded_action_tier_is_large_enough_to_outweigh_the_teacher(pairs):
+    """The tier grew because v4 regressed on 15 actions against 256 teacher rows.
+
+    This is a floor rather than a target: it fails if the tier is cut back to a size
+    that has already been measured to be too small, and it does not pretend the right
+    number is known, because it is not. What is known is the number that was too small.
+    """
+    assert len(pairs.BOUNDED_ACTIONS) >= 40, "bounded tier too small to shift the axis"
+
+
 def test_corpus_gate_does_not_over_gate_unbounded_constraints(pairs):
     """Delegating to the bench must not start rejecting ordinary prose.
 
