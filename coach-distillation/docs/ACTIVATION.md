@@ -266,6 +266,58 @@ carries over.
 Still not shippable. The honest summary of four runs: **the teacher was the problem, not
 the hyperparameters.**
 
+## v7: SHIP, and the last blocker was not the model at all
+
+v7 widens the sampling pool to 87 situations (57 bounded + 30 new), which fixes the
+coverage ceiling that capped v6. First result was **activation 0.86 — the gate passed for
+the first time** — with brevity failing at 0.88 and the other four axes at 1.00.
+
+The brevity failures were not corpus contamination. 13 of the 14 were one sentence repeated:
+
+> "Rename the file named Documents/Resume.pdf." × 82
+
+Filtering the corpus would have been treating the symptom. The training rows contain 4
+repetitive replies out of 491. The real cause is the **decoder**: temperature 0.5 with **no
+repetition penalty**, in both `eval_bench.py` and the app's `LlmEngine`. A 0.5B model at that
+temperature will sometimes fall into a decode loop, and this engine is the one the app
+ships — so this was a user-facing defect that the bench happened to measure.
+
+With `repeat_penalty = 1.15` on both generation paths in the app and in the bench:
+
+```
+                v3      v4      v5      v6      v7
+activation     0.53    0.44    0.55    0.81    0.95
+dignity        1.00    0.99    1.00    1.00    1.00
+grounding      1.00    1.00    1.00    1.00    1.00
+charter        1.00    0.99    0.99    1.00    1.00
+brevity        1.00    0.99    0.97    1.00    1.00
+sanity         1.00    1.00    1.00    1.00    1.00
+                                --- with repeat_penalty ---
+activation                                  0.95   (114/120)
+
+SHIP: yes
+```
+
+### One thing to know about reading these numbers
+
+Every bench run up to v7 used `--calibrate`, which **forces `ship = False` unconditionally**
+at the end of `main()`. So "SHIP: no" in any earlier log said nothing about whether the axes
+passed — it was a property of the flag, not of the model. The axis table beside it was
+accurate; the verdict line was not. The numbers above are re-run without it.
+
+Worth remembering as a class of trap: a flag meant to make a number *less* authoritative
+also suppressed the one field that would have told you the number was good.
+
+### Still outstanding
+
+`downloader.py` is unchanged. Registering the model needs a hosted artefact and a real URL,
+and none exists yet — the GGUF is a local 379 MB file in `out/gguf/`.
+
+The charter vignettes report **UNMEASURED: 10 of 10**. All six release axes pass, but those
+ten prompts have never been generated against this model, so the charter's disclosure and
+autonomy duties are unverified rather than passing. That is a coverage gap, not a failure,
+and it is exactly what the bench is built to say out loud.
+
 ## Sources consulted
 
 Clinical and practitioner material on task initiation, read for technique rather than
