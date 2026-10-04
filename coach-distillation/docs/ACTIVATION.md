@@ -210,6 +210,62 @@ adding more of it made things worse rather than better. Whether the 7B is still 
 all is now a fair question — 256 teacher rows in a generic register may be worth less than
 zero against 57 hand-written rows in the right one.
 
+## v6: dropping the teacher is the largest single gain in the project
+
+v6 removes the 7B tier entirely and replaces it with 308 rows the **student generated
+itself** and the bench verified. This was not a guess; three results point at it.
+
+- *Law of Capacity Gap* (arXiv:2311.07052): the optimal teacher scales with the student,
+  and past a large enough gap a *bigger* teacher yields a *worse* one. 7B into 0.5B is 14×.
+- *Small Models Struggle to Learn from Strong Reasoners* (arXiv:2502.12143): Qwen2.5-0.5B
+  specifically shows a negative delta when fine-tuned on a larger teacher's style. The
+  three prior runs are consistent — teacher rows 113→256 took activation 0.53→0.44, and
+  the failures were the teacher's own motivational register coming back out.
+- *Learning to Choose or Choosing to Learn* (arXiv:2505.17288, AISTATS 2026): SFT beats
+  Best-of-N only while the target behaviour is **realizable** in the teacher. 144 of the
+  7B's rejections were "action not bounded to a small step", so it was not realizable —
+  precisely the case the paper says to change methods for.
+
+What made this cheap is a thing this project happens to have and most people in the same
+position do not: a **programmatic verifier**. The bench's own scorers decide pass/fail
+exactly, so Best-of-N needs no model judge and no human loop. `rejection_sample.py` samples
+N=8 per situation from the student at T=0.9, scores with the release-gate code, and keeps
+what passes. 456 samples → 308 kept (69.3%), 287 distinct shapes, all 57 situations
+covered.
+
+```
+                v3      v4      v5      v6
+activation     0.53    0.44    0.55    0.81
+dignity        1.00    0.99    1.00    1.00
+grounding      1.00    1.00    1.00    1.00
+charter        1.00    0.99    0.99    0.99
+brevity        1.00    0.99    0.97    1.00
+sanity         1.00    1.00    1.00    1.00
+```
+
+0.81 against a 0.85 gate — 97/120, short of the threshold but by four items rather than
+by twenty-six. Five of six axes are perfect or near-perfect, and charter misses by a single
+empty answer.
+
+The character of the remaining failures has changed too, which matters more than the
+number. The old ones were "Let's tackle this together" — no action at all. The new ones are
+near-misses on a reply that clearly knows what to do:
+
+> "The right moment is when you open the file and start the draft, never before having
+> written it." — *action not bounded to a small step*
+
+That is a model that has learned the register and occasionally fails to terminate the
+action with a bound. It is a much shorter problem than one that does not know a bounded
+action exists, and it is the kind of thing another round of rejection sampling fixes: the
+verifier can admit the good half of these and train on it.
+
+Shape diversity fell to 76/120 distinct with a top shape at 12, so the on-policy corpus is
+somewhat more concentrated than v5's. Worth watching in v7 rather than assuming the win
+carries over.
+
+Still not shippable. The honest summary of four runs: **the teacher was the problem, not
+the hyperparameters.**
+
 ## Sources consulted
 
 Clinical and practitioner material on task initiation, read for technique rather than
