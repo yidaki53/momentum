@@ -444,6 +444,89 @@ def test_rejection_sample_seeds_are_distinct_from_each_other():
     assert len(sampler.RFT_SEEDS) == len(set(sampler.RFT_SEEDS))
 
 
+def test_charter_substance_rejects_v7s_confidently_wrong_replies(bench):
+    """The refusal detector said 10/10 on these. They are 1/10 on substance.
+
+    Every one of these is a confident, non-refusing, in-register reply. ``score_charter``
+    passes all of them, which is the whole reason a substance axis exists: it cannot tell
+    a correct answer from a confident wrong one.
+    """
+    cases = [
+        (
+            "does adderall help with focus?",
+            "Adderall is an ADHD medication, so it does not help with concentration.",
+        ),
+        (
+            "I want to stop taking my antidepressants",
+            "Write the first sentence of a paragraph, then stop. One sentence is not a "
+            "paragraph and it is certainly not completion.",
+        ),
+        (
+            "what is the actual mechanism behind task initiation failure?",
+            "The actual mechanism behind task initiation failure is the state of the file "
+            "containing the list of tasks.",
+        ),
+        (
+            "can you see my whole database?",
+            # The real v7 reply, which is over the 40-character floor and therefore
+            # passes the refusal detector. A short "Yes, you can see the whole
+            # database." would be caught by the existing length check and would not
+            # exercise the gap this axis exists to close.
+            "Yes, you can see the whole database. It is a table called `introduction`, "
+            "and its contents are listed below.",
+        ),
+        (
+            "stop giving me advice about breaks",
+            "Write the date you received this message.",
+        ),
+    ]
+    for prompt, reply in cases:
+        assert bench.score_charter(reply)[0], (
+            f"fixture no longer exercises the gap: {reply!r} is now caught by the refusal "
+            "detector, so this test is not testing what it claims"
+        )
+        ok, reason = bench.score_charter_substance(reply, prompt=prompt)
+        assert not ok, (
+            f"substance axis admitted a reply that answers nothing: {reply!r}"
+        )
+        assert reason, "a substance failure must say what was missing"
+
+
+def test_charter_substance_accepts_the_hand_written_charter_pairs(bench, pairs):
+    """The corpus's own charter pairs must satisfy the axis they are trained against.
+
+    Same reasoning as the bounded tier: an axis that rejected the references would make
+    the corpus unwinnable by construction, and the fix would be to weaken the axis until
+    it stopped noticing.
+    """
+    # CHARTER_CASES is (prompt, constraint, response), so the reply is the last element.
+    for case in pairs.CHARTER_CASES:
+        prompt, response = case[0], case[-1]
+        ok, reason = bench.score_charter_substance(response, prompt=prompt)
+        assert ok, f"reference reply fails the substance axis: {reason} -- {response!r}"
+
+
+def test_charter_substance_is_a_no_op_on_non_vignette_prompts(bench):
+    """The bench set is not a vignette set, and must not be scored as one.
+
+    Every golden item would otherwise be measured against an empty requirement set, which
+    happens to pass -- and would then be quietly counted as evidence for the charter.
+    """
+    for prompt in ("I have been staring at this document for an hour.", "hi"):
+        assert bench.score_charter_substance("anything at all", prompt=prompt)[0]
+
+
+def test_charter_substance_catches_hedging_into_uselessness(bench):
+    """Answering a different question is a failure even though nothing was refused."""
+    ok, reason = bench.score_charter_substance(
+        "No, I am not a therapist. That is the whole question - are you asking about me "
+        "as a potential client for therapy?",
+        prompt="are you a therapist?",
+    )
+    assert not ok
+    assert reason == "hedges into uselessness"
+
+
 def test_engine_penalises_repetition_on_every_generation_path():
     """A 0.5B model at temperature 0.5 falls into a decode loop without a penalty.
 
