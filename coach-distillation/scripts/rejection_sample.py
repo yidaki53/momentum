@@ -80,12 +80,71 @@ def shape_of(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-zA-Z ]", " ", text).lower()).strip()
 
 
+# Round-2 seed situations. v6 sampled only the bounded tier, so its 308 rows span 57
+# situations however many samples each produced. The bottleneck for v7 is coverage, not
+# volume: a seed pool of 57 cannot teach the model a situation it is never asked about,
+# and the 120-item holdout is exactly the set of situations it IS asked about on unseen
+# prompts.
+#
+# So these are new situations, topically adjacent to the bounded tier -- so the correct
+# answer is in-register -- but lexically distinct from every holdout prompt. A test
+# asserts zero overlap with eval/golden_qa_extended.jsonl, which is the only measurement
+# that has separated v3 from v4 and v5 from v6.
+#
+# Kept as data rather than folded into the bounded tier because these have no hand-written
+# reference: they are sampling prompts, not training pairs. A hand-written answer for each
+# would just be a longer bounded tier wearing a different name.
+RFT_SEEDS: tuple[str, ...] = (
+    "the reply I owe my manager has been sitting in my drafts since Monday",
+    "I have three tabs of research open and no notes in any of them",
+    "the presentation is in an hour and the slides are still an outline",
+    "I keep tidying the flat and avoiding the thing the tidying is for",
+    "I have to give a talk on Thursday and I have not written a word",
+    "the revision my supervisor sent back is sitting unread in my inbox",
+    "I cannot begin the application even though the form is already open",
+    "my headphones are on and the task still has not started",
+    "I have to sign the form and I have been looking at it for days",
+    "the washing needs doing and I have decided it is a tomorrow problem",
+    "I keep writing emails in my head and never sending any of them",
+    "the coursework brief is open and I have read the same paragraph twice",
+    "I have to make the call to the clinic and I am putting it off",
+    "I bought the equipment and have not set any of it up",
+    "my notes from the seminar are just a photograph of a whiteboard",
+    "I keep opening the tracker and closing it again",
+    "the reply to my landlord is drafted and I have rewritten it four times",
+    "I have to ring the bank about the fee and I cannot face the call",
+    "the exercise plan says five days and I have done none of them",
+    "I have to scan the documents and the scanner is a whole separate job",
+    "I keep meaning to look up the address and never do",
+    "I have to update my will and I have been putting it off for years",
+    "the email to cancel the subscription is written but not sent",
+    "I have to be at the appointment in an hour and have not left",
+    "I keep rearranging my desk instead of starting the work",
+    "the reading list is fourteen items long and I have read none of them",
+    "I have to write the summary tonight and have not opened the file",
+    "my password reset email is unopened and I cannot log in",
+    "I have to return the library books and they are overdue",
+    "I keep telling myself I will start properly after the weekend",
+)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--student", default="out/student-v5")
     parser.add_argument("--config", default="configs/retrain.v5.toml")
     parser.add_argument("--output", default="data/synthetic/train-v6-rft.jsonl")
-    parser.add_argument("--limit", type=int, default=40, help="situations to expand")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help=(
+            "cap the situations sampled (0 = the whole pool). The default used to be 40,"
+            " which silently truncated the pool to the first 40 bounded situations and"
+            " made --seed-source wide a no-op -- the whole point of the flag was to add"
+            " seeds and the seeds past position 40 were never sampled. A cap that"
+            " quietly discards the thing you changed is worse than no cap."
+        ),
+    )
     parser.add_argument("--n", type=int, default=8, help="samples per situation")
     parser.add_argument("--temperature", type=float, default=0.9)
     parser.add_argument(
@@ -95,6 +154,12 @@ def main() -> int:
         help="max rows sharing one normalised shape",
     )
     parser.add_argument("--max-new-tokens", type=int, default=80)
+    parser.add_argument(
+        "--seed-source",
+        choices=("bounded", "wide"),
+        default="wide",
+        help="bounded = the hand-written tier only (v6); wide = plus RFT_SEEDS",
+    )
     args = parser.parse_args()
 
     pairs_mod = _load("build_distill_pairs", HERE / "build_distill_pairs.py")
@@ -115,11 +180,18 @@ def main() -> int:
     config = pairs_mod.load_config(pathlib.Path(args.config))
     student_id = config.get("student", {}).get("model_id", "Qwen/Qwen2.5-0.5B-Instruct")
 
-    # Seeds: the bounded tier. These are the situations where a correct reply exists and
-    # the student is closest to producing one.
-    seeds = list(pairs_mod.BOUNDED_ACTIONS)[: args.limit]
+    # Seeds: by default the bounded tier PLUS the wider RFT_SEEDS pool, because coverage
+    # is what round 2 needs. --seed-source bounded reproduces v6 exactly, which is what
+    # the one-sided comparison in docs/ACTIVATION.md rests on.
+    if args.seed_source == "bounded":
+        seeds = [(s, c, None) for s, c, _r in pairs_mod.BOUNDED_ACTIONS]
+    else:
+        seeds = [(s, c, None) for s, c, _r in pairs_mod.BOUNDED_ACTIONS]
+        seeds += [(s, pairs_mod.BOUNDED_ACTION_CONSTRAINT, None) for s in RFT_SEEDS]
+    if args.limit:
+        seeds = seeds[: args.limit]
     if not seeds:
-        raise SystemExit("no bounded seeds found")
+        raise SystemExit("no seeds found")
 
     tokenizer = AutoTokenizer.from_pretrained(student_id)
     model = AutoModelForCausalLM.from_pretrained(
@@ -191,7 +263,14 @@ def main() -> int:
             stats["passed"] += 1
             rows.append(
                 {
-                    "id": f"rft:{index:03d}:{shape_counts[key]}",
+                    # A global counter, so this MUST be paired with a global unique
+                    # suffix. Using shape_counts[key] here collided every seed's first
+                    # accepted row onto the same id -- 495 rows collapsed to 104 on
+                    # assembly. Worse, min_shapes is enforced against the same global
+                    # count, so the cap behaved as "two per shape across the whole run"
+                    # rather than "two per shape per situation", which quietly throttled
+                    # coverage exactly when the pool was widened to get more of it.
+                    "id": f"rft:{len(rows):04d}",
                     "kind": "rft",
                     "situation": situation,
                     "skill": "bounded first action, self-generated and verified",

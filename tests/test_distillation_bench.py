@@ -46,6 +46,32 @@ def pairs():
     return _load("build_distill_pairs")
 
 
+def _load_extra_activation_items():
+    """Load the extended holdout by path; it lives in eval/, not scripts/."""
+    path = ROOT / "coach-distillation" / "eval" / "extra_activation_items.py"
+    spec = importlib.util.spec_from_file_location("cd_extra_activation_items", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["cd_extra_activation_items"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_rejection_sample():
+    """Load the sampler by path, as ``_load`` does for the scripts directory.
+
+    Importing it normally would pull torch and transformers into a suite that otherwise
+    runs with neither.
+    """
+    path = ROOT / "coach-distillation" / "scripts" / "rejection_sample.py"
+    spec = importlib.util.spec_from_file_location("cd_rejection_sample", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["cd_rejection_sample"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 @pytest.fixture(scope="module")
 def trainer():
     return _load("train_distill")
@@ -389,6 +415,53 @@ def test_bounded_action_tier_is_large_enough_to_outweigh_the_teacher(pairs):
     number is known, because it is not. What is known is the number that was too small.
     """
     assert len(pairs.BOUNDED_ACTIONS) >= 40, "bounded tier too small to shift the axis"
+
+
+def test_rejection_sample_seeds_do_not_appear_in_the_holdout():
+    """The v7 sampling prompts must not be the holdout's prompts.
+
+    Rejection sampling trains on whatever situation it is prompted with, so a seed
+    prompt that appears in eval/golden_qa_extended.jsonl turns that holdout item into
+    training data. That set is the only measurement that has separated v3 from v4, v5
+    from v6, and would then separate v7 from v6 -- and a leak would improve the score
+    while destroying its meaning.
+
+    Coverage is why this is a live risk: v6 could only sample 57 situations because that
+    was all it had, so widening the pool means writing new prompts, and the natural move
+    when writing prompts is to reuse the ones already in front of you.
+    """
+    sampler = _load_rejection_sample()
+    items = _load_extra_activation_items()
+    seeds = {s.strip().lower() for s in sampler.RFT_SEEDS}
+    holdout = {prompt.strip().lower() for prompt, _r in items.ITEMS}
+    overlap = seeds & holdout
+    assert not overlap, f"sampling prompts overlap the holdout: {sorted(overlap)}"
+
+
+def test_rejection_sample_seeds_are_distinct_from_each_other():
+    """A duplicate seed spends N generations re-teaching one situation."""
+    sampler = _load_rejection_sample()
+    assert len(sampler.RFT_SEEDS) == len(set(sampler.RFT_SEEDS))
+
+
+def test_rejection_sample_row_ids_are_unique():
+    """Row ids must be unique within a sampler run.
+
+    Two rows sharing an id are not a cosmetic problem: ``assemble_corpus.py`` dedupes by
+    id, so a collision silently deletes the duplicate. 495 sampled rows collapsed to 104
+    because the id was built from a global shape counter rather than a per-row one, and
+    the only symptom was a corpus that was a quarter of the size it claimed.
+
+    The check is on the id *expression* because the sampler needs a GPU to run, and the
+    bug is in how the string is built rather than in the sampling.
+    """
+    source = (
+        ROOT / "coach-distillation" / "scripts" / "rejection_sample.py"
+    ).read_text()
+    assert '"id": f"rft:{len(rows)' in source, (
+        "the rft row id must be derived from len(rows); a counter that resets or is "
+        "shared across seeds produces colliding ids"
+    )
 
 
 def test_corpus_gate_does_not_over_gate_unbounded_constraints(pairs):
