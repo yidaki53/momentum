@@ -107,11 +107,18 @@ def build_chat_prompt(
     user_message: str,
     user_context: str,
     chat_history: list[dict[str, str]],
+    search_context: str | None = None,
 ) -> list[dict[str, str]]:
     """Build a chat-style message list for the LLM.
 
     The user's real app data -- active, pending and completed tasks among it --
     is injected so the coach reasons about what the user is actually doing.
+
+    ``search_context`` is an optional labelled block from ``llm.web_search``, added
+    only when a lookup actually returned something. Order is the design: system rules,
+    then the user's own data, then web results, then history. The user's tasks, scores
+    and history are first-class context and a web result never displaces them --
+    enforced here rather than left to a prompt instruction a 0.5B may not follow.
 
     The task-marker instruction is appended only when the message actually asks
     for a task. It is never part of the standing system prompt: a small model
@@ -136,6 +143,10 @@ def build_chat_prompt(
             ),
         },
     ]
+    # After the user's data, never before: that block is the ground truth for this
+    # user, and web results are only for questions it cannot answer.
+    if search_context and search_context.strip():
+        messages.append({"role": "system", "content": search_context.strip()})
     if asks_for_task_creation(user_message):
         messages.append({"role": "system", "content": _TASK_CREATION_INSTRUCTION})
     messages.extend(_clean_history(chat_history, user_message))

@@ -55,3 +55,10 @@ WARP.md
 AGENTS.md
 CLAUDE.md
 .venv-build
+
+# Run telemetry: thermal-guard CSVs and training logs. coach-distillation/out/ is
+# already ignored by that directory's own .gitignore; this is the same rule for the
+# repository root, where `thermal_guard.py --log out/thermal.csv` writes when a job is
+# launched from here. The logs have to outlive a crash -- on disk, which is what the
+# file is for -- they are not project history.
+/out/
