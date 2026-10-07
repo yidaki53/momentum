@@ -22,6 +22,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -261,18 +262,143 @@ def _make_collator(tokenizer: Any) -> Any:
     return collate
 
 
+def _saved_checkpoints(output_dir: str) -> list[str]:
+    """Every complete checkpoint under *output_dir*, oldest first."""
+    root = Path(output_dir)
+    found: list[tuple[int, str]] = []
+    for child in root.glob("checkpoint-*"):
+        if child.is_dir() and (child / "trainer_state.json").is_file():
+            suffix = child.name.split("-", 1)[1]
+            if suffix.isdigit():
+                found.append((int(suffix), str(child)))
+    return [path for _, path in sorted(found)]
+
+
+def _corpus_fingerprint(pairs: list[dict[str, Any]]) -> str:
+    """A short digest of the training pairs, used to detect a corpus swap across resumes."""
+    blob = json.dumps(pairs, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def _recorded_fingerprint(checkpoint: Path) -> str | None:
+    """The corpus digest stored alongside a checkpoint, or None if it predates this.
+
+    Written by this script on every save. A checkpoint from before the field existed
+    returns None, which skips the check rather than failing: refusing to resume an
+    otherwise-valid checkpoint would be the worse surprise.
+    """
+    for name in ("corpus_fingerprint.json", "momentum_corpus_fingerprint"):
+        candidate = checkpoint / name
+        if candidate.is_file():
+            try:
+                return json.loads(candidate.read_text()).get("fingerprint")
+            except (OSError, ValueError):
+                return None
+    return None
+
+
+def find_latest_checkpoint(output_dir: str) -> str | None:
+    """Return the newest complete ``checkpoint-N`` under *output_dir*, or None.
+
+    Checkpoints are sorted numerically rather than lexicographically: ``checkpoint-9``
+    sorts after ``checkpoint-55`` as a string, and picking that one would silently throw
+    away most of a run. Completeness is checked by ``trainer_state.json`` because the
+    trainer writes the state last, so a checkpoint interrupted mid-save has a directory
+    and weights but no state and cannot be resumed from.
+    """
+    root = Path(output_dir)
+    if not root.is_dir():
+        return None
+    candidates: list[tuple[int, Path]] = []
+    for child in root.glob("checkpoint-*"):
+        if not child.is_dir() or not (child / "trainer_state.json").is_file():
+            continue
+        suffix = child.name.split("-", 1)[1]
+        if suffix.isdigit():
+            candidates.append((int(suffix), child))
+    if not candidates:
+        return None
+    return str(max(candidates)[1])
+
+
+def resolve_cold_start_dir(train_cfg: dict[str, Any]) -> Optional[str]:
+    """Return a verified adapter path, or None when this run starts from the base model.
+
+    Missing files fail here, before ``from_pretrained`` spends minutes downloading the
+    0.5B, because a typo'd ``out/lora-v9c`` is otherwise an hour of heat for a
+    FileNotFoundError at the Peft load.
+    """
+    raw = train_cfg.get("cold_start_dir") or None
+    if not raw:
+        return None
+    adapter = Path(str(raw))
+    if not (adapter / "adapter_model.safetensors").is_file():
+        raise FileNotFoundError(
+            f"cold_start_dir {adapter} has no adapter_model.safetensors"
+        )
+    return str(adapter)
+
+
+def load_student_for_sft(config: dict[str, Any], *, full_finetune: bool) -> Any:
+    """Load the student with exactly one LoRA: a cold start, or a fresh adapter.
+
+    The same trap as ``train_onpolicy._load_student``: loading a saved adapter and
+    then calling ``get_peft_model`` stacks a frozen cold start under a random LoRA.
+    v11 continues from v9c, so that bug would throw away the only student that
+    currently ships on the golden bench.
+    """
+    from peft import (  # type: ignore[import-not-found]
+        LoraConfig,
+        PeftModel,
+        get_peft_model,
+    )
+    from transformers import AutoModelForCausalLM  # type: ignore[import-not-found]
+
+    student = config.get("student", {})
+    train_cfg = config.get("train", {})
+    model_id = student.get("model_id", "Qwen/Qwen2.5-0.5B-Instruct")
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id, torch_dtype="auto", device_map="auto"
+    )
+    if full_finetune:
+        return model
+    cold_start_dir = resolve_cold_start_dir(train_cfg)
+    if cold_start_dir:
+        model = PeftModel.from_pretrained(model, cold_start_dir, is_trainable=True)
+        model.print_trainable_parameters()
+        # `cold_start_dir`, not `adapter`: there is no `adapter` in scope here, so this
+        # line raised NameError on exactly the path it exists to report -- resuming a
+        # cold start, which is what v11 does from v9c. Found by the ruff hook, after the
+        # cold-start path had been exercised only through train_onpolicy._load_student,
+        # which has its own correct copy of this log line.
+        log.info("resumed cold-start adapter from %s (trainable)", cold_start_dir)
+        return model
+    model = get_peft_model(
+        model,
+        LoraConfig(
+            r=int(train_cfg.get("lora_r", 32)),
+            lora_alpha=int(train_cfg.get("lora_alpha", 64)),
+            lora_dropout=float(train_cfg.get("lora_dropout", 0.05)),
+            target_modules=list(train_cfg.get("target_modules", [])),
+            task_type="CAUSAL_LM",
+        ),
+    )
+    model.print_trainable_parameters()
+    return model
+
+
 def run_supervised(
     config: dict[str, Any],
     pairs: list[dict[str, Any]],
     *,
     full_finetune: bool,
     max_seq_len: int,
+    resume_from: str | None = None,
+    corpus_fingerprint: str | None = None,
 ) -> str:
     """Fine-tune the student on the corpus and return the adapter output dir."""
     from datasets import Dataset  # type: ignore[import-not-found]
-    from peft import LoraConfig, get_peft_model  # type: ignore[import-not-found]
     from transformers import (  # type: ignore[import-not-found]
-        AutoModelForCausalLM,
         AutoTokenizer,
         Trainer,
         TrainingArguments,
@@ -300,21 +426,7 @@ def run_supervised(
         len(dataset[0]["input_ids"]),
     )
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype="auto", device_map="auto"
-    )
-    if not full_finetune:
-        model = get_peft_model(
-            model,
-            LoraConfig(
-                r=int(train_cfg.get("lora_r", 32)),
-                lora_alpha=int(train_cfg.get("lora_alpha", 64)),
-                lora_dropout=float(train_cfg.get("lora_dropout", 0.05)),
-                target_modules=list(train_cfg.get("target_modules", [])),
-                task_type="CAUSAL_LM",
-            ),
-        )
-        model.print_trainable_parameters()
+    model = load_student_for_sft(config, full_finetune=full_finetune)
 
     if config.get("train", {}).get("gradient_checkpointing", False):
         # A 0.5B model with a 151k vocab keeps a batch*seq*vocab float32 logits tensor
@@ -354,8 +466,30 @@ def run_supervised(
         train_dataset=dataset,
         data_collator=_make_collator(tokenizer),
     )
-    trainer.train()
+    if resume_from:
+        # Trainer.train(resume_from_checkpoint=...) restores optimizer state, the LR
+        # schedule position and the RNG, so the run continues as if it had never been
+        # interrupted. This matters because the thermal guard has killed this run three
+        # times: restarting from the adapter alone would silently reset the LR schedule
+        # and re-do the warmup, which is a different run wearing the same name.
+        log.info("resuming from %s", resume_from)
+    trainer.train(resume_from_checkpoint=resume_from)
     trainer.save_model(output_dir)
+    # Recorded beside the adapter so a later --resume can tell whether the corpus is
+    # still the one this checkpoint was trained against.
+    if corpus_fingerprint:
+        for target in (
+            Path(output_dir),
+            *[Path(c) for c in _saved_checkpoints(output_dir)],
+        ):
+            try:
+                (target / "corpus_fingerprint.json").write_text(
+                    json.dumps({"fingerprint": corpus_fingerprint}, indent=2)
+                )
+            except OSError as exc:
+                log.warning(
+                    "could not record corpus fingerprint in %s: %s", target, exc
+                )
     log.info("saved adapter to %s", output_dir)
     return output_dir
 
@@ -402,6 +536,42 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument("--max-pairs", type=int, default=0)
     parser.add_argument("--skip-merge", action="store_true")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "continue from the newest complete checkpoint in the config's output_dir. "
+            "Restores optimizer state and the LR schedule, so the run continues as one "
+            "run rather than silently restarting the warmup."
+        ),
+    )
+    parser.add_argument(
+        "--resume-from",
+        default=None,
+        help="explicit checkpoint path, overriding --resume's automatic choice",
+    )
+    parser.add_argument(
+        "--prebuilt-adapter",
+        default=None,
+        help=(
+            "skip training and merge this adapter into the base model instead. Used to "
+            "evaluate a composition from merge_adapters.py without retraining over it."
+        ),
+    )
+    parser.add_argument(
+        "--merge-output",
+        default=None,
+        help="override [merge].output_dir for this run (used by --prebuilt-adapter)",
+    )
+    parser.add_argument(
+        "--allow-corpus-change",
+        action="store_true",
+        help=(
+            "resume even if the corpus no longer matches the checkpoint's record. Off by "
+            "default: Trainer restores by step index, so a different corpus silently "
+            "trains the remaining steps on different data."
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -429,10 +599,61 @@ def main(argv: Optional[list[str]] = None) -> int:
             pairs = pairs[: args.max_pairs]
     print(f"training on {len(pairs)} pairs from {pairs_path}")
 
+    resume_from = args.resume_from
+    if resume_from is None and args.resume:
+        output_dir = str(config.get("train", {}).get("output_dir", "out/lora"))
+        resume_from = find_latest_checkpoint(output_dir)
+        if resume_from:
+            print(f"resuming from {resume_from}")
+        else:
+            print(f"no complete checkpoint under {output_dir}; starting fresh")
+    if resume_from:
+        resume_from = str(Path(resume_from).resolve())
+        if not (Path(resume_from) / "trainer_state.json").is_file():
+            print(f"{resume_from} has no trainer_state.json; it is not resumable.")
+            return 1
+        fingerprint = _corpus_fingerprint(pairs)
+        recorded = _recorded_fingerprint(Path(resume_from))
+        if recorded and recorded != fingerprint and not args.allow_corpus_change:
+            print(
+                "refusing to resume: the corpus has changed since the checkpoint was "
+                f"written.\n  checkpoint recorded: {recorded}\n  corpus now:         "
+                f"{fingerprint}\nTrainer resumes by step index, so the remaining steps "
+                "would train on different data than the first ones.\nRe-run without "
+                "--resume to train on the current corpus, or pass "
+                "--allow-corpus-change if that is intended."
+            )
+            return 1
+    elif args.resume:
+        resume_from = None
+
     max_seq_len = int(config.get("train", {}).get("max_seq_len", 1024))
-    adapter_dir = run_supervised(
-        config, pairs, full_finetune=args.full_finetune, max_seq_len=max_seq_len
-    )
+    # A pre-composed adapter (from merge_adapters.py) goes straight to the merge stage.
+    # Training over it would overwrite the very composition that was just built, which is
+    # the one step in the pipeline that cannot be undone by re-running anything.
+    adapter_dir = args.prebuilt_adapter
+    if adapter_dir:
+        if not (Path(adapter_dir) / "adapter_model.safetensors").is_file():
+            print(f"{adapter_dir} has no adapter_model.safetensors; nothing to merge.")
+            return 1
+        if args.resume:
+            print(
+                "--resume cannot be combined with --prebuilt-adapter; the adapter is "
+                "already the result of training."
+            )
+            return 1
+        print(f"using prebuilt adapter {adapter_dir}; skipping training")
+    else:
+        adapter_dir = run_supervised(
+            config,
+            pairs,
+            full_finetune=args.full_finetune,
+            max_seq_len=max_seq_len,
+            resume_from=resume_from,
+            corpus_fingerprint=_corpus_fingerprint(pairs),
+        )
+    if args.merge_output:
+        config.setdefault("merge", {})["output_dir"] = args.merge_output
     if not args.skip_merge:
         merged = merge(config, adapter_dir)
         print(f"merged checkpoint: {merged}")

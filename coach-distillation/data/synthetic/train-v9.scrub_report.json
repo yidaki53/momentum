@@ -1,0 +1,56 @@
+{
+  "total": 574,
+  "kept": 427,
+  "dropped": 147,
+  "kinds_before": {
+    "rft": 491,
+    "repair": 4,
+    "charter": 10,
+    "bounded": 57,
+    "substantive": 12
+  },
+  "kinds_after": {
+    "rft": 344,
+    "repair": 4,
+    "charter": 10,
+    "bounded": 57,
+    "substantive": 12
+  },
+  "examples": [
+    {
+      "id": "rft:0002",
+      "kind": "rft",
+      "paths": [
+        "myReportDraft.md"
+      ]
+    },
+    {
+      "id": "rft:0003",
+      "kind": "rft",
+      "paths": [
+        "Introduction.txt"
+      ]
+    },
+    {
+      "id": "rft:0004",
+      "kind": "rft",
+      "paths": [
+        "Introduction.txt"
+      ]
+    },
+    {
+      "id": "rft:0007",
+      "kind": "rft",
+      "paths": [
+        "Documents/LiteratureReview"
+      ]
+    },
+    {
+      "id": "rft:0009",
+      "kind": "rft",
+      "paths": [
+        "Documents/Literature/Romeo"
+      ]
+    }
+  ]
+}

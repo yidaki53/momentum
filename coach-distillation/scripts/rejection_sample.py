@@ -209,6 +209,10 @@ def main() -> int:
         "rejected_shape": 0,
         "rejected_language": 0,
         "rejected_brief": 0,
+        # Registered rather than created on demand: a get-with-default inside the loop
+        # would have worked, but an unlisted key is exactly how a rejection reason goes
+        # unrecorded and then gets forgotten.
+        "rejected_specificity": 0,
     }
 
     for index, (situation, constraint, _reference) in enumerate(seeds):
@@ -281,6 +285,21 @@ def main() -> int:
             if _OFF_LANGUAGE_RE.search(text):
                 stats["rejected_language"] += 1
                 continue
+            # Invented artefacts. 151 of the 495 rft rows in train-v7 carried a file path
+            # the app data never showed -- "Open the file named
+            # Documents/Harvard/Biostatistics/Week1/Introduction.txt" against a user whose
+            # data says only "Active tasks: Finish literature review".
+            #
+            # The cause is in the seed, not just the model. BOUNDED_ACTIONS says "Open the
+            # file and type one heading line for it"; the sampler completed the blank
+            # with a plausible-looking path. score_grounding could not catch it because
+            # grounding checks the reply does not CONTRADICT or narrate the data, and a
+            # path absent from the data is an addition rather than a contradiction. The
+            # bench now has a `specificity` axis for exactly this; the sampler has to
+            # reject it too, or the next corpus is rebuilt with the same defect.
+            if not bench.specificity(text, user_data=digest)[0]:
+                stats["rejected_specificity"] += 1
+                continue
             key = shape_of(text)
             if shape_counts.get(key, 0) >= args.min_shapes:
                 # Without this the sampler piles onto the mode and the corpus gains
@@ -328,6 +347,7 @@ def main() -> int:
     print(f"dropped as shape : {stats['rejected_shape']}")
     print(f"dropped as lang  : {stats['rejected_language']}")
     print(f"dropped as brief : {stats['rejected_brief']}")
+    print(f"dropped as made-up files: {stats['rejected_specificity']}")
     print(f"distinct shapes  : {len(shape_counts)}")
     print(f"pass rate        : {100 * stats['passed'] / max(1, stats['samples']):.1f}%")
     print(f"wrote {len(rows)} rows to {out}")

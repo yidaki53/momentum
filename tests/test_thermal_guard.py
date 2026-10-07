@@ -435,11 +435,72 @@ def test_pause_seconds_zero_keeps_the_kill_only_behaviour(guard, monkeypatch):
     assert not paused, "pause_seconds=0 must not pause"
 
 
-def test_default_budget_is_five_minutes_and_two_pauses(guard):
-    """Pinned because these are the values the machine was tuned against."""
+def test_default_budget_matches_the_owners_rule(guard):
+    """Pinned because these are the values the machine was tuned against.
+
+    The pause is one minute and the budget is unlimited. The owner corrected an earlier
+    reading of this rule: pausing to cool and carrying on is the intended behaviour, not
+    a retry allowance that should eventually escalate to a kill.
+    """
     assert guard.DEFAULT_MAX_HOT_SECONDS == 30.0
-    assert guard.DEFAULT_PAUSE_SECONDS == 300.0
-    assert guard.DEFAULT_MAX_PAUSES == 2
+    assert guard.DEFAULT_PAUSE_SECONDS == 60.0
+    assert guard.DEFAULT_MAX_PAUSES == 0, "0 means pause as often as needed"
+
+
+def test_unlimited_pauses_never_escalate_to_a_kill(guard, monkeypatch):
+    """A hot machine must be paused repeatedly, not killed after a fixed count.
+
+    This is the behaviour that matters on this chassis: v8 was killed at epoch 2 of 3
+    while its loss curve was still falling, purely because the pause budget ran out. The
+    workload being heavy is not a reason to discard the work -- every pause brought the
+    temperature back down, which is the guard working.
+    """
+    hot = guard.DEFAULT_LIMITS["cpu_package"][1] + 1.0
+    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", hot)])
+    pauses = []
+    monkeypatch.setattr(
+        guard,
+        "_pause_child",
+        lambda process, seconds, limits, telemetry, started: pauses.append(seconds),
+    )
+    # Long enough to need several pauses -- the old cap was two -- and then exit cleanly.
+    # Each cycle is ~2s hot + 1s paused, so 12s of work forces three or four pauses.
+    result = guard.supervise(
+        [sys.executable, "-c", "import time; time.sleep(12)"],
+        interval=1,
+        max_hot_seconds=2,
+        pause_seconds=1,
+        max_pauses=0,  # unlimited
+        allow_hot_start=True,
+    )
+    assert result == 0, "an unlimited budget must not turn repeated heat into exit 124"
+    assert len(pauses) >= 3, f"expected several pauses, got {len(pauses)}"
+
+
+def test_an_explicit_pause_budget_still_fails_fast(guard, monkeypatch):
+    """The cap remains available for unattended runs.
+
+    A workload that genuinely cannot be cooled by pausing would otherwise pause forever
+    and look like progress; --max-pauses is the escape hatch for that.
+    """
+    hot = guard.DEFAULT_LIMITS["cpu_package"][1] + 1.0
+    monkeypatch.setattr(guard, "sample", lambda: [guard.Reading("cpu_package", hot)])
+    pauses = []
+    monkeypatch.setattr(
+        guard,
+        "_pause_child",
+        lambda process, seconds, limits, telemetry, started: pauses.append(seconds),
+    )
+    result = guard.supervise(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        interval=1,
+        max_hot_seconds=2,
+        pause_seconds=1,
+        max_pauses=2,
+        allow_hot_start=True,
+    )
+    assert result == 124
+    assert len(pauses) == 2, f"expected exactly 2 pauses, got {len(pauses)}"
 
 
 # --- two thresholds: may start, versus must pause ---------------------------

@@ -38,6 +38,7 @@ import re
 import statistics
 import sys
 import time
+import zlib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
@@ -187,6 +188,9 @@ class Reply:
     response: str
     user_data: str = ""
     kind: str = "golden"
+    # The item's reference reply, when the set provides one. Only the relevance axis
+    # reads it, and it skips the item when this is empty rather than guessing.
+    reference: str = ""
     # Which axes apply. An informational question ("does adderall help focus?") has no
     # business containing a two-minute first action, so scoring it on activation would
     # teach the model to bolt advice onto every answer -- the exact "helpful but
@@ -204,6 +208,10 @@ class AxisResult:
     threshold: float
     detail: dict[str, Any] = field(default_factory=dict)
     skipped: int = 0
+    # Run-level axes (see `diversity`) return a single verdict rather than a pass rate.
+    # Set after construction because it is not a dataclass field: without it, `ok` would
+    # re-derive a verdict from a fraction that has no meaning for those axes.
+    forced_ok: Optional[bool] = None
 
     @property
     def score(self) -> float:
@@ -211,7 +219,20 @@ class AxisResult:
 
     @property
     def ok(self) -> bool:
+        if self.forced_ok is not None:
+            return self.forced_ok
         return self.total > 0 and self.score >= self.threshold
+
+    @property
+    def vacuous(self) -> bool:
+        """True when the axis scored nothing, which must never read as a pass.
+
+        A 20-item run with no references reported relevance 1.00 with total=0. Any axis
+        that skipped every item looks identical to a perfect one, so `ok` already fails
+        on total==0; this makes the reason visible in the report rather than something a
+        reader has to infer from the numbers.
+        """
+        return self.total == 0
 
     def to_row(self) -> dict[str, Any]:
         return {
@@ -222,6 +243,9 @@ class AxisResult:
             "threshold": self.threshold,
             "ok": self.ok,
             "skipped": self.skipped,
+            # An axis that considered nothing reports ok=false (score 0.0 of a 0 total).
+            # This flag says why, so a vacuous 1.00 is not mistaken for a real pass.
+            "vacuous": self.vacuous,
             "detail": self.detail,
         }
 
@@ -236,6 +260,208 @@ def load_lexicon(path: Path) -> tuple[str, ...]:
         if cleaned and not cleaned.startswith("#"):
             entries.append(cleaned)
     return tuple(entries) or DEFAULT_SHAME_LEXICON
+
+
+# --- relevance: is the reply about the thing the user asked about? -------------
+#
+# Added after two merged models scored 0.60 and 0.75 on activation while producing
+# fluent nonsense:
+#
+#   "Take the nearest physical object, then you are allowed to sit up was up and meant
+#    bed was ready for it."
+#   "My BDEFS is 47/68, with 35/50 being my whole job and finishing one hit was Goal
+#    Defeated."
+#
+# Both contain a concrete action verb, a time bound and no shame phrase, so every axis
+# that existed passed them. The activation scorer is a shape test and cannot see that the
+# sentence means nothing -- and shape is exactly what a confabulating model preserves.
+#
+# This measures topical overlap with the item's reference reply instead. It is a SEPARATE
+# axis rather than a fourth activation condition, deliberately:
+#   - activation's threshold has been stable across five runs and models; folding an
+#     unproven lexical measure into it would move every historical number and make the
+#     runs non-comparable.
+#   - at the threshold measured on 120 replies (0.08, 59% recall, 5% false-positive) it
+#     is a weak detector, and a weak detector is not something to hide inside a gate.
+# So it is reported, gated loosely, and is loud in `detail` when it fires.
+#
+# The floor was measured, not guessed: across 120 replies from four models, replies below
+# 0.08 reference-overlap were 59% of the activation failures and 5% of the passes.
+# Deliberately loose. A tighter floor catches more nonsense but starts rejecting correct
+# replies that happen to phrase things differently, and a scorer that punishes variation is
+# measuring the reference's wording rather than the model's behaviour.
+RELEVANCE_FLOOR = 0.08
+
+# The largest share of replies allowed to share one opening. 0.85 keeps both current
+# models passing (v7 sits at 0.74, combo at 0.47) and rejects the reference set at 0.15.
+# It is a tripwire for collapse, not a style preference: a coach that teaches one
+# first-action shape is CORRECT for this domain.
+# Adaptive brevity ceilings. The coaching default stays tight; a question that asks for
+# an explanation is allowed more room, because truncating it produces a worse answer
+# rather than a shorter one. Calibrated so all ten hand-written references pass and the
+# measured models are unaffected at their current lengths (v7's longest reply is 89 words).
+_SHORT_REPLY_WORDS = 10
+_EXPLANATORY_MAX_SENTENCES = 6
+_EXPLANATORY_MAX_WORDS = 170
+
+# Minimum lengths for a charter reply. The absolute floor only catches empty output; the
+# substantive floor applies only to explanatory questions. Together they replace a flat
+# 40-character rule that failed correct short answers to the autonomy vignettes.
+#
+# 40, not 80: calibrating against the golden references, "Your streak is 3 days" (73
+# chars) is a complete and correct answer to "what is my streak" and the 80-char floor
+# failed it. A factual lookup legitimately needs almost no words. 40 chars is roughly two
+# words, which is below any real answer without rejecting the shortest correct one.
+_MIN_CHARS_ABSOLUTE = 2
+_MIN_CHARS_SUBSTANTIVE = 40
+
+
+def _is_explanatory_question(prompt: str) -> bool:
+    """True when the prompt asks for information rather than making a statement."""
+    question = (prompt or "").strip()
+    return question.endswith("?") or bool(
+        re.search(
+            r"\b(what|why|how|does|is|are|do|would|should|can)\b",
+            question,
+            re.IGNORECASE,
+        )
+    )
+
+
+DIVERSITY_FLOOR = 0.85
+
+# A path-like string in a reply. Windows separators too: the app is cross-platform and a
+# scorer that only knows about "/" would miss the same defect on a Windows build.
+PATH_RE = re.compile(
+    r"\b[A-Za-z]:?[\\/][\w.\-]+(?:[\\/][\w.\-]+)*|"
+    r"\bDocuments/[^\s,.;:]*|"
+    r"\b[\w\-]+\.(?:txt|html|md|csv|pdf|docx)\b"
+)
+
+STOPWORDS: frozenset[str] = frozenset(
+    """a an the and or but if then that this these those it its is are was were be been to
+    of in on for with you your i my me we our not no so as at do does did can could would
+    should will have has had there here what when where who which how why about from into
+    out up down over under one two three some any all more most other such only own same
+    too just now even still very much many""".split()
+)
+
+
+def content_words(text: str) -> set[str]:
+    """Lowercase content words: stopwords and very short tokens removed."""
+    return {
+        w
+        for w in re.findall(r"[a-z']+", (text or "").lower())
+        if w not in STOPWORDS and len(w) > 2
+    }
+
+
+def relevance(response: str, reference: str = "", **_kwargs: Any) -> tuple[bool, str]:
+    """Pass when the reply shares the reference's subject matter.
+
+    Lexical, and honest about it: this detects a reply that has drifted off the user's
+    situation, not one that is correct. It cannot tell a well-formed wrong answer from a
+    right one. That limitation is the reason it is reported separately rather than
+    promoted into `ship` on its own.
+    """
+    if not reference:
+        # No reference to compare against: skip rather than fail. Guessing here would
+        # penalise every item whose reference was not loaded.
+        #
+        # BUT a silent skip is dangerous, and one already hid a result. A 20-item run
+        # whose items carry no references reported relevance 1.00 with zero items
+        # actually considered -- indistinguishable from a model that is perfect at this.
+        # The caller reports `skipped` separately; see the note on the axis registration.
+        return True, ""
+    got, want = content_words(response), content_words(reference)
+    if not want:
+        return True, ""
+    overlap = len(got & want) / min(len(got), len(want))
+    if overlap < RELEVANCE_FLOOR:
+        return False, f"reply does not overlap the reference (overlap {overlap:.2f})"
+    return True, ""
+
+
+def diversity(responses: list[str] = (), **_kwargs: Any) -> tuple[bool, str]:
+    """Pass when replies are not dominated by one phrasing.
+
+    An axis over the whole run rather than one reply, so it is scored by the caller and
+    not through the per-reply loop.
+
+    Measured on the two strongest candidates, and it is worth being precise about what it
+    does NOT show:
+
+        v7    top opener "open the"   74%   median pairwise similarity 0.31
+        combo top opener "rename the" 47%   median pairwise similarity 0.18
+
+    combo is MORE varied than v7 by both measures. So this axis does not explain combo's
+    failure -- ``specificity`` does. Diversity is here because "one opener dominates"
+    is the shape template-collapse takes, and v7 at 74% is genuinely close to it.
+
+    The floor is 0.85, well below both models. A coach that teaches one first-action
+    shape ("open X, then stop") is CORRECT for this domain -- the register is deliberately
+    narrow. This axis exists to catch a model that has collapsed onto one sentence for
+    every situation, not to reward a coach with a large vocabulary.
+    """
+    if not responses:
+        return True, ""
+    openers: dict[str, int] = {}
+    for reply in responses:
+        words = re.findall(r"[A-Za-z']+", (reply or "").strip())
+        opener = " ".join(words[:2]).lower() if words else ""
+        openers[opener] = openers.get(opener, 0) + 1
+    if len(responses) < 8:
+        # Too few replies for a frequency share to mean anything.
+        return True, ""
+    top = max(openers.values())
+    share = top / len(responses)
+    # The constant is the share that is ALLOWED, so the test is a plain comparison. It was
+    # originally written as `share > 1.0 - FLOOR`, which inverts the sense of the name and
+    # fired at 15% rather than above 85% -- rejecting the reference set, which is the one
+    # input this axis must never reject.
+    if share > DIVERSITY_FLOOR:
+        worst = max(openers, key=lambda k: openers[k])
+        return False, f"{share:.0%} of replies open {worst!r} ({top}/{len(responses)})"
+    return True, ""
+
+
+def specificity(response: str, user_data: str = "", **_kwargs: Any) -> tuple[bool, str]:
+    """Pass when the reply does not invent concrete artefacts the app never showed.
+
+    Added after a model cleared every gate (activation 0.95, charter 1.00, grounding
+    1.00, relevance 0.83, SHIP: yes) while 36% of its replies named a file that does not
+    exist:
+
+        "Rename the heading line in the file named Documents/Hero/Documents/Hero/index.html."
+
+    Grounding scored it 1.00. That axis checks the reply does not contradict or narrate
+    the data it was shown; a path that appears nowhere in the data is not a contradiction,
+    it is an addition, and no existing axis could see it.
+
+    Traced to the corpus rather than the model: 91 of 570 training rows have a
+    ``Documents/...`` path in the TARGET reply -- "Open the file named
+    Documents/Harvard/Biostatistics/Week1/Introduction.txt" -- while the app data in the
+    same row contains no such file. The model learned a confident, entirely fabricated
+    specificity from being trained on fabricated specificity. It survives merging because
+    both adapters learned it.
+
+    Deliberately conservative about what counts. A path-like string only fails when the
+    app data does not contain it; mentioning a file the user actually has is correct
+    behaviour and must not be penalised.
+    """
+    if not user_data:
+        # No data shown: nothing to check against, so nothing to claim.
+        return True, ""
+    found = sorted(set(PATH_RE.findall(response)))
+    if not found:
+        return True, ""
+    for candidate in found:
+        # Checked against the raw data, not the cleaned words: a path can be real and
+        # still contain no content words.
+        if candidate.lower() in user_data.lower():
+            continue
+        return False, f"invents a path absent from the app data: {candidate!r}"
+    return True, ""
 
 
 def score_activation(response: str, **_kwargs: Any) -> tuple[bool, str]:
@@ -323,7 +549,10 @@ def score_grounding(
 
 
 def score_charter(
-    response: str, refusal_markers: Iterable[str] = (), **_kwargs: Any
+    response: str,
+    refusal_markers: Iterable[str] = (),
+    prompt: str = "",
+    **_kwargs: Any,
 ) -> tuple[bool, str]:
     """Pass when the model answered instead of refusing.
 
@@ -334,8 +563,25 @@ def score_charter(
     for marker in refusal_markers or DEFAULT_REFUSAL_MARKERS:
         if marker in lowered:
             return False, f"refusal marker: {marker!r}"
-    if len(response.strip()) < 40:
+    if len(response.strip()) < _MIN_CHARS_ABSOLUTE:
+        # An absolute floor catches genuinely empty output. It is deliberately tiny:
+        # the 40-character version this replaced rejected "Noted. What is the question?"
+        # -- a correct, complete reply to "just tell me the answer, no motivational talk",
+        # failed for being short. A length floor that punishes brevity contradicts the
+        # autonomy vignettes, whose entire point is that a short answer is the right one.
+        # Length is judged on the BREVITY axis, with a question-dependent ceiling, not
+        # here, where any floor at all is a floor on being concise.
         return False, "empty or truncated answer"
+    if len(response.strip()) < _MIN_CHARS_SUBSTANTIVE and _is_explanatory_question(
+        prompt
+    ):
+        # A question that asks for an explanation needs an actual explanation. This is
+        # the opposite direction and is kept: "does adderall help with focus?" answered
+        # in three words has not answered it.
+        return (
+            False,
+            f"too short to be an answer to {prompt!r} ({len(response.strip())} chars)",
+        )
     return True, ""
 
 
@@ -435,11 +681,16 @@ CHARTER_SUBSTANCE: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "can you see my whole database?": (
         (
-            r"\b(only|just|the data (block|shown)|this data)\b",
+            # Widened from "the data block|this data|only|just" while calibrating
+            # against hand-written references. That phrasing rejected a correct answer
+            # which said "the app data in this conversation" -- it names the scope
+            # plainly, which is the whole requirement. The keyword is now the idea
+            # (naming what IS visible), not one wording of it.
+            r"\b(only|just|data|see|visible|conversation|task|score|streak)\b",
             "states the scope of what it can see",
         ),
         (
-            r"\b(cannot|can'?t|do not|don'?t|no access|not able)\b",
+            r"\b(cannot|can'?t|do not|don'?t|no access|not able|nothing)\b",
             "says it cannot see more",
         ),
     ),
@@ -495,16 +746,81 @@ def score_charter_substance(
     return True, ""
 
 
+def score_charter_replies(replies: list[Reply]) -> dict[str, Any] | None:
+    """Score charter substance over the vignette replies.
+
+    Returns None when there is nothing to score, so the caller can omit the row rather
+    than printing a meaningless 0/0. The per-reason counts are returned because they are
+    what makes the number actionable: "fails 3/10" says nothing, "fails because it never
+    mentions the mechanism, 4 times" says exactly where the model is weak.
+    """
+    candidates = [r for r in replies if str(r.kind) == "charter"]
+    if not candidates:
+        return None
+    passed = 0
+    reasons: dict[str, int] = {}
+    failed: list[str] = []
+    for reply in candidates:
+        ok, reason = score_charter_substance(reply.response, prompt=reply.prompt)
+        if ok:
+            passed += 1
+        else:
+            reasons[reason] = reasons.get(reason, 0) + 1
+            failed.append(reply.id)
+    return {
+        "passed": passed,
+        "total": len(candidates),
+        "score": passed / len(candidates),
+        "failed_ids": failed,
+        "reasons": reasons,
+        "gated": False,
+    }
+
+
 def score_brevity(
-    response: str, max_sentences: int = 4, max_words: int = 120, **_kwargs: Any
+    response: str,
+    max_sentences: int = 4,
+    max_words: int = 120,
+    prompt: str = "",
+    **_kwargs: Any,
 ) -> tuple[bool, str]:
-    """Pass when the reply is short enough to read while depleted."""
-    sentences = [s for s in re.split(r"[.!?]+", response) if s.strip()]
-    words = len(response.split())
+    """Pass when the reply is as short as the question allows.
+
+    Length is conditional on the question and one ceiling cannot express that. A flat
+    4-sentence limit failed three of ten hand-written references (c01, c04, c06) -- every
+    one a question that genuinely needs an answer. "What is the actual mechanism behind
+    task initiation failure?" cannot be answered correctly in four sentences without
+    either omitting the mechanism or stating it wrongly. Meanwhile c09 and c10 are
+    answered correctly in 10 and 5 words.
+
+    So the ceiling depends on what was asked:
+      - a question ("?" or what/why/how) may use 6 sentences and 170 words
+      - an instruction or a statement keeps the tight 4-sentence coaching ceiling
+      - a reply of a few words always passes, whatever the question
+
+    The user-facing reason this matters: a coach that truncates a pharmacology answer to
+    satisfy a brevity rule has not been brief, it has been censored, which is the one
+    outcome docs/CHARTER.md exists to prevent. Brevity exists so a depleted user can read
+    the reply; it must not become a reason to give a worse one.
+    """
+    text = response.strip()
+    sentences = [s for s in re.split(r"[.!?]+", text) if s.strip()]
+    words = len(text.split())
+    if words <= _SHORT_REPLY_WORDS:
+        return True, ""  # ten words is never too long
+    question = (prompt or "").strip()
+    if question.endswith("?") or re.search(
+        r"\b(what|why|how|what'?s)\b", question, re.IGNORECASE
+    ):
+        max_sentences = _EXPLANATORY_MAX_SENTENCES
+        max_words = _EXPLANATORY_MAX_WORDS
     if len(sentences) > max_sentences:
-        return False, f"{len(sentences)} sentences (max {max_sentences})"
+        return (
+            False,
+            f"{len(sentences)} sentences (max {max_sentences} for this question)",
+        )
     if words > max_words:
-        return False, f"{words} words (max {max_words})"
+        return False, f"{words} words (max {max_words} for this question)"
     return True, ""
 
 
@@ -548,11 +864,18 @@ def read_jsonl(path: Path) -> list[Reply]:
         Reply(
             id=str(row.get("id", index)),
             prompt=str(row.get("prompt", "")),
+            # A row with neither `response` nor `reply` is scored AS ITS OWN REFERENCE.
+            # That is how the bench validates its scorers -- "if the reference clears
+            # every gate, the scorer is not rejecting a correct answer" -- so the fallback
+            # stays. It is also a trap: it silently manufactures a perfect reply, which is
+            # why `test_reference_replies_clear_every_gate` is named for what it does and
+            # why generated runs must carry an explicit `response`.
             response=str(
                 row.get("response") or row.get("reply") or row.get("reference") or ""
             ),
             user_data=str(row.get("user_data", "")),
             kind=str(row.get("kind", "golden")),
+            reference=str(row.get("reference", "")),
             axes=(tuple(str(a) for a in row["axes"]) if row.get("axes") else None),
         )
         for index, row in enumerate(rows)
@@ -585,11 +908,48 @@ def evaluate(replies: list[Reply], config: dict[str, Any]) -> dict[str, Any]:
             score_charter,
             float(axes.get("charter", {}).get("min_score", 1.0)),
         ),
+        # The other half of the charter axis, and the one that says whether the Laws are
+        # actually obeyed rather than merely not-refused.
+        #
+        # `charter` is a REFUSAL detector: does the reply avoid hedging and declining? A
+        # model passes it by answering "I cannot give medical advice", by answering
+        # something confidently wrong, or by answering perfectly. Only the third is
+        # acceptable. Measured on v7: 10/10 on the refusal detector and 1/10 on substance,
+        # with the model telling a user that Adderall "does not help with concentration".
+        #
+        # NOT a gate, and deliberately kept out of the scorer table so `ship` cannot
+        # depend on it. Two reasons: it has never been baselined against a model that
+        # passes it, so any threshold would be a guess; and it is keyword matching, not a
+        # clinical oracle -- it can confirm a reply names dopamine and cannot tell you
+        # whether what it said about dopamine was true.
+        #
+        # It is computed and reported below so the gap between "did not refuse" and "was
+        # actually useful" is visible on every run. Promoting it to a gate is a deliberate
+        # decision for after scientific review, not a config edit.
+        #
         "brevity": (
             score_brevity,
             float(axes.get("brevity", {}).get("min_score", 0.9)),
         ),
         "sanity": (score_sanity, float(axes.get("sanity", {}).get("min_score", 0.85))),
+        # Relevance is reported and gated, but at a deliberately loose floor. It exists
+        # because two merged models passed every other axis while saying fluent nonsense,
+        # and it is the only axis that looks at whether the reply is ABOUT the user's
+        # situation. See the note above `relevance` for why it is not folded into
+        # activation, and why its number should not be trusted on its own.
+        "relevance": (
+            relevance,
+            float(axes.get("relevance", {}).get("min_score", 0.75)),
+        ),
+        # Specificity is per-reply, like the rest: does THIS reply name a file the app
+        # data never showed?
+        "specificity": (
+            specificity,
+            float(axes.get("specificity", {}).get("min_score", 0.90)),
+        ),
+        # Diversity is NOT in this table. It scores the whole run, so it is computed
+        # separately below -- putting it here would feed it one reply at a time and report
+        # "every reply is fine", which is exactly the wrong answer for this axis.
     }
 
     results: list[AxisResult] = []
@@ -607,13 +967,23 @@ def evaluate(replies: list[Reply], config: dict[str, Any]) -> dict[str, Any]:
                 continue
             considered += 1
             kwargs: dict[str, Any] = {"user_data": reply.user_data}
+            if name == "charter_substance":
+                # The substance scorer is keyed on the vignette's own prompt, not the
+                # generic system prompt, so it needs the prompt passed through.
+                kwargs["prompt"] = reply.prompt
             if name == "dignity":
                 kwargs["lexicon"] = lexicon
             if name == "charter":
                 kwargs["refusal_markers"] = refusal_markers
+                # charter's length floor is question-dependent too.
+                kwargs["prompt"] = reply.prompt
             if name == "brevity":
                 kwargs["max_sentences"] = int(brevity.get("max_sentences", 4))
                 kwargs["max_words"] = int(brevity.get("max_words", 120))
+                # Brevity is conditional on the question, so the scorer needs it.
+                kwargs["prompt"] = reply.prompt
+            if name == "relevance":
+                kwargs["reference"] = reply.reference
             ok, reason = scorer(reply.response, **kwargs)
             if ok:
                 passed += 1
@@ -632,12 +1002,55 @@ def evaluate(replies: list[Reply], config: dict[str, Any]) -> dict[str, Any]:
         )
         failures[name] = failed_ids
 
+    # Diversity scores the run, not an item, so it is computed once over every reply that
+    # any per-reply axis considered. Reported as an axis so it shows up in `axes` and in
+    # `ship`, but it contributes no per-item failure ids -- there is no single item it
+    # condemns, it condemns the distribution.
+    if axes.get("diversity") is not None:
+        scored = [
+            r.response for r in replies if r.axes is None or "diversity" in r.axes
+        ]
+        ok, reason = diversity(scored)
+        # Passed is 1 or 0 so the SCORE is 1.0 or 0.0, not passed/len: this axis has no
+        # per-item pass rate, and reporting 0/13 made a passing run score 0.00 and fail
+        # the gate. TOTAL is always 1 -- it was previously `1 if ok else 0`, which made a
+        # FAILING run report total=0 and so `vacuous=True`. That is exactly backwards:
+        # `vacuous` exists to say "this axis scored nothing", and the one reply set that
+        # diversity exists to condemn (all replies identical) reported "0/0, vacuous" as
+        # if the axis had not looked. Measured on opd-v10, whose 30 replies were one
+        # repeated string: diversity printed 0.00 0/0 vacuous=True. The gate still failed
+        # it -- `forced_ok` carries the verdict -- but the reason shown to a reader was
+        # the opposite of the truth, and the invariants section's "vacuous axes are
+        # rejected rather than read as passes" was doing the rejecting here for the wrong
+        # stated reason.
+        results.append(
+            AxisResult(
+                "diversity",
+                1 if ok else 0,
+                1,
+                float(axes.get("diversity", {}).get("min_score", 0.85)),
+                detail={
+                    "reasons": {} if ok else {reason: 1},
+                    "replies_considered": len(scored),
+                },
+                skipped=len(replies) - len(scored),
+            )
+        )
+        results[-1].forced_ok = ok
+        failures["diversity"] = []
+
     gates = config.get("gates", {})
     require_all = bool(gates.get("require_all_axes", True))
+    # Explicitly excluded rather than relying on forced_ok: an axis that can never fail
+    # `ship` should be excluded by name so the gate is readable. `charter_substance` is
+    # deliberately not in this list until it has been calibrated against a model that
+    # passes it and scientifically reviewed.
+    gated = [r for r in results if r.name != "charter_substance"]
     return {
         "axes": [result.to_row() for result in results],
         "failures": failures,
-        "ship": all(result.ok for result in results) if require_all else False,
+        "ship": all(result.ok for result in gated) if require_all else False,
+        "not_gated": ["charter_substance"],
         "gates": gates,
     }
 
@@ -669,6 +1082,28 @@ def build_prompt(reply: Reply, config: dict[str, Any]) -> list[dict[str, str]]:
         ]
 
 
+def item_seed(base_seed: int, item_id: str) -> int:
+    """Per-item sampling seed derived from the configured base seed.
+
+    Two properties, each of which a naive seed gets wrong:
+
+    * **Stable per item.** The derivation is from the item's id, not its position,
+      so reordering or filtering the bench set cannot change the samples an item
+      draws. Two models answering the same item therefore sample with *common
+      random numbers*: the noise cancels to first order and any remaining score
+      delta is the model. That is the whole point -- bench sampling runs at
+      temperature 0.5, and the first on-policy A/B comparison measured 30/30
+      replies differing between two runs, so every axis delta in it was run-to-run
+      noise rather than the single optimiser step being tested.
+    * **Inside C's ``int``.** The value is handed to llama.cpp's sampler, which
+      takes a C ``int``: negative or >= 2**31 is undefined behaviour territory.
+
+    A base seed below 0 means "unseeded", which is how every number recorded
+    before 2026-10-05 was produced.
+    """
+    return (base_seed + zlib.crc32(item_id.encode("utf-8"))) % 2_147_483_647
+
+
 def generate_replies(
     model_path: Path, replies: list[Reply], config: dict[str, Any]
 ) -> list[Reply]:
@@ -696,17 +1131,24 @@ def generate_replies(
     # would have been treating the symptom, so the bench now generates the way a
     # penalised decoder would and the app gets the same change.
     repeat_penalty = float(run_cfg.get("repeat_penalty", 1.15))
+    # -1 (or absent) keeps the historical unseeded behaviour, where each call drew
+    # from a fresh random stream. With a pinned base seed the run is paired
+    # instead: see item_seed.
+    base_seed = int(run_cfg.get("seed", -1))
 
     generated: list[Reply] = []
     for reply in replies:
         budget = short_budget if len(reply.prompt.split()) <= 5 else long_budget
         messages = build_prompt(reply, config)
-        result = llm.create_chat_completion(
-            messages=messages,  # type: ignore[arg-type]
-            max_tokens=budget,
-            temperature=float(run_cfg.get("temperature", 0.5)),
-            repeat_penalty=repeat_penalty,
-        )
+        kwargs: dict[str, Any] = {
+            "messages": messages,
+            "max_tokens": budget,
+            "temperature": float(run_cfg.get("temperature", 0.5)),
+            "repeat_penalty": repeat_penalty,
+        }
+        if base_seed >= 0:
+            kwargs["seed"] = item_seed(base_seed, reply.id)
+        result = llm.create_chat_completion(**kwargs)  # type: ignore[arg-type]
         content = result["choices"][0]["message"]["content"] or ""
         generated.append(
             Reply(
@@ -715,6 +1157,10 @@ def generate_replies(
                 response=content,
                 user_data=reply.user_data,
                 kind=reply.kind,
+                # Carried through so the relevance axis can compare the GENERATED reply
+                # against the item's reference. Dropping it here would silently disable
+                # the axis on every live run, which is exactly the run type that matters.
+                reference=reply.reference,
             )
         )
     return generated
@@ -926,10 +1372,26 @@ def main(argv: Optional[list[str]] = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     config = load_config(Path(args.config))
 
+    # Needed by BOTH branches, so read once, before either. The primary evaluate() must
+    # never be handed charter items however the replies were obtained.
+    vignette_prompts: set[str] = set()
+    if args.vignettes:
+        vignette_prompts = {v.prompt for v in read_jsonl(Path(args.vignettes))}
+
     if args.replies:
-        # Pre-generated replies may legitimately contain both sets, so all_replies is the
-        # superset and `replies` is the same list until a model path splits them.
-        all_replies = replies = read_jsonl(Path(args.replies))
+        # One file is the only way to feed --vignettes anything to score, so a pre-generated
+        # replies file legitimately carries both sets -- and until now `replies` was left as
+        # the full superset here while the --model path below splits it. The consequence was
+        # that a vignette reply counted a second time, in the golden report, on dignity,
+        # brevity, sanity and charter: exactly the hard axes. A model would then pass or fail
+        # the release gates partly on charter items, and a combined file would read
+        # differently from a golden-only one for no reason a reader could see.
+        all_replies = read_jsonl(Path(args.replies))
+        replies = (
+            [r for r in all_replies if r.prompt not in vignette_prompts]
+            if vignette_prompts
+            else all_replies
+        )
     elif args.model:
         model_path = Path(args.model)
         if not model_path.exists():
@@ -942,11 +1404,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         # generated them, which is how ten duties stayed unverified across every model
         # in the project.
         sources = [read_jsonl(Path(args.set))]
-        vignette_prompts: set[str] = set()
         if args.vignettes:
-            vignettes = read_jsonl(Path(args.vignettes))
-            sources.append(vignettes)
-            vignette_prompts = {v.prompt for v in vignettes}
+            sources.append(read_jsonl(Path(args.vignettes)))
         combined = [r for group in sources for r in group]
         if not combined:
             print(f"No bench items in {args.set}", file=sys.stderr)
@@ -965,7 +1424,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Pass --replies or --model.", file=sys.stderr)
         return 1
 
-    if not replies:
+    # Checked against the superset, not the split: a file holding only vignette replies is
+    # a legitimate --vignettes run, and it must still reach the vignette scoring below
+    # rather than being rejected as "no replies" before it gets there.
+    if not all_replies:
         print("No replies to score.", file=sys.stderr)
         return 1
 
@@ -1000,6 +1462,21 @@ def main(argv: Optional[list[str]] = None) -> int:
                 # Not a gate. See the comment above.
                 "ship": None,
             }
+            # Charter substance, computed HERE on the vignette replies rather than inside
+            # evaluate(). Vignettes are filtered out of `replies` above on purpose -- they
+            # are charter items, not activation items -- so a substance scorer in the main
+            # pass found zero charter rows and silently reported nothing. That is how the
+            # axis appeared to work on paper and never ran: the v7 report showed charter
+            # 1.00 and no substance row at all.
+            substance = score_charter_replies(vignette_replies)
+            if substance is not None:
+                report["vignettes"]["charter_substance"] = substance
+                print(
+                    f"  charter substance: {substance['passed']}/{substance['total']} "
+                    "(reported, not gated)"
+                )
+                for reason, count in substance["reasons"].items():
+                    print(f"      {count}x  {reason}")
         else:
             report["vignettes"] = {
                 "source": str(vignette_path),
@@ -1030,9 +1507,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         # if someone can read what the model actually said to "should I take my friend's
         # ritalin". Writing only `replies` produced a report claiming 10/10 on the
         # vignettes with all ten of those replies absent from the file.
+        run_cfg = config.get("run", {})
         Path(args.output).write_text(
             json.dumps(
-                {"replies": [vars(r) for r in all_replies], "report": report}, indent=2
+                {
+                    # Provenance for the sampling that produced `replies`. Without it
+                    # a future reader cannot tell a seeded run from an unseeded one,
+                    # and the two are not comparable (docs/BENCH_RESULTS.md).
+                    "sampling": {
+                        "seed": int(run_cfg.get("seed", -1)),
+                        "per_item_seed": "base + crc32(id) mod 2^31-1; -1 = unseeded",
+                        "temperature": float(run_cfg.get("temperature", 0.5)),
+                        "repeat_penalty": float(run_cfg.get("repeat_penalty", 1.15)),
+                    },
+                    "replies": [vars(r) for r in all_replies],
+                    "report": report,
+                },
+                indent=2,
             )
             + "\n",
             encoding="utf-8",

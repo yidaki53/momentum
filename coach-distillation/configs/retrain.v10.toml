@@ -1,0 +1,82 @@
+# v10: on-policy distillation (GKD) for the 0.5B student.
+#
+# NOT a replacement for retrain.v9c. This config exists to answer one question with
+# evidence: does the 7B teacher have a per-token preference on our prompts that the
+# cold-started 0.5B student lacks? If mean |teacher - student| per token is ~0, then the
+# same-family problem in Li et al. 2026 applies to us, and no amount of on-policy
+# training will move charter substance above the SFT baseline.
+#
+# Run stage 1 (cold start) first, then point cold_start_dir at its adapter:
+#   python scripts/train_distill.py --config configs/retrain.v10.toml
+#   python scripts/train_onpolicy.py --config configs/retrain.v10.toml --score-only
+# Both are long. Wrap each in scripts/thermal_guard.py. See AGENTS.md.
+
+[student]
+model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+revision = "main"
+registry_name = "momentum-qwen05b"
+
+[teacher]
+model_id = "Qwen/Qwen2.5-7B-Instruct"
+revision = "main"
+temperature = 1.0
+
+[train]
+# The supervised half. LoRA settings identical to v9c deliberately: changing them here
+# would confound the comparison between off-policy and on-policy.
+epochs = 1
+lora_r = 32
+lora_alpha = 64
+lora_dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+learning_rate = 2e-4
+warmup_ratio = 0.03
+per_device_batch_size = 2
+gradient_accumulation_steps = 8
+max_seq_len = 640
+seed = 20260901
+bf16 = true
+output_dir = "out/lora-v10"
+gradient_checkpointing = true
+
+[opd]
+# Adapter to resume from. out/lora-v9c already exists and is the SFT baseline this
+# project has measured (vignette substance 4/10), so the diagnostic starts from the
+# student we actually have rather than from the untrained base. Stage 1 for a from-
+# scratch cold start would write out/lora-v10 here instead.
+cold_start_dir = "out/lora-v9c"
+max_new_tokens = 160
+rollouts_per_prompt = 1
+# 0.0 means "keep every prompt". Raise it only after a --score-only run has shown the
+# advantage distribution; setting it blind throws away most of a 427-row corpus.
+min_teacher_confidence = 0.0
+use_baseline = false
+# Batch-std scaling without recentring fixes the grad_norm=6614 run: the clip stays
+# at 1.0 as a genuine safety net rather than silently shrinking every step ~1500x.
+# Do not raise max_grad_norm instead -- that passes an enormous effective step.
+advantage_norm = "batch_std"
+max_grad_norm = 1.0
+# One full-batch AdamW step per epoch over the FIXED scored rollout set
+# (run_opd_epochs builds examples once; its docstring explains why rollouts are not
+# resampled).
+#
+# *** 10 IS MEASURED AND IT IS TOO MANY -- THE RUN COLLAPSED (2026-10-07). ***
+# Trained end to end, saved normally, loss fell -1.30 -> -62.27, and the adapter
+# produced `the the the ...` for all 30 bench replies: charter substance 10/10 -> 1/10,
+# activation 0.92 -> 0.00. Cause measured on out/opd-v10/scored.jsonl: 87.95% of tokens
+# have a NEGATIVE advantage (raw mean -4.97 nats), so with use_baseline=false and
+# batch_std not recentring every step pushes 88% of the student's own tokens DOWN and
+# raises nothing, ten times over the same frozen tokens. See AGENTS.md
+# "Measured: v10 on-policy training DESTROYED the student".
+#
+# The value is kept so the failed configuration is reproducible rather than mysterious.
+# Do not raise it -- that only suppresses harder. Fix the objective first (resample the
+# rollouts each epoch is the obvious candidate), then re-measure with
+# eval_bench.py --vignettes, never with this loss.
+#
+# Run 1 used the default of 1 step: every weight moved by at most one lr step (measured
+# max delta 0.0002), which sat below the bench's noise floor -- sampling ran at
+# temperature 0.5 with no seed, so 30/30 replies differed between runs and no A/B delta
+# that small could be resolved.
+opd_epochs = 10
+output_dir = "out/opd-v10"

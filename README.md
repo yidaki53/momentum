@@ -238,6 +238,8 @@ data and tests only -- `make dist-plan`, `make dist-bench` and `make dist-hereti
 run with no model, no GPU, and no network. See `coach-distillation/README.md`,
 `coach-distillation/docs/CHARTER.md` for the model's intended behaviour, and
 `coach-distillation/docs/MODEL_CARD.md` for its intended use and limitations.
+`coach-distillation/docs/TEACHER_AUDIT.md` and `coach-distillation/docs/TEACHER_VERIFICATION.md`
+record why the source teacher is not distilled without grounding.
 
 The pipeline is entirely separate from the app: Momentum never imports from it, and it
 adds no runtime dependency (torch and friends are deliberately not in `pyproject.toml`).

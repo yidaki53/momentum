@@ -1,0 +1,161 @@
+# GPU-sized variant of distill.qwen05b.toml, for a 12GB card (RTX 4080).
+# The default config assumes more memory than we have: batch 8 x 1024 tokens with
+# Qwen's 151k vocab needs ~18GB for the float32 logits alone.
+
+# Distillation configuration for the Momentum coach.
+#
+# Nothing in this folder is a Momentum runtime dependency: torch/transformers/TRL are
+# installed separately (see README) so the app's own dependency set stays untouched.
+
+[student]
+# Exactly what the app already ships today. Same tokenizer, same quantisation family, so
+# the result drops straight into momentum/llm/downloader.py.
+model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+revision = "main"
+# The resulting GGUF is registered under this registry key.
+registry_name = "momentum-qwen05b"
+
+[teacher]
+# Same family as the student. Cross-family teachers make the student spend capacity
+# learning a token distribution instead of learning executive-dysfunction coaching.
+model_id = "Qwen/Qwen2.5-7B-Instruct"
+revision = "main"
+# KD. Logit distillation (forward-KL on token distributions) transfers more than the
+# teacher's sampled text, which matters when the student is this small.
+temperature = 1.0
+
+[train]
+method = "lora"
+lora_r = 32
+lora_alpha = 64
+lora_dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+learning_rate = 2e-4
+warmup_ratio = 0.03
+# VARIANT B of the v8 follow-up: charter stays at 16x, epochs drop 3 -> 2.
+#
+# This is the control for variant A. A changes both charter repetition and epoch count, so
+# on its own it cannot say which one caused v8's activation collapse. B changes only the
+# epoch count, holding the corpus mix exactly as v8 had it.
+#
+# The question it answers: was the memorisation caused by too many epochs, or by
+# repeating ten charter rows sixteen times over? If B restores activation while keeping
+# charter 1.00, the epochs were at fault and the corpus mix was fine. If B still collapses,
+# the 16x repetition is the culprit and A is the better bet.
+#
+# Either way both variants run the same bench, so the comparison is like-for-like.
+epochs = 2
+per_device_batch_size = 2
+gradient_accumulation_steps = 8
+max_seq_len = 640
+# At 0.5B a full fine-tune fits on a single 24GB card too; LoRA is chosen first so the
+# run is cheap and reversible, and full FT is the fallback if quality is short.
+seed = 20260901
+bf16 = true
+output_dir = "out/lora-v8b"
+# 12GB card: the logits tensor, not the weights, is what runs out of memory.
+gradient_checkpointing = true
+
+[merge]
+output_dir = "out/student-v8b"
+
+[abliterate]
+enabled = true
+output_dir = "out/student-abliterated"
+config = "configs/heretic.momentum.toml"
+
+[quantize]
+# Q4_K_M is what the app ships today. The smaller candidates exist so we can measure the
+# smallest quantisation that still clears the bench -- specialisation is supposed to buy
+# headroom, and this is how we check that it did.
+primary = "Q4_K_M"
+candidates = ["Q4_K_M", "Q3_K_M", "IQ2_XXS"]
+output_dir = "out/gguf"
+
+[corpus]
+# NCBI E-utilities. No API key needed at these volumes; set one to be polite.
+email = "research@example.invalid"
+api_key = ""
+retmax_per_query = 200
+# Only records whose per-record licence is CC-BY or CC0 are kept. This list is the
+# allow-list; anything else is rejected by scripts/fetch_oa_corpus.py.
+allowed_licenses = ["CC0", "CC-BY", "CC-BY-2.0", "CC-BY-3.0", "CC-BY-4.0", "PD", "public domain"]
+queries = [
+  "\"executive function\" AND (depression OR ADHD)",
+  "\"behavioural activation\" AND (trial OR meta-analysis)",
+  "\"behavioral activation\" AND (trial OR meta-analysis)",
+  "\"acceptance and commitment therapy\" AND executive",
+  "\"self-compassion\" AND (depress* OR anxiety)",
+  "\"implementation intentions\" AND goal attainment",
+  "\"task initiation\" AND (adults OR children)",
+  "\"time blindness\" OR \"prospective memory\"",
+  "\"cognitive load\" AND \"task switching\"",
+  "\"motivational interviewing\" AND adherence",
+]
+
+[train.repeat_kinds]
+# v6 drops the 7B teacher tier entirely and replaces it with 308 on-policy rows the
+# student generated itself and the bench verified. This is the run the literature points
+# at rather than a tweak:
+#
+# - Law of Capacity Gap (arXiv:2311.07052): the optimal teacher scales with the student.
+#   7B -> 0.5B is a 14x gap, past the point where a bigger teacher gives a better student.
+# - Small Models Struggle to Learn from Strong Reasoners (arXiv:2502.12143): Qwen2.5-0.5B
+#   specifically degrades when fine-tuned on a larger teacher's style. Our three runs are
+#   consistent with that: teacher rows 113 -> 256 took activation 0.53 -> 0.44.
+# - Best-of-N vs SFT (arXiv:2505.17288, AISTATS 2026): SFT wins only while the target
+#   behaviour is REALIZABLE in the teacher. 144 of the 7B's rejections were "action not
+#   bounded to a small step", so it was not, which is the case the paper says to switch
+#   methods for.
+#
+# We also have something most people in this position lack: a programmatic verifier. The
+# bench's own scorers decide pass/fail exactly, so Best-of-N needs no model judge and no
+# human loop. Pass rate was 69.3% with 287 distinct shapes from 456 samples.
+#
+# 2x is unchanged from v5 rather than re-tuned. The corpus changed underneath the ratio
+# and re-tuning both at once would make the result uninterpretable -- and the bench
+# already showed 2x does not collapse into templates.
+# Charter is repeated at 16x where bounded and substantive stay at 2x, and that is the
+# whole change in v8.
+#
+# The measurement behind it: with charter at 2 rows of 639 and not repeated at all, it
+# was 0.3% of training while bounded was 21%. The model reproduced the bounded register
+# reliably and the charter not at all -- v7 scored 10/10 on the refusal detector and
+# 1/10 on substance, telling a user Adderall "does not help with concentration". Ten
+# charter rows at 16x is 160 of 811, about 20%, which puts it on a footing with the
+# register it is meant to teach.
+#
+# 16x rather than higher deliberately: v2 used 8x on everything and the model learned
+# the bounded *shape* without the substance, emitting template fragments. This repeats
+# one small tier, not the whole corpus, so the risk is the opposite -- over-learning
+# ten replies -- which the substance axis would catch rather than hide.
+bounded = 2
+substantive = 2
+charter = 16
+
+[seeds]
+# Tier-1 first-party seeds: read at generation time, never vendored.
+knowledge_files = [
+  "../momentum/llm/knowledge.py",
+  "../SCIENCE.md",
+  "../ENCOURAGEMENTS.md",
+  "../momentum/domain/assessments/interpretation.py",
+]
+# Multiplier over the situation x skill x constraint cross-product. Quality gates, not
+# this number, decide the corpus size; the user asked for quality over quantity.
+pairs_per_combination = 1
+include_repair_pairs = true
+include_charter_pairs = true
+# Hand-written bounded first actions (scripts/build_distill_pairs.py BOUNDED_ACTIONS).
+# These need no teacher, so they are never subject to acceptance bias -- which is how
+# the 264-pair corpus ended up teaching "take one small step" instead of "type one
+# heading line". See docs/ACTIVATION.md. Disable only to reproduce the old corpus.
+include_bounded_action_pairs = true
+# Answer-then-substantiate pairs for app-command and lookup prompts, where the distilled
+# model is too terse to clear charter's 40-character floor (17/20, all 34-35 chars).
+# See docs/ACTIVATION.md.
+include_substantive_pairs = true
+include_multiturn_episodes = true
+turns_min = 3
+turns_max = 6
+output = "data/synthetic/train-v8.jsonl"

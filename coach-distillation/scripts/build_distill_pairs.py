@@ -403,7 +403,15 @@ BOUNDED_ACTIONS: tuple[tuple[str, str, str], ...] = (
         BOUNDED_ACTION_CONSTRAINT,
         "The step is already chosen, so let us make it smaller than the choice. Open "
         "the file and type one heading line for it, then stop -- an unfinished heading "
-        "still counts as having started.",
+        "still counts as having started. "
+        # Do NOT put a filename here. 139 of the 495 sampled rows completed this blank
+        # with an invented path ("Open the file named
+        # Documents/Harvard/Biostatistics/Week1/Introduction.txt") against users whose
+        # app data named no file at all, and that corpus defect reached every model
+        # trained since -- v7 invents a path in 62% of its replies. The model fills the
+        # gap because the seed implies a specific file exists. Saying "the file" and
+        # nothing more leaves nothing to complete.
+        "",
     ),
     (
         "It is a cursed start button. I know the task. I cannot begin it.",

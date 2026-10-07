@@ -119,13 +119,25 @@ DEFAULT_INTERVAL = 5
 # Stopping (rather than continuing) matters because a paused process holds its GPU
 # memory but does no work, so the machine actually gets to cool. The default is 300s,
 # which is long enough to drop several degrees on this chassis.
-DEFAULT_PAUSE_SECONDS = 300.0
+DEFAULT_PAUSE_SECONDS = 60.0
 
 # How many times one run may pause before we conclude that pausing is not enough and
-# the workload has to change. Without a cap, a run on a permanently hot machine pauses
-# forever and looks like progress. Two pauses already means the cooling is not keeping
-# up with the duty cycle.
-DEFAULT_MAX_PAUSES = 2
+# the workload has to change.
+#
+# The OWNER'S RULE is "pause for a minute, let it cool, then carry on" -- an unlimited
+# budget, not a retry limit. So the default is 0, meaning "pause as often as it takes".
+# Pausing is a genuinely safe response: the child is SIGSTOPped, does no work, holds no
+# extra load, and resumes when the machine is cool. Nothing is lost by pausing often.
+#
+# Killing is what loses work, so the kill now requires an explicit budget. A previous
+# default of 2 pauses killed v8 training twice -- at epoch 2 of 3, with the loss curve
+# still falling -- purely because the workload is heavy for this chassis, not because
+# pausing had stopped working. Each pause did exactly what it was supposed to: the
+# temperature came back down every time.
+#
+# Set --max-pauses N to keep the old fail-fast behaviour: useful for a long unattended
+# run where pausing forever would hide a workload that genuinely needs reducing.
+DEFAULT_MAX_PAUSES = 0
 
 # Refuse to start if some *other* process is already using this much of the CPU.
 CONCURRENT_CPU_PERCENT = 60.0
@@ -636,10 +648,13 @@ def supervise(
     telemetry = TemperatureLog(log_path) if log_path else None
     print(f"[thermal] guarding: {' '.join(command)}", flush=True)
     if pause_seconds > 0:
+        budget = (
+            f"up to {max_pauses} time(s)" if max_pauses > 0 else "as often as needed"
+        )
         print(
             f"[thermal] sampling every {interval}s; pausing for {pause_seconds:.0f}s "
             f"after {max_hot_seconds:.0f}s continuously above a stop threshold "
-            f"(up to {max_pauses} time(s))",
+            f"({budget})",
             flush=True,
         )
     else:
@@ -679,13 +694,17 @@ def supervise(
                 if hot_for >= max_hot_seconds:
                     # --pause-seconds 0 keeps the original kill-only behaviour, which is
                     # still right for a cheap command that can simply be re-run.
-                    if pause_seconds <= 0 or pauses >= max_pauses:
+                    # max_pauses == 0 means unlimited: the owner's rule is to pause and
+                    # carry on, so the run only stops when a budget was explicitly asked for.
+                    budget_spent = max_pauses > 0 and pauses >= max_pauses
+                    if pause_seconds <= 0 or budget_spent:
                         if pause_seconds > 0:
                             print(
                                 f"[thermal] stopping: {hot_for:.0f}s above the stop "
-                                f"threshold for the {pauses + 1}th time. Pausing is not "
-                                f"keeping this workload cool, so continuing would just "
-                                f"repeat this. This machine has crashed from heat twice.",
+                                f"threshold for the {pauses + 1}th time, and the pause "
+                                f"budget of {max_pauses} is spent. Pausing is not keeping "
+                                f"this workload cool, so continuing would just repeat "
+                                f"this. This machine has crashed from heat twice.",
                                 flush=True,
                             )
                         else:
@@ -698,8 +717,9 @@ def supervise(
                         _terminate(process)
                         return 124
                     pauses += 1
+                    shown = f"{pauses}/{max_pauses}" if max_pauses > 0 else str(pauses)
                     print(
-                        f"[thermal] PAUSING (pause {pauses}/{max_pauses}) for "
+                        f"[thermal] PAUSING (pause {shown}) for "
                         f"{pause_seconds:.0f}s: {hot_for:.0f}s above the stop threshold "
                         f"({describe(offender, limits)}). The run resumes afterwards.",
                         flush=True,
@@ -759,7 +779,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--max-pauses",
         type=int,
         default=DEFAULT_MAX_PAUSES,
-        help="how many times one run may pause before it is stopped outright "
+        help="how many times one run may pause before it is stopped outright; "
+        "0 (the default) means pause as often as it takes, per the owner's rule "
         f"(default {DEFAULT_MAX_PAUSES})",
     )
     parser.add_argument(

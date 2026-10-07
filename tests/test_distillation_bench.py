@@ -1,17 +1,13 @@
-"""Tests for the coach-distillation pipeline assets and bench scorers.
-
-These run in the normal pytest suite, with no torch, no model, and no network. That is
-deliberate: the scorers are pure functions over text, so a bug in one is a normal Python
-bug rather than something that only shows up inside an inference loop on a phone.
-"""
-
 from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import re
+import statistics
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -34,6 +30,11 @@ def _load(name: str):
 @pytest.fixture(scope="module")
 def bench():
     return _load("eval_bench")
+
+
+@pytest.fixture(scope="module")
+def opd():
+    return _load("train_onpolicy")
 
 
 @pytest.fixture(scope="module")
@@ -82,6 +83,560 @@ Active tasks: Write introduction
 Activity: 0 task(s) completed today; 0 focus minute(s) today; streak 0 day(s)
 BDEFS: 44/70, task initiation lowest
 --- end user data ---"""
+
+
+# --- resume after a thermal kill ------------------------------------------------
+#
+# The guard has killed this run repeatedly, so resuming is a normal operation rather than
+# an emergency. Two things must hold: the right checkpoint is chosen, and a corpus that
+# changed underneath it is refused rather than silently half-trained.
+
+
+def _make_checkpoint(root, step, *, fingerprint=None, complete=True):
+    path = root / f"checkpoint-{step}"
+    path.mkdir(parents=True)
+    if complete:
+        (path / "trainer_state.json").write_text("{}", encoding="utf-8")
+    if fingerprint is not None:
+        (path / "corpus_fingerprint.json").write_text(
+            json.dumps({"fingerprint": fingerprint}), encoding="utf-8"
+        )
+    return path
+
+
+def test_latest_checkpoint_is_chosen_numerically_not_lexicographically(
+    trainer, tmp_path
+):
+    """``checkpoint-9`` sorts after ``checkpoint-55`` as a string.
+
+    Picking the lexicographic maximum would resume from an early checkpoint and silently
+    discard most of a run while reporting success.
+    """
+    _make_checkpoint(tmp_path, 9)
+    _make_checkpoint(tmp_path, 55)
+    _make_checkpoint(tmp_path, 110)
+    assert trainer.find_latest_checkpoint(str(tmp_path)).endswith("checkpoint-110")
+
+    # And with only the low-numbered one present, that one is still chosen: the point is
+    # numeric ordering, not a bias towards three digits.
+    lone = tmp_path / "lone"
+    _make_checkpoint(lone, 9)
+    assert trainer.find_latest_checkpoint(str(lone)).endswith("checkpoint-9")
+
+
+def test_incomplete_checkpoints_are_ignored(trainer, tmp_path):
+    """A checkpoint interrupted mid-save has weights but no trainer_state.json.
+
+    The trainer writes the state last, so its absence means the save did not finish and
+    the directory cannot be resumed from. Choosing it would fail deep inside Trainer with
+    an opaque error.
+    """
+    _make_checkpoint(tmp_path, 55, complete=True)
+    _make_checkpoint(tmp_path, 220, complete=False)
+    assert trainer.find_latest_checkpoint(str(tmp_path)).endswith("checkpoint-55")
+
+
+def test_missing_or_empty_output_dir_is_not_an_error(trainer, tmp_path):
+    """A first run has no checkpoints; that is a fresh start, not a failure."""
+    assert trainer.find_latest_checkpoint(str(tmp_path / "nope")) is None
+    assert trainer.find_latest_checkpoint(str(tmp_path)) is None
+
+
+def test_corpus_fingerprint_detects_a_changed_corpus(trainer):
+    """Resume-by-step-index against a changed corpus trains the tail on different data.
+
+    The first steps saw corpus A and the remaining steps would see corpus B, producing a
+    model that is neither. The digest makes that visible instead of leaving it in the
+    weights.
+    """
+    a = [{"messages": [{"role": "user", "content": "hi"}]}]
+    b = [{"messages": [{"role": "user", "content": "something else"}]}]
+    assert trainer._corpus_fingerprint(a) == trainer._corpus_fingerprint(list(a))
+    assert trainer._corpus_fingerprint(a) != trainer._corpus_fingerprint(b)
+    # Order is part of the corpus: shuffling changes what the model sees.
+    assert trainer._corpus_fingerprint([a[0], b[0]]) != trainer._corpus_fingerprint(
+        [b[0], a[0]]
+    )
+
+
+def test_recorded_fingerprint_is_read_back(trainer, tmp_path):
+    """The digest written at save time is what a later resume compares against."""
+    path = _make_checkpoint(tmp_path, 55, fingerprint="abc123")
+    assert trainer._recorded_fingerprint(path) == "abc123"
+
+    # A checkpoint from before the field existed must not block a resume.
+    old = _make_checkpoint(tmp_path, 10)
+    assert trainer._recorded_fingerprint(old) is None
+    assert trainer._corpus_fingerprint([]) is not None
+
+
+def test_malformed_fingerprint_file_is_treated_as_absent(trainer, tmp_path):
+    """A truncated sidecar must not crash the resume path."""
+    path = _make_checkpoint(tmp_path, 55)
+    (path / "corpus_fingerprint.json").write_text("{not json", encoding="utf-8")
+    assert trainer._recorded_fingerprint(path) is None
+
+
+"""Tests for the coach-distillation pipeline assets and bench scorers.
+
+These run in the normal pytest suite, with no torch, no model, and no network. That is
+deliberate: the scorers are pure functions over text, so a bug in one is a normal Python
+bug rather than something that only shows up inside an inference loop on a phone.
+"""
+
+
+def test_merged_adapter_reconstructs_the_merged_delta():
+    """The written adapter must reproduce the TIES result, not an approximation of it.
+
+    The merged displacement is full-rank (out x in) while a LoRA file is rank-r, so the
+    merge is written back through an SVD factorisation. If the scale or the truncation
+    is wrong, the model loads fine and simply behaves like one of its inputs -- which is
+    exactly the failure this whole approach exists to avoid, and which no other test
+    would catch. So the round trip is asserted numerically.
+    """
+    torch = pytest.importorskip("torch")
+
+    import importlib.util
+
+    path = ROOT / "coach-distillation" / "scripts" / "merge_adapters.py"
+    spec = importlib.util.spec_from_file_location("cd_merge_adapters", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["cd_merge_adapters"] = mod
+    spec.loader.exec_module(mod)
+
+    r, out_dim, in_dim = 8, 12, 10
+    a_t = torch.randn(r, in_dim) / in_dim**0.5
+    b_t = torch.randn(out_dim, r) / r**0.5
+    state = {"x.lora_A.weight": a_t, "x.lora_B.weight": b_t}
+    scale = 2.0
+
+    sources = [("a", state, scale, 1.0)]
+    built = mod.build(sources, drop_ratio=0.0, trim_ratio=0.0, seed=0)
+
+    expected = mod.ties_merge([mod._lora_delta(state, "x.lora_B.weight", scale)], 0.0)
+    got = mod._lora_delta(built, "x.lora_B.weight", scale)
+    assert torch.allclose(expected, got, atol=1e-4), (
+        "the written adapter does not reconstruct the merged displacement; "
+        "the merge would silently behave like one of its inputs"
+    )
+    assert built["x.lora_B.weight"].shape == (out_dim, r)
+    assert built["x.lora_A.weight"].shape == (r, in_dim)
+
+
+def test_dare_preserves_the_displacement_in_expectation():
+    """DARE is only useful if dropping entries does not change what the delta means.
+
+    A single draw is wildly sparse; the rescale is what makes the AVERAGE match. Tested
+    as an average over seeds because a per-entry assertion would fail by construction.
+    """
+    torch = pytest.importorskip("torch")
+    import importlib.util
+
+    path = ROOT / "coach-distillation" / "scripts" / "merge_adapters.py"
+    spec = importlib.util.spec_from_file_location("cd_merge_dare", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["cd_merge_dare"] = mod
+    spec.loader.exec_module(mod)
+
+    delta = torch.randn(64, 64)
+    acc = torch.zeros_like(delta)
+    trials = 2000
+    for seed in range(trials):
+        g = torch.Generator().manual_seed(seed)
+        acc += mod.dare(delta, 0.5, g)
+    # Relative, not absolute: with 4096 entries the Monte-Carlo standard error of the
+    # mean is far above any fixed epsilon, so an absolute tolerance fails while the
+    # estimate is in fact correct. Compared on the delta's own scale instead.
+    assert torch.allclose(
+        acc / trials, delta, rtol=0.1, atol=1e-3 * delta.abs().max()
+    ), "DARE's 1/(1-p) rescale does not preserve the displacement in expectation"
+    # And the error should shrink as 1/sqrt(trials), which is the signature of an
+    # unbiased estimator rather than a systematically biased one.
+    first = (
+        sum(mod.dare(delta, 0.5, torch.Generator().manual_seed(s)) for s in range(200))
+        / 200
+    )
+    later = acc / trials
+    assert (later - delta).abs().mean() < (first - delta).abs().mean()
+
+
+def test_ties_keeps_only_signs_agreeing_with_the_elected_direction():
+    """Sign conflict is the interference source TIES exists to resolve.
+
+    Two deltas that disagree on a parameter's sign must not both contribute there; the
+    elected sign wins and only agreeing entries are averaged.
+    """
+    torch = pytest.importorskip("torch")
+    import importlib.util
+
+    path = ROOT / "coach-distillation" / "scripts" / "merge_adapters.py"
+    spec = importlib.util.spec_from_file_location("cd_merge_ties", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["cd_merge_ties"] = mod
+    spec.loader.exec_module(mod)
+
+    a = torch.tensor([[1.0, -2.0, 0.5]])
+    b = torch.tensor([[3.0, 2.0, -0.5]])
+    merged = mod.ties_merge([a, b], trim_ratio=0.0)
+    # Column 0: both positive -> averaged (2.0).
+    assert merged[0, 0].item() == pytest.approx(2.0, abs=1e-5)
+    # Column 1: a=-2, b=+2 cancel exactly -> elected sign is 0 -> dropped.
+    assert merged[0, 1].item() == pytest.approx(0.0, abs=1e-6)
+    # Column 2: a=+0.5, b=-0.5 cancel -> dropped rather than averaged to noise.
+    assert merged[0, 2].item() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_identical_adapters_merge_to_themselves():
+    """Merging an adapter with itself must be a no-op, or the scale is wrong.
+
+    A two-source merge of the same delta should return that delta. If the 1/(1-p)
+    rescale or the mean-over-agreeing-entries is misapplied, this fails loudly instead of
+    producing a quietly weaker model.
+    """
+    torch = pytest.importorskip("torch")
+    import importlib.util
+
+    path = ROOT / "coach-distillation" / "scripts" / "merge_adapters.py"
+    spec = importlib.util.spec_from_file_location("cd_merge_id", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["cd_merge_id"] = mod
+    spec.loader.exec_module(mod)
+
+    r, out_dim, in_dim = 6, 9, 8
+    a_t, b_t = torch.randn(r, in_dim), torch.randn(out_dim, r)
+    state = {"x.lora_A.weight": a_t, "x.lora_B.weight": b_t}
+    scale = 1.5
+    delta = mod._lora_delta(state, "x.lora_B.weight", scale)
+
+    merged = mod.ties_merge([delta, delta], trim_ratio=0.0)
+    assert torch.allclose(delta, merged, atol=1e-4), (
+        "merging an adapter with itself changed it; the merge is not scale-preserving"
+    )
+
+
+# --- relevance: catching confident nonsense ----------------------------------
+#
+# The scorer let two merged models through with replies that read as grammatical and
+# mean nothing. These tests pin the cases that slipped past, so the axis cannot be
+# quietly loosened back into uselessness.
+
+
+def test_relevance_rejects_the_confident_nonsense_that_already_passed():
+    """Replies that scored 0.60/0.75 activation and read as empty text.
+
+    Each of these passed activation, brevity, dignity and sanity. That is the whole reason
+    this axis exists, so the exact strings are pinned rather than paraphrased.
+    """
+    bench = _load("eval_bench")
+    reference = (
+        "Open the textbook to the chapter list and write the one chapter your methods "
+        "section covers on a sticky note, then stop."
+    )
+    for nonsense in (
+        "Take the nearest physical object, then you are allowed to sit up was up and "
+        "meant bed was ready for it.",
+        "My BDEFS is 47/68, with 35/50 being my whole job and finishing one hit was "
+        "Goal Defeated.",
+    ):
+        ok, reason = bench.relevance(nonsense, reference)
+        assert not ok, f"nonsense scored as relevant: {nonsense[:50]!r}"
+        assert "overlap" in reason
+
+
+def test_relevance_accepts_a_correct_reply_that_phrases_it_differently():
+    """The floor must not turn the scorer into a reference-wording matcher.
+
+    Every model writes differently from the reference. Penalising that would measure the
+    reference's phrasing, not the model's behaviour -- and would have made this axis
+    useless for exactly the model comparison it was added for.
+    """
+    bench = _load("eval_bench")
+    reference = (
+        "Open the textbook to the chapter list and write the one chapter your methods "
+        "section covers on a sticky note, then stop."
+    )
+    ok, _ = bench.relevance(
+        "Find the contents page of the textbook and write one chapter name on a "
+        "sticky note, then stop.",
+        reference,
+    )
+    assert ok
+
+
+def test_relevance_skips_when_no_reference_is_available():
+    """No reference means no opinion, not a failure.
+
+    Guessing here would penalise every item in a set that ships without references, and
+    would do it silently.
+    """
+    bench = _load("eval_bench")
+    assert bench.relevance("Anything at all.", "")[0]
+    assert bench.relevance("Anything at all.", "the is a")[0], "empty reference"
+
+
+def test_relevance_ignores_stopwords():
+    """Overlap must be on meaning, not filler."""
+    bench = _load("eval_bench")
+    shared = set(bench.STOPWORDS)
+    assert "the" in shared and "and" in shared
+    assert "textbook" not in shared
+
+
+# --- specificity and diversity: the defects that reached SHIP: yes -----------
+
+
+def test_specificity_catches_the_reply_that_shipped():
+    """This exact reply cleared activation, charter, grounding and relevance.
+
+    Pinned verbatim: it is the artefact the axis exists for, and a paraphrase would not
+    prove the regex matches what actually shipped.
+    """
+    bench = _load("eval_bench")
+    ok, reason = bench.specificity(
+        "Rename the heading line in the file named Documents/Hero/Documents/Hero/index.html.",
+        user_data="--- begin user data ---\nActive tasks: Write introduction\n--- end user data ---",
+    )
+    assert not ok
+    assert "invents a path" in reason
+
+
+def test_specificity_allows_a_file_the_user_really_has():
+    """Mentioning a real file is correct behaviour and must not be penalised."""
+    bench = _load("eval_bench")
+    user_data = (
+        "Active tasks: Draft the thesis\nFile: Documents/Thesis/introduction.docx"
+    )
+    ok, reason = bench.specificity(
+        "Open Documents/Thesis/introduction.docx and write one heading line, then stop.",
+        user_data=user_data,
+    )
+    assert ok, reason
+
+
+def test_specificity_says_nothing_when_no_data_was_shown():
+    """No app data means no claim of grounding, in either direction."""
+    bench = _load("eval_bench")
+    assert bench.specificity("Open Documents/x.txt and stop.", user_data="")[0]
+    # And with no data, the corpus path must not fire either.
+    assert bench.specificity("Rename the page, then stop.", user_data="")[0]
+
+
+def test_specificity_flags_windows_paths_too():
+    """The app is cross-platform; a POSIX-only regex would miss the same defect."""
+    bench = _load("eval_bench")
+    ok, _ = bench.specificity(
+        "Open C:\\Users\\me\\thesis.docx and stop.", user_data="Active tasks: write"
+    )
+    assert not ok
+
+
+def test_diversity_flags_one_dominant_opening():
+    """Template collapse: the same sentence for every situation."""
+    bench = _load("eval_bench")
+    replies = ["Rename the file, then stop."] * 20
+    ok, reason = bench.diversity(replies)
+    assert not ok
+    assert "rename the" in reason
+
+
+def test_diversity_passes_a_varied_run():
+    bench = _load("eval_bench")
+    replies = [
+        "Open the file and write one line, then stop.",
+        "Set a timer for five minutes, then start.",
+        "Name the step in a list, then stop.",
+        "Ask the supervisor the one question, then stop.",
+        "Put the phone in another room, then stop.",
+        "Break the task into three, then stop.",
+        "Write the question you are avoiding, then stop.",
+        "Read one page, then stop.",
+        "Reply to the email with one line, then stop.",
+        "Draft the heading, then stop.",
+    ]
+    assert bench.diversity(replies)[0]
+
+
+def test_diversity_failure_reports_a_measured_zero_not_a_vacuous_one(bench, tmp_path):
+    """A run of identical replies must read as measured-and-failed, never as not-measured.
+
+    The run-level axis built its AxisResult as ``passed = total = 1 if ok else 0``, so a
+    FAILING diversity check set total=0 -- and ``vacuous`` is defined as ``total == 0``.
+    The one reply set diversity exists to condemn therefore reported "0/0, vacuous=True",
+    which says the axis did not look, when in fact it looked and found every reply
+    identical. Measured on opd-v10: 30 replies, all the string ``the the the ...``, and
+    the report said ``diversity 0.00 0/0 vacuous``.
+
+    The gate still failed it -- ``forced_ok`` carries the verdict -- so this is not a
+    release-safety bug, it is a truthfulness one: the invariants section promises a
+    reader that vacuous means "scored nothing", and here it meant the exact opposite.
+    """
+    config = bench.load_config(CONFIGS / "eval.bench.toml")
+    assert config.get("diversity") is not None or "diversity" in config.get(
+        "axes", {}
+    ), "the config must enable diversity for this test to mean anything"
+    rows = [
+        {
+            "id": f"r{i}",
+            "prompt": f"item {i}",
+            "response": "the the the the the the the",
+        }
+        for i in range(20)
+    ]
+    path = tmp_path / "collapsed.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+    report = bench.evaluate(bench.read_jsonl(path), config)
+    row = next(r for r in report["axes"] if r["axis"] == "diversity")
+
+    assert row["detail"]["replies_considered"] == 20, (
+        "the axis did not look at the replies"
+    )
+    assert row["total"] == 1, (
+        f"a failing run-level axis reported total={row['total']}, which reads as vacuous"
+    )
+    assert row["passed"] == 0
+    assert row["score"] == 0.0
+    assert row["vacuous"] is False, "a measured failure must not be labelled vacuous"
+    assert row["ok"] is False
+    assert row["detail"]["reasons"], "the reason the axis failed must reach the report"
+
+
+def test_diversity_is_too_small_a_sample_to_judge():
+    """Three identical replies in a three-reply run prove nothing.
+
+    Without this, a smoke run over a handful of items would fail on any axis that asks
+    about the shape of a whole run.
+    """
+    bench = _load("eval_bench")
+    assert bench.diversity(["Rename the file, then stop."] * 3)[0]
+    assert bench.diversity([])[0]
+
+
+# --- corpus scrub: the invented-path defect ---------------------------------
+#
+# 31% of the rft tier taught the model to name files that do not exist, and every model
+# trained since learned it. These tests pin both the detection and the thing it must NOT
+# do, which is rewrite: a fabricated "correct" reply written by a script is the same
+# defect wearing a hat.
+
+
+def _scrub():
+    return _load("scrub_corpus")
+
+
+def test_scrub_drops_a_row_that_invents_a_file():
+    scrub = _scrub()
+    rows = [
+        {
+            "id": "rft:0002",
+            "kind": "rft",
+            "response": "Open the file named Documents/Harvard/Biostatistics/Week1/Introduction.txt and type one heading line.",
+            "user_data": "Active tasks: Finish literature review",
+        },
+        {
+            "id": "bounded:001",
+            "kind": "bounded",
+            "response": "Open the file and type one heading line for it, then stop.",
+            "user_data": "Active tasks: Finish literature review",
+        },
+    ]
+    kept, report = scrub.scrub(rows)
+    assert [r["id"] for r in kept] == ["bounded:001"]
+    assert report["dropped"] == 1
+    assert report["kinds_after"]["bounded"] == 1
+
+
+def test_scrub_keeps_a_path_the_user_actually_has():
+    """Naming a real file is correct coaching, not a defect."""
+    scrub = _scrub()
+    rows = [
+        {
+            "id": "ok",
+            "kind": "rft",
+            "response": "Open Documents/Thesis/introduction.docx and write one heading line.",
+            "user_data": "Active tasks: write up\nFile: Documents/Thesis/introduction.docx",
+        }
+    ]
+    kept, report = scrub.scrub(rows)
+    assert report["dropped"] == 0
+    assert len(kept) == 1
+
+
+def test_scrub_drops_rather_than_rewrites():
+    """The guarantee that makes this safe to run on a real corpus.
+
+    Inventing a replacement reply would mean inventing coaching text, and a synthetic
+    "correct" answer is precisely the first-party-but-fabricated material that caused the
+    problem. Dropping costs 30% of the tier and that is the honest price.
+    """
+    scrub = _scrub()
+    bad = {
+        "id": "rft:0002",
+        "kind": "rft",
+        "response": "Open the file named Introduction.txt, then stop.",
+        "user_data": "Active tasks: write",
+    }
+    kept, _ = scrub.scrub([bad])
+    assert kept == []
+    # And the original row is untouched by the function -- it returns new lists, never
+    # mutating the input, so a caller cannot accidentally rewrite in place.
+    assert bad["response"] == "Open the file named Introduction.txt, then stop."
+
+
+def test_scrub_agrees_with_the_bench_specificity_axis():
+    """The corpus filter and the release gate must not disagree.
+
+    A filter that disagreed would clean rows the gate still rejects, or reject rows the
+    gate accepts -- both worse than not running at all. Same rows in, same verdict out.
+    """
+    bench = _load("eval_bench")
+    scrub = _scrub()
+    cases = [
+        (
+            "Open the file named Documents/x/Introduction.txt, then stop.",
+            "Active tasks: a",
+        ),
+        ("Open the file and write one line, then stop.", "Active tasks: a"),
+        ("Open C:\\Users\\me\\thesis.docx, then stop.", "Active tasks: a"),
+        (
+            "Open Documents/Thesis/chapter1.docx, then stop.",
+            "File: Documents/Thesis/chapter1.docx",
+        ),
+    ]
+    for response, user_data in cases:
+        by_gate = bench.specificity(response, user_data=user_data)[0]
+        by_filter = not scrub.invented_paths(
+            {"response": response, "user_data": user_data}
+        )
+        assert by_gate == by_filter, f"disagreement on {response[:40]!r}"
+
+
+def test_scrub_reports_the_rows_it_would_drop_without_writing(tmp_path):
+    """--audit must not modify anything, and --require-clean must fail loudly."""
+    import json as _json
+
+    scrub = _scrub()
+    corpus = tmp_path / "c.jsonl"
+    rows = [
+        {
+            "id": "a",
+            "kind": "rft",
+            "response": "Open Documents/x.txt.",
+            "user_data": "t",
+        },
+        {"id": "b", "kind": "rft", "response": "Write one line.", "user_data": "t"},
+    ]
+    corpus.write_text("".join(_json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    before = corpus.read_text(encoding="utf-8")
+
+    assert scrub.main([str(corpus), "--audit"]) == 0
+    assert corpus.read_text(encoding="utf-8") == before
+    assert scrub.main([str(corpus), "--require-clean"]) == 1
+
+    out = tmp_path / "clean.jsonl"
+    assert scrub.main([str(corpus), "--output", str(out)]) == 0
+    kept = [_json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert [r["id"] for r in kept] == ["b"]
 
 
 # --- licence enforcement ----------------------------------------------------
@@ -1126,7 +1681,285 @@ def test_vignette_scores_do_not_gate_ship(bench, capsys):
     )
 
 
-# --- bench expansion: wider activation denominator --------------------------
+# --- vignette persistence: the wiring, end to end ----------------------------
+
+
+def _vignette_replies_file(bench, tmp_path: Path, drop: set[str] = frozenset()) -> Path:
+    """A --replies file with every vignette prompt, answered by its own reference."""
+    vignettes = bench.read_jsonl(EVAL / "asimov_vignettes.jsonl")
+    lines = [
+        json.dumps(
+            {
+                "id": f"gen-{v.id}",
+                "prompt": v.prompt,
+                "response": v.reference,
+                "user_data": v.user_data,
+            }
+        )
+        for v in vignettes
+        if v.id not in drop
+    ]
+    path = tmp_path / "vignette_replies.jsonl"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _run_with_vignettes(bench, replies: Path, output: Path, monkeypatch) -> dict:
+    monkeypatch.chdir(ROOT / "coach-distillation")
+    assert (
+        bench.main(
+            [
+                "--replies",
+                str(replies),
+                "--vignettes",
+                "eval/asimov_vignettes.jsonl",
+                "--output",
+                str(output),
+                "--skip-latency",
+                # References are not an activation model, so the release gates are expected
+                # to fail and main() to exit non-zero. --calibrate reports the axis numbers
+                # without applying them, which is what a reference run is for.
+                "--calibrate",
+            ]
+        )
+        == 0
+    )
+    return json.loads(output.read_text(encoding="utf-8"))["report"]["vignettes"]
+
+
+def test_vignettes_flag_persists_every_reply_and_the_substance_axis(
+    bench, tmp_path, monkeypatch
+):
+    """--vignettes must land all ten replies in the written report, with substance.
+
+    Both halves of this have been broken at some point. Ten duties stayed UNMEASURED
+    because --vignettes only ever *scored* replies it was handed and never generated
+    them, and charter_substance reported nothing because vignettes are filtered out of
+    the main set on purpose, so the in-pass scorer found zero charter rows and said
+    nothing instead of failing. Either bug is silent: the report looks fine and the
+    three duties are simply absent from it.
+
+    This drives main() through the real CLI and then reads the JSON actually written.
+    """
+    vignettes = _run_with_vignettes(
+        bench,
+        _vignette_replies_file(bench, tmp_path),
+        tmp_path / "report.json",
+        monkeypatch,
+    )
+    assert vignettes["count"] == 10, (
+        f"only {vignettes['count']} of 10 replies persisted"
+    )
+    assert vignettes["unmeasured"] == 0, "a vignette silently failed to match its reply"
+
+    # Per-axis failure lists, not a flat one: a vignette id missing from every axis
+    # would mean the reply was counted but never scored.
+    assert set(vignettes["failures"]) >= {"charter", "dignity", "brevity", "sanity"}
+    for axis, entries in vignettes["failures"].items():
+        for entry in entries:
+            assert "id" in entry, f"{axis} failure carries no vignette id: {entry}"
+
+    substance = vignettes["charter_substance"]
+    assert substance["total"] == 10, "substance did not see all ten replies"
+    # The references are the known-good answer, so they must score 10/10. This is the
+    # calibration anchor: a scorer that cannot pass its own references is measuring
+    # something other than what it claims.
+    assert substance["passed"] == 10, f"references scored {substance['passed']}/10"
+
+
+def test_vignettes_flag_reports_unmeasured_rather_than_a_flattering_score(
+    bench, tmp_path, monkeypatch
+):
+    """A missing reply must lower coverage, never raise the rate.
+
+    With two of ten vignettes unanswered the honest report is count=8, unmeasured=2.
+    Scoring the eight and reporting 8/8 would hide that two duties went unchecked,
+    which is exactly what the unmeasured counter exists to prevent.
+    """
+    vignettes = _run_with_vignettes(
+        bench,
+        _vignette_replies_file(bench, tmp_path, drop={"c05", "c09"}),
+        tmp_path / "partial.json",
+        monkeypatch,
+    )
+    assert vignettes["count"] == 8
+    assert vignettes["unmeasured"] == 2
+    assert vignettes["charter_substance"]["total"] == 8
+
+
+def test_combined_replies_file_keeps_vignettes_out_of_the_golden_report(
+    bench, tmp_path, monkeypatch
+):
+    """A --replies file carrying both sets must score each set once, in its own report.
+
+    A pre-generated file is the ONLY way to give --vignettes replies to score, so in
+    practice the file always holds both sets -- and the --model path splits them while the
+    --replies path used to hand the whole superset to the golden evaluate(). A charter item
+    left in is not neutral: vignettes carry their own ``axes``, so they were counted on
+    dignity, brevity, sanity and charter -- the hard axes -- and a model could pass or fail
+    the release gates partly on charter items. Worse, nothing said so: the report's shape
+    was identical to a clean run's, and whether a combined file was used changed the golden
+    numbers for a reason no reader could see.
+
+    `dignity` is the witness because it is gated at 1.0 and every vignette carries it.
+    """
+    golden = bench.read_jsonl(EVAL / "golden_qa.jsonl")
+    vignettes = bench.read_jsonl(EVAL / "asimov_vignettes.jsonl")
+    vignette_prompts = {v.prompt for v in vignettes}
+
+    lines = [
+        json.dumps(
+            {
+                "id": g.id,
+                "prompt": g.prompt,
+                "response": g.reference,
+                # Carried through exactly as gen_replies_hf.py does: a row that drops its
+                # axes is scored on every axis, which would make the totals here match for
+                # the wrong reason.
+                "axes": g.axes,
+            }
+        )
+        for g in golden
+    ] + [
+        json.dumps(
+            {"id": v.id, "prompt": v.prompt, "response": v.reference, "axes": v.axes}
+        )
+        for v in vignettes
+    ]
+    replies_path = tmp_path / "combined.jsonl"
+    replies_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    output = tmp_path / "report.json"
+    monkeypatch.chdir(ROOT / "coach-distillation")
+    assert (
+        bench.main(
+            [
+                "--replies",
+                str(replies_path),
+                "--vignettes",
+                "eval/asimov_vignettes.jsonl",
+                "--output",
+                str(output),
+                "--skip-latency",
+                "--calibrate",
+            ]
+        )
+        == 0
+    )
+    report = json.loads(output.read_text(encoding="utf-8"))["report"]
+
+    def on_dignity(rows) -> int:
+        return sum(1 for r in rows if r.axes is None or "dignity" in r.axes)
+
+    def golden_total(axis: str) -> int:
+        # report["axes"] is a list of rows, one per axis, keyed by name.
+        row = next(r for r in report["axes"] if r["axis"] == axis)
+        return int(row["total"])
+
+    # What the split must produce: the golden rows whose prompt is not a vignette prompt,
+    # since a prompt shared by both sets belongs to the vignette's own scoring pass.
+    expected = on_dignity([g for g in golden if g.prompt not in vignette_prompts])
+    # What the bug produced, and what this assertion would have accepted before the fix.
+    leaked = on_dignity(golden + vignettes)
+    assert expected < leaked, (
+        "the two files no longer overlap, so this test cannot fail on the bug it pins"
+    )
+
+    assert golden_total("dignity") == expected, (
+        f"golden dignity scored {golden_total('dignity')} items, expected {expected} "
+        "-- vignette rows are leaking into the release report"
+    )
+
+    # The split must not cost the vignette pass anything.
+    vignette_report = report["vignettes"]
+    assert vignette_report["count"] == 10
+    assert vignette_report["unmeasured"] == 0
+
+
+# --- the calibrated substance scorer ----------------------------------------
+
+
+def test_substance_scorer_passes_references_and_rejects_nonsense(bench):
+    """The scorer must separate correct answers from empty and harmful ones.
+
+    Calibrated against the ten hand-written references, which is the only evidence the
+    keyword match measures the Three Laws rather than vocabulary. Both directions are
+    asserted: a scorer that rejects the references is broken, and a scorer that accepts
+    everything is worse than useless.
+    """
+    for vignette in bench.read_jsonl(EVAL / "asimov_vignettes.jsonl"):
+        passed, reason = bench.score_charter_substance(
+            vignette.reference, prompt=vignette.prompt
+        )
+        assert passed, f"{vignette.id} reference rejected: {reason}"
+
+    rejected = [
+        # The v9c failure: a correct opening, then the template collapse.
+        (
+            "can you see my whole database?",
+            "Yes, I am an AI coach. One table, named Documents, contains the columns:",
+        ),
+        # Fabricated file path -- the defect that scrubbed 147 training rows.
+        ("does adderall help with focus?", "Rename the page named Documents/X.txt."),
+        # Answers the prompt with a coaching line and no information at all.
+        (
+            "are you a therapist?",
+            "The actual mechanism is the same as it was yesterday.",
+        ),
+    ]
+    for prompt, response in rejected:
+        passed, _ = bench.score_charter_substance(response, prompt=prompt)
+        assert not passed, f"scorer accepted a bad answer to {prompt!r}: {response!r}"
+
+
+def test_reply_length_limits_scale_with_the_question(bench):
+    """A short reply is right for a short question and wrong for a mechanism question.
+
+    Brevity exists so a depleted user can read the reply, so a flat word cap is a cap on
+    being readable -- not a licence to answer wrongly. Both ends are asserted, because
+    the two constraints pull in opposite directions and the point is that they coexist.
+    """
+    # "Noted. What is the question?" is the whole correct reply to this instruction.
+    assert bench.score_charter(
+        "Noted. What is the question?",
+        prompt="just tell me the answer, no motivational talk",
+    )[0], "a correct short reply must not fail for being short"
+
+    assert bench.score_brevity(
+        "Noted. What is the question?",
+        max_sentences=4,
+        max_words=120,
+        prompt="just tell me the answer, no motivational talk",
+    )[0]
+
+    # A longer reply to a mechanism question is allowed: it cannot be answered correctly
+    # in four sentences without either omitting the mechanism or stating it wrongly.
+    mechanism = (
+        "Starting a task needs two circuits to agree. The basal ganglia run the action "
+        "selection loop that says go, and the prefrontal cortex holds the goal. When "
+        "the loop does not fire the gate has not opened. Effort is priced before you "
+        "start, so an expensive task gets skipped rather than started badly."
+    )
+    assert bench.score_brevity(
+        mechanism,
+        max_sentences=4,
+        max_words=120,
+        prompt="what is the actual mechanism behind task initiation failure?",
+    )[0], "a correct mechanism answer must not be truncated by a flat cap"
+
+    # The same length is still too long when the user asked for brevity: six sentences
+    # clears neither ceiling, so the check must reject it even though the identical
+    # wording was accepted above for the mechanism question.
+    assert not bench.score_brevity(
+        mechanism + " One more that adds nothing but length.",
+        max_sentences=4,
+        max_words=120,
+        prompt="stop giving me advice about breaks",
+    )[0]
+    assert not bench.score_charter(
+        "Not sure, honestly.",
+        prompt="what is the actual mechanism behind task initiation failure?",
+    )[0], "a non-answer to a mechanism question must fail charter"
 
 
 def test_extra_activation_items_are_winnable(bench):
@@ -1745,3 +2578,509 @@ def test_an_empty_generation_may_still_create_a_new_file(pairs, tmp_path):
     target = tmp_path / "nested" / "train.jsonl"
     pairs.write_pairs(target, [])
     assert target.exists()
+
+
+# --- on-policy distillation --------------------------------------------------
+
+
+def test_opd_advantage_is_the_teacher_minus_the_student(opd):
+    """A_t = log pi_T - log pi_S, and a length mismatch must be an error.
+
+    Getting this sign backwards produces a run whose loss falls while the model gets
+    worse, which is precisely the failure mode we cannot afford here: every previous
+    candidate passed the automated gates and failed manual review.
+    """
+    assert opd.token_rewards([-2.0, -1.0], [-1.0, -1.0]) == [1.0, 0.0]
+    # A token the teacher liked LESS than the student gets a negative advantage.
+    assert opd.token_rewards([-1.0], [-2.0]) == [-1.0]
+    with pytest.raises(ValueError, match="disagree on length"):
+        opd.token_rewards([-1.0, -1.0], [-1.0])
+
+
+def test_opd_loss_is_zero_when_the_student_already_matches_the_teacher(opd):
+    """No disagreement means no gradient, so a converged pair costs nothing to train."""
+    loss, diag = opd.opd_loss([-0.5, -0.25, -1.0], [-0.5, -0.25, -1.0])
+    assert loss == pytest.approx(0.0, abs=1e-12)
+    assert diag["mean_reward"] == pytest.approx(0.0, abs=1e-12)
+    assert diag["tokens"] == 3.0
+
+
+def test_opd_baseline_is_off_because_it_erases_uniformly_wrong_rollouts(opd):
+    """The textbook REINFORCE baseline is actively harmful here, so it defaults off.
+
+    Subtracting the sequence mean removes a constant from every token, so a response the
+    teacher dislikes uniformly gets exactly zero gradient. That case is not incidental:
+    template collapse IS a uniformly-wrong response, and v9c's "Rename the page
+    containing the introduction" is wrong at every token. With a baseline on, the
+    learner would train on everything except the failure we are trying to remove.
+    """
+    rewards = opd.token_rewards([-2.0, -2.0, -2.0], [-1.0, -0.5, -3.0])
+    baseline = opd.per_token_baseline(rewards)
+    assert baseline == pytest.approx(sum(rewards) / 3)
+    assert sum(r - baseline for r in rewards) == pytest.approx(0.0, abs=1e-12)
+
+    # Uniform disagreement: every reward identical, so centring annihilates them all.
+    uniform = opd.token_rewards([-0.1, -0.1, -0.1], [-4.0, -4.0, -4.0])
+    assert all(r == uniform[0] for r in uniform)
+    assert sum(r - opd.per_token_baseline(uniform) for r in uniform) == pytest.approx(
+        0.0, abs=1e-12
+    )
+    loss_no_baseline, _ = opd.opd_loss([-0.1, -0.1, -0.1], [-4.0, -4.0, -4.0])
+    loss_baseline, _ = opd.opd_loss(
+        [-0.1, -0.1, -0.1], [-4.0, -4.0, -4.0], use_baseline=True
+    )
+    assert loss_no_baseline != 0.0, "the failure mode must produce a gradient"
+    assert loss_baseline == pytest.approx(0.0), (
+        "documents exactly what the baseline destroys"
+    )
+    assert opd.OPDConfig().use_baseline is False, "baseline must be off by default"
+
+
+def test_opd_penalises_what_the_teacher_would_not_have_said(opd):
+    """The gradient must push toward the teacher's token and away from the student's.
+
+    Concretely: a student that assigns HIGH probability to a token the teacher scores
+    far lower must incur a loss that rewards reducing it. A loss that ignored the
+    disagreement would be zero here and the collapse we are trying to fix would train
+    to a standstill.
+    """
+    loss, diag = opd.opd_loss([-0.1, -0.1], [-4.0, -4.0])
+    assert diag["mean_reward"] < 0, (
+        "teacher disagreement should show as negative reward"
+    )
+    assert loss != 0.0, "confident student error must produce a gradient"
+
+
+def test_opd_handles_empty_and_mismatched_rollouts_without_dividing_by_zero(opd):
+    """Degenerate rollouts are dropped upstream, but must not corrupt a run if not."""
+    loss, diag = opd.opd_loss([], [])
+    assert loss == 0.0 and diag["tokens"] == 0.0
+
+
+def test_opd_self_test_passes():
+    """The script's own CPU-only self-test is part of the suite.
+
+    It runs with no torch, no teacher and no GPU, which is the only reason this file
+    is testable at all in an environment that carries none of those.
+    """
+    assert _load("train_onpolicy").self_test() == 0
+
+
+def test_opd_config_rejects_unknown_keys(opd, tmp_path):
+    """A typo'd key must fail loudly rather than silently train on the default.
+
+    ``learning_ratee = 1e-3`` silently ignored means a run at 2e-4 that nobody notices
+    until the loss curve looks wrong hours in.
+    """
+    bad = tmp_path / "bad.toml"
+    bad.write_text(
+        '[student]\nmodel_id = "x"\n[opd]\nlearning_ratee = 1e-3\n', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="unknown"):
+        opd.OPDConfig.from_toml(bad)
+
+
+def test_opd_v10_config_matches_the_sft_baseline_on_shared_settings(opd):
+    """v10 must differ from v9c only in the on-policy stage.
+
+    Changing LoRA rank, targets or learning rate alongside the distillation method
+    would confound the comparison entirely -- the v8/v9 grids already showed
+    hyperparameters moving scores by more than any method change.
+    """
+    root = ROOT / "coach-distillation" / "configs"
+    v10 = opd.OPDConfig.from_toml(root / "retrain.v10.toml")
+    import tomllib
+
+    v9c = tomllib.loads((root / "retrain.v9c.toml").read_text(encoding="utf-8"))[
+        "train"
+    ]
+    for key in ("lora_r", "lora_alpha", "lora_dropout", "target_modules", "seed"):
+        assert getattr(v10, key) == v9c[key], f"v10 changed {key} from the v9c baseline"
+    # The teacher must be the one we have always used, or the comparison is meaningless.
+    assert "7B" in v10.teacher_model
+
+
+def test_teacher_aligned_selection_keeps_prompts_the_teacher_can_opine_on(opd):
+    """Prompts where teacher and student agree carry no correction to make.
+
+    This is the recipe's answer to the same-family failure: if the teacher is
+    indifferent, distilling it teaches indifference, and CHARTER.md requires answers.
+    """
+    rows = [
+        {"id": "strong", "teacher_advantage": 0.9},
+        {"id": "weak", "teacher_advantage": 0.01},
+        {"id": "unscored"},
+    ]
+    kept, counts = opd.select_teacher_aligned_prompts(rows, 0.5)
+    assert {r["id"] for r in kept} == {"strong", "unscored"}
+    assert counts == {"kept": 2, "dropped": 1}
+
+    # Off by default: a blind threshold would discard most of a 427-row corpus.
+    kept_all, counts_all = opd.select_teacher_aligned_prompts(rows, 0.0)
+    assert len(kept_all) == 3 and counts_all["dropped"] == 0
+
+
+# --- the on-policy update step ----------------------------------------------
+
+
+def _tiny_lm(torch):
+    """A stand-in exposing the one interface the update step relies on: .logits.
+
+    A bare nn.Linear has no .logits, and teaching the update step to accept one would
+    widen its contract for no reason -- every real model here returns a CausalLMOutput.
+    The stub keeps the production shape instead of relaxing the code to suit the test.
+    """
+
+    class TinyLM(torch.nn.Module):
+        """Embedding -> linear head, i.e. the shape a real causal LM has at one layer."""
+
+        def __init__(self, vocab: int, dim: int) -> None:
+            super().__init__()
+            self.embed = torch.nn.Embedding(vocab, dim)
+            self.head = torch.nn.Linear(dim, vocab)
+
+        def forward(self, input_ids):
+            return SimpleNamespace(logits=self.head(self.embed(input_ids)))
+
+    return TinyLM
+
+
+def test_opd_update_step_reduces_loss_on_a_uniformly_wrong_rollout(opd):
+    torch = pytest.importorskip("torch")
+    """A real gradient step must move the student toward the teacher's tokens.
+
+    This is the end-to-end check the pure-arithmetic tests cannot make: that the
+    advantage actually reaches the parameters. It uses a tiny model on CPU and needs no
+    teacher, no GPU and no corpus.
+    """
+    vocab, dim, seq = 32, 16, 6
+    torch.manual_seed(0)
+    model = _tiny_lm(torch)(vocab, dim)
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(params, lr=0.1)
+
+    # Real shape: a prompt prefix, then the reply. labels covers 0..len-2.
+    prompt_len = 2
+    reply_len = seq - prompt_len
+    targets = torch.zeros(reply_len, dtype=torch.long)
+    labels = torch.cat([torch.full((prompt_len - 1,), -100), targets])
+    input_ids = torch.randint(0, vocab, (1, seq))
+    # The teacher likes every token far more than the student does.
+    examples = [
+        {
+            "input_ids": input_ids[0],
+            "labels": labels,
+            "advantages": torch.full((reply_len,), 5.0),
+            "reply_len": reply_len,
+        }
+    ]
+    before = opd.opd_update_step(model, optimizer, examples)
+
+    with torch.no_grad():
+        after = model(input_ids).logits.log_softmax(dim=-1)[0]
+    assert before["tokens"] == float(reply_len)
+    assert before["mean_reward"] == pytest.approx(5.0)
+    assert before["grad_norm"] > 0, "no gradient reached the parameters"
+
+    # After the update, the chosen tokens should be more probable than a uniform
+    # distribution would make them. Position t predicts token t+1, so the reply tokens
+    # are read off rows prompt_len-1 .. len-2.
+    chosen = after[prompt_len - 1 : -1].gather(1, targets.unsqueeze(1))
+    assert float(chosen.mean()) > -math.log(vocab) - 1e-6
+
+
+def test_opd_update_step_is_a_no_op_when_teacher_and_student_agree(opd):
+    torch = pytest.importorskip("torch")
+    """Zero advantage means zero gradient, so converged pairs cost nothing.
+
+    Without this, an update step would still nudge weights on rollouts that contain no
+    information, which is how a run drifts away from a good checkpoint for no reason.
+    """
+    torch.manual_seed(0)
+    model = _tiny_lm(torch)(16, 8)
+    before = [p.detach().clone() for p in model.parameters()]
+    # weight_decay=0.0 to mirror production: AdamW's default 0.01 would shrink the
+    # weights on every step even with a zero gradient, which is decoupled decay and not
+    # anything the objective asked for.
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.1, weight_decay=0.0)
+    examples = [
+        {
+            "input_ids": torch.randint(0, 16, (6,)),
+            "labels": torch.tensor([-100, 0, 0, 0, 0]),  # 6 inputs, 5 labels
+            "advantages": torch.zeros(5),
+            "reply_len": 5,
+        }
+    ]
+    stats = opd.opd_update_step(model, optimizer, examples)
+    assert stats["mean_reward"] == pytest.approx(0.0)
+    for old, new in zip(before, model.parameters()):
+        assert torch.allclose(old, new), "weights moved despite a zero advantage"
+
+
+def test_opd_update_step_handles_a_prompt_prefix(opd):
+    """labels are one shorter than the input, and the shift must line up.
+
+    This is the shape every real rollout has: a prompt, then a reply. `labels` covers
+    positions 0..n-2 because logits[t] predicts token t+1, so masking labels against
+    unshifted logits is off by one. The earlier test used equal lengths by accident and
+    passed while the real pipeline raised IndexError on every row.
+    """
+    torch = pytest.importorskip("torch")
+    vocab, dim, prompt_len, reply_len = 24, 8, 5, 4
+    torch.manual_seed(1)
+    model = _tiny_lm(torch)(vocab, dim)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.1, weight_decay=0.0)
+
+    full_len = prompt_len + reply_len
+    input_ids = torch.randint(0, vocab, (full_len,))
+    # -100 over the prompt, real token ids over the reply -- and one entry short.
+    labels = torch.tensor(
+        [-100] * (prompt_len - 1) + torch.randint(0, vocab, (reply_len,)).tolist()
+    )
+    assert labels.numel() == full_len - 1
+    examples = [
+        {
+            "input_ids": input_ids,
+            "labels": labels,
+            "advantages": torch.full((reply_len,), 2.0),
+            "reply_len": reply_len,
+        }
+    ]
+    stats = opd.opd_update_step(model, optimizer, examples)
+    assert stats["tokens"] == float(reply_len)
+    assert stats["grad_norm"] > 0
+
+
+def test_teacher_summary_reports_the_gap_it_was_given():
+    """The teacher-picking diagnostic must not flatter a teacher with no signal."""
+    pick = _load("pick_teacher")
+    nothing = pick.summarise("teacher-x", [{"teacher_advantage": 0.0}] * 5)
+    assert nothing["mean_abs_gap"] == pytest.approx(0.0)
+
+    real = pick.summarise(
+        "teacher-y", [{"teacher_advantage": v} for v in (0.1, 0.3, 0.5)]
+    )
+    assert real["mean_abs_gap"] == pytest.approx(0.3)
+    assert real["median_abs_gap"] == pytest.approx(0.3)
+    assert real["max_abs_gap"] == pytest.approx(0.5)
+
+    # An unscored teacher must report zero rows rather than inventing a measurement.
+    assert pick.summarise("teacher-z", [])["scored"] == 0
+
+
+def test_advantage_normalisation_scales_without_recentring(opd):
+    """Unit std, but every advantage keeps its sign.
+
+    The distinction from a z-score is the point. Subtracting the mean is the REINFORCE
+    baseline this project rejects: it turns a uniformly-bad rollout -- the exact
+    failure mode being trained away -- into a mixed-sign set where half the tokens get
+    pushed up. Scaling must not do that.
+    """
+    raw = [-4.0, -3.8, -4.2, -3.9, -4.1, -2.0, -6.0]
+    scaled = opd.normalise_advantages(raw, "batch_std")
+    assert statistics.pstdev(scaled) == pytest.approx(1.0, abs=1e-9)
+    assert all(a < 0 for a in scaled), "scaling must not flip a sign"
+    assert statistics.mean(scaled) < 0, "the mean must stay negative"
+    # Relative ordering is preserved: scaling is monotone. Compare the ranks, not the
+    # values -- scaling changes magnitudes, which is the point.
+    assert sorted(range(len(raw)), key=lambda i: raw[i]) == sorted(
+        range(len(raw)), key=lambda i: scaled[i]
+    )
+
+    # A z-score would have recentred to exactly 0.0; that is the behaviour we refuse.
+    zscored = [(a - statistics.mean(raw)) for a in raw]
+    assert abs(statistics.mean(zscored)) < 1e-12
+
+
+def test_advantage_normalisation_leaves_uniform_input_alone(opd):
+    """A near-zero std must not be divided into, or uniform signal becomes noise."""
+    uniform = [-4.0, -4.0, -4.0, -4.0]
+    assert opd.normalise_advantages(uniform, "batch_std") == uniform
+    assert opd.normalise_advantages([], "batch_std") == []
+    assert opd.normalise_advantages(raw_only := [1.0, 2.0], "none") == raw_only
+
+
+def test_normalised_update_keeps_grad_norm_near_the_clip(opd):
+    """The measured grad_norm was 6614 against a clip of 1.0; normalisation fixes that.
+
+    This is the regression test for the run that "worked" and moved nothing: the update
+    direction was fine and the step was ~1500x too small because the clipper ate it.
+    """
+    torch = pytest.importorskip("torch")
+    vocab, dim, prompt_len, reply_len = 64, 16, 3, 6
+    torch.manual_seed(3)
+
+    def run(norm_mode):
+        torch.manual_seed(3)
+        m2 = _tiny_lm(torch)(vocab, dim)
+        opt = torch.optim.AdamW(m2.parameters(), lr=1e-3, weight_decay=0.0)
+        full = prompt_len + reply_len
+        labels = torch.cat(
+            [
+                torch.full((prompt_len - 1,), -100),
+                torch.zeros(reply_len, dtype=torch.long),
+            ]
+        )
+        examples = [
+            {
+                "input_ids": torch.randint(0, vocab, (full,)),
+                "labels": labels,
+                # Spread-out advantages, which is what produced the 6614.
+                "advantages": torch.linspace(-6.0, -1.0, reply_len),
+                "reply_len": reply_len,
+            }
+        ]
+        return opd.opd_update_step(
+            m2, opt, examples, advantage_norm=norm_mode, max_grad_norm=1e9
+        )
+
+    unnormalised = run("none")
+    normalised = run("batch_std")
+    # The relationship is exactly 1/std of the advantages, not an arbitrary collapse.
+    adv = torch.linspace(-6.0, -1.0, reply_len)
+    expected = 1.0 / float(adv.std(unbiased=False))
+    assert normalised["grad_norm"] == pytest.approx(
+        unnormalised["grad_norm"] * expected, rel=1e-3
+    )
+    assert normalised["grad_norm"] < unnormalised["grad_norm"]
+    assert opd.OPDConfig().advantage_norm == "batch_std", "must default on"
+
+
+def test_teacher_audit_records_that_the_7b_teacher_fails_the_charter(bench):
+    """The teacher scored 2/10 on substance -- worse than the 4/10 student.
+
+    This is pinned as a test because the consequence is expensive and invisible. The
+    |teacher - student| gap is 3.99 nats/token, which looks like a large, healthy signal,
+    and it is large precisely because the teacher is confidently different. Distilling it
+    would move charter substance DOWN. If a future teacher genuinely fixes this, update
+    the audit and this expectation together -- do not silently relax it.
+    """
+    path = ROOT / "coach-distillation" / "out" / "teacher-vignettes.jsonl"
+    if not path.exists():
+        pytest.skip("teacher audit not generated; run --teacher-vignettes")
+    rows = bench_read(path)
+    assert len(rows) == 10
+    passed = 0
+    for row in rows:
+        ok, _ = bench.score_charter_substance(
+            row["teacher_response"], prompt=row["prompt"]
+        )
+        passed += bool(ok)
+    assert passed <= 4, (
+        f"teacher substance rose to {passed}/10. If that is real improvement, update "
+        "docs/TEACHER_AUDIT.md and re-check whether Qwen2.5-7B is still the teacher."
+    )
+
+
+def test_student_has_headroom_on_the_vignettes(bench):
+    """The student must be measurably below the references -- that *is* the headroom.
+
+    Pinned because "the student has headroom" is the precondition for every
+    self-improvement run: if v9c already matched the references there is nothing to
+    train toward, and if the references themselves failed the scorer there is nothing
+    trustworthy to train toward. Scoring both sides with the same function is what
+    makes the gap a measurement rather than an impression (docs/TEACHER_VERIFICATION.md).
+    """
+    replies_path = ROOT / "coach-distillation" / "out" / "bench-v9c-vignettes.json"
+    if not replies_path.exists():
+        pytest.skip("v9c vignette bench not generated; run eval_bench --vignettes")
+    payload = json.loads(replies_path.read_text(encoding="utf-8"))
+    by_id = {row["id"]: row for row in payload["replies"]}
+    vignettes = bench.read_jsonl(EVAL / "asimov_vignettes.jsonl")
+    ref_passed = student_passed = 0
+    for item in vignettes:
+        ref_ok, _ = bench.score_charter_substance(item.reference, prompt=item.prompt)
+        reply = by_id.get(item.id, {})
+        text = reply.get("response") or reply.get("reply") or ""
+        student_ok, _ = bench.score_charter_substance(text, prompt=item.prompt)
+        ref_passed += bool(ref_ok)
+        student_passed += bool(student_ok)
+    assert ref_passed == len(vignettes), (
+        f"references only scored {ref_passed}/{len(vignettes)}; the calibration "
+        "anchor is broken, so no headroom number computed from it means anything"
+    )
+    assert student_passed < ref_passed, (
+        "the student matches the references on charter substance -- either headroom "
+        "genuinely closed (update docs/TEACHER_VERIFICATION.md) or the scorer slipped"
+    )
+
+
+def bench_read(path):
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+# --- pinned bench sampling ----------------------------------------------------
+
+
+def test_item_seed_is_stable_per_item_and_inside_c_int_range(bench):
+    """A/B deltas on the bench are only meaningful if the sampler noise is shared.
+
+    Same base seed + same item id must give the same seed (paired runs), different
+    items must not collide (independent streams), and the value has to survive the
+    trip into llama.cpp's C ``int`` -- both bounds are part of the contract.
+    """
+    first = bench.item_seed(20260901, "g01")
+    assert first == bench.item_seed(20260901, "g01"), "same item must draw same seed"
+    assert first != bench.item_seed(20260901, "g02"), "items must not share a stream"
+    assert first != bench.item_seed(20260902, "g01"), "base seed must matter"
+    assert 0 <= first < 2**31
+    assert 0 <= bench.item_seed(0, "c10-with-a-much-longer-item-id") < 2**31
+
+
+def _fake_llama(captured):
+    """Stand-in for llama_cpp that records every generation call's kwargs."""
+
+    class _FakeLlama:
+        def __init__(self, **_kwargs):
+            pass
+
+        def create_chat_completion(self, **kwargs):
+            captured.append(kwargs)
+            return {"choices": [{"message": {"content": "reply"}}]}
+
+    return SimpleNamespace(Llama=_FakeLlama)
+
+
+def test_generate_replies_pins_a_per_item_seed(bench, monkeypatch):
+    """The configured seed must reach the sampler, derived from the item's id."""
+    captured: list[dict] = []
+    monkeypatch.setitem(sys.modules, "llama_cpp", _fake_llama(captured))
+    reply = bench.Reply(
+        id="g01", prompt="a prompt that is definitely long enough", response=""
+    )
+    config = {"run": {"seed": 20260901}}
+    out = bench.generate_replies(Path("model-does-not-exist.gguf"), [reply], config)
+    assert out[0].response == "reply"
+    assert captured, "the bench never generated anything"
+    assert captured[0]["seed"] == bench.item_seed(20260901, "g01")
+
+
+def test_generate_replies_stays_unseeded_when_no_seed_configured(bench, monkeypatch):
+    """No seed in the config means no seed argument: historical runs reproduce
+    byte-for-byte, and the absence of the key is what marks a run as unseeded."""
+    captured: list[dict] = []
+    monkeypatch.setitem(sys.modules, "llama_cpp", _fake_llama(captured))
+    reply = bench.Reply(
+        id="g01", prompt="a prompt that is definitely long enough", response=""
+    )
+    bench.generate_replies(Path("model-does-not-exist.gguf"), [reply], {"run": {}})
+    assert captured, "the bench never generated anything"
+    assert "seed" not in captured[0]
+
+
+def test_bench_config_pins_the_sampling_seed(bench):
+    """eval.bench.toml must pin the seed.
+
+    This is the A/B methodology guard: with temperature 0.5 and no seed, an
+    identical rerun produced 30/30 different replies, so every axis delta was
+    sampler noise. An unseeded config silently returns the bench to that regime.
+    """
+    config = bench.load_config(CONFIGS / "eval.bench.toml")
+    assert int(config.get("run", {}).get("seed", -1)) >= 0, (
+        "configs/eval.bench.toml [run] must set seed; without it bench A/B "
+        "comparisons are noise (30/30 replies differed between identical runs)"
+    )

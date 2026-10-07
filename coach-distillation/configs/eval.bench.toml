@@ -51,6 +51,13 @@ max_tokens_long = 256
 # the activation axis depends on, so this is deliberately mild.
 temperature = 0.5
 repeat_penalty = 1.15
+# Pinned 2026-10-05. Each item's effective seed is `seed + crc32(id) mod 2^31-1`
+# (eval_bench.item_seed), so two models answering the same item draw the same noise:
+# an A/B delta is the model, not the sampler. Unseeded runs (everything recorded
+# before this key existed) differ run-to-run -- measured 30/30 replies changed
+# between two identical runs -- so those numbers are noisy samples and are NOT
+# paired with seeded ones. Changing this value starts a new pairing regime.
+seed = 20260901
 
 # Markers used by scripts/eval_bench.py to stream the reply into the app.
 task_marker = "[[TASK:"
@@ -107,6 +114,65 @@ description = "Short enough to read while depleted. Long replies are a usability
 max_sentences = 4
 max_words = 120
 min_score = 0.9
+
+[axes.relevance]
+# NEW (2026-10-05). Answers a question no other axis asked: is the reply about the
+# thing the user asked about?
+#
+# It exists because two merged models scored 0.60 and 0.75 on activation while producing
+# fluent nonsense -- "Take the nearest physical object, then you are allowed to sit up
+# was up and meant bed was ready for it." That reply has a concrete action verb, a time
+# bound and no shame phrase, so activation, brevity, dignity and sanity all passed it.
+# Shape is exactly what a confabulating model preserves.
+#
+# Measured on 120 replies from four models: replies below 0.08 reference-overlap were
+# 59% of the activation failures and 5% of the passes. The floor is loose on purpose --
+# a tighter one starts rejecting correct replies that merely phrase things differently.
+#
+# The gate is set below every score measured so far, deliberately. This axis is a weak
+# lexical detector, not a correctness oracle: it catches a reply that has drifted off the
+# user's situation, and cannot tell a well-formed wrong answer from a right one. It is
+# here to stop nonsense from being scored as success, not to be the last word. Expect to
+# raise this once it has been calibrated against manual review of real replies.
+description = "On topic for the user's situation; not drifted into empty text."
+min_score = 0.75
+
+[axes.specificity]
+# NEW (2026-10-05). Catches the defect that let a model ship with SHIP: yes.
+#
+# `combo` cleared every other axis -- activation 0.95, charter 1.00, grounding 1.00,
+# relevance 0.83 -- while 36% of its replies named a file that does not exist:
+# "Rename the heading line in the file named Documents/Hero/Documents/Hero/index.html."
+#
+# Grounding scored that 1.00 and cannot do otherwise: it checks the reply does not
+# CONTRADICT or narrate the app data, and a path appearing nowhere in the data is an
+# addition rather than a contradiction.
+#
+# The cause is in the corpus, not the model. 91 of 570 training rows carry a
+# "Documents/..." path in the TARGET reply ("Open the file named
+# Documents/Harvard/Biostatistics/Week1/Introduction.txt") while the app data in that row
+# contains no such file. The model was taught confident, fabricated specificity, and
+# merging cannot undo it because both adapters learned it.
+#
+# v7 invents a path in 74/120 replies and combo in 43/120, so this is a long-standing
+# defect that no previous axis could see. The gate is set at 0.90 to catch it without
+# punishing a reply that merely names a file the user genuinely has.
+description = "Names only files the app data actually showed."
+min_score = 0.90
+
+[axes.diversity]
+# NEW (2026-10-05). Tripwire for template collapse: no single opening may dominate.
+#
+# Scores the run, not an item. Set well below both current models (v7 0.74, combo 0.47)
+# because a coach that teaches one first-action shape is CORRECT for this domain; the
+# register is deliberately narrow. This fires only when a model has collapsed onto one
+# sentence for every situation.
+#
+# Note it does NOT explain combo's failure -- combo is more varied than v7 by both opener
+# share and pairwise similarity. Specificity does. Diversity is here because collapse is
+# the failure this project has hit twice before, and nothing was watching for it.
+description = "Replies are not dominated by a single phrasing."
+min_score = 0.85
 
 [axes.sanity]
 description = "Still a competent chat model after specialisation."
