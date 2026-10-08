@@ -56,9 +56,10 @@ use_baseline = false
 # Do not raise max_grad_norm instead -- that passes an enormous effective step.
 advantage_norm = "batch_std"
 max_grad_norm = 1.0
-# One full-batch AdamW step per epoch over the FIXED scored rollout set
-# (run_opd_epochs builds examples once; its docstring explains why rollouts are not
-# resampled).
+# One full-batch AdamW step per epoch. Over a FIXED rollout set by default
+# (refresh_rollouts_every = 0 keeps the v10 configuration reproducible); set it to
+# 1 or 2 to resample the student's OWN current rollouts every Nth epoch, which is
+# the documented fix for the collapse below.
 #
 # *** 10 IS MEASURED AND IT IS TOO MANY -- THE RUN COLLAPSED (2026-10-07). ***
 # Trained end to end, saved normally, loss fell -1.30 -> -62.27, and the adapter
@@ -70,9 +71,7 @@ max_grad_norm = 1.0
 # "Measured: v10 on-policy training DESTROYED the student".
 #
 # The value is kept so the failed configuration is reproducible rather than mysterious.
-# Do not raise it -- that only suppresses harder. Fix the objective first (resample the
-# rollouts each epoch is the obvious candidate), then re-measure with
-# eval_bench.py --vignettes, never with this loss.
+# Do not raise it -- that only suppresses harder.
 #
 # Run 1 used the default of 1 step: every weight moved by at most one lr step (measured
 # max delta 0.0002), which sat below the bench's noise floor -- sampling ran at
@@ -80,3 +79,18 @@ max_grad_norm = 1.0
 # that small could be resolved.
 opd_epochs = 10
 output_dir = "out/opd-v10"
+# 0 = the v10 configuration: build the rollout set once and reuse it for every epoch.
+# That is what collapsed (see above). 1 = resample before every epoch; 2 = every
+# second epoch, which halves the teacher passes on a card that cannot hold teacher
+# and student together.
+#
+# Resampling is NOT a recentring and NOT a baseline. Both would raise the probability
+# of half the tokens in a reply the teacher dislikes uniformly, which is exactly what
+# use_baseline=false exists to prevent. Refresh changes only WHICH tokens are judged:
+# the student's current output is what gets scored, so a token suppressed in epoch 1
+# has been replaced by epoch 2 rather than suppressed twice.
+#
+# Costs one extra rollout+score pass per refresh, as a subprocess -- the teacher
+# cannot be resident alongside the student in 11.7GB. v11 is the run that tests
+# whether this is enough to stop the collapse.
+refresh_rollouts_every = 0

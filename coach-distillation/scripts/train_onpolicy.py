@@ -245,6 +245,29 @@ class OPDConfig:
     warmup_ratio: float = 0.03
     cold_start_epochs: float = 1.0
     opd_epochs: int = 1
+    # Resample the student's own rollouts every N epochs instead of reusing one frozen
+    # set. 0 = never refresh, which is exactly the v10 configuration that collapsed.
+    #
+    # *** WHY THIS EXISTS ***
+    # v10 built its examples once and took 10 full-batch steps over the same 11308
+    # tokens. 87.95% of them had a NEGATIVE advantage (raw mean -4.97 nats), so with
+    # use_baseline=false and batch_std scaling that does not recentre, every single
+    # update pushed 88% of the student's own tokens DOWN and raised nothing -- ten
+    # times, on tokens that never moved. The probability mass had nowhere to go and
+    # landed on repetition: all 30 bench replies became `the the the ...`, charter
+    # substance 10/10 -> 1/10, while the loss fell monotonically to -62.27.
+    #
+    # Refreshing makes the update genuinely on-policy: the student's *current* output
+    # is what gets scored, so a token suppressed in epoch 1 has been replaced by
+    # epoch 2 rather than suppressed twice. It also means mean_reward stops being
+    # constant -- a flat mean_reward across epochs is the signature of frozen rollouts.
+    #
+    # This is NOT a recentring and NOT a baseline. Both of those would raise the
+    # probability of half the tokens in a response the teacher dislikes uniformly,
+    # which is the exact failure mode a baseline is documented here as unable to fix.
+    # Refresh keeps every advantage negative when it should be negative and changes
+    # only *which* tokens are being judged.
+    refresh_rollouts_every: int = 0
     per_device_batch_size: int = 2
     gradient_accumulation_steps: int = 8
     max_seq_len: int = 640
@@ -532,11 +555,12 @@ def opd_update_step(
     ``mean_reward`` is the RAW mean advantage, in nats, summed from
     ``example["advantages"]`` before any normalisation -- so it is directly comparable
     to the ``--score-only`` gap. The scaled one would be just mean/std of the same batch:
-    a constant that says nothing about how wrong the student is. It does not move
-    between epochs either, because ``run_opd_epochs`` builds the examples once and the
-    advantages come from the scored rollouts, so they are frozen with respect to the
-    student. A flat ``mean_reward`` is expected; a changing one would mean the rollouts
-    were being resampled.
+    a constant that says nothing about how wrong the student is.
+
+    It is flat across epochs only while the rollout set is frozen (the v10 setting,
+    ``refresh_rollouts_every = 0``). With resampling on, ``mean_reward`` moves between
+    epochs, and that movement is the point: it is the cheapest evidence that the update
+    is genuinely on-policy rather than re-suppressing the same tokens.
 
     ``examples`` is read, never written: the batch_std copy stays local, so the raw
     advantages survive for the next epoch and for this statistic.
@@ -688,20 +712,10 @@ def _warn_if_update_is_net_suppressive(
     return stats
 
 
-def run_opd_epochs(
-    model: Any,
-    tokenizer: Any,
-    scored: list[dict[str, Any]],
-    cfg: OPDConfig,
-) -> list[dict[str, float]]:
-    """Build examples once, then run epochs of updates over them.
-
-    Rollouts are generated once and reused across epochs. Resampling each epoch would be
-    marginally more on-policy, but it re-runs the teacher every epoch and makes runs
-    non-comparable; a fixed rollout set makes the loss curve mean something.
-    """
-    import torch
-
+def build_examples(
+    tokenizer: Any, scored: list[dict[str, Any]], cfg: OPDConfig
+) -> list[dict[str, Any]]:
+    """Tokenise scored rollouts into training examples, dropping unusable ones."""
     examples = []
     for row in scored:
         example = build_rollout_example(tokenizer, row, cfg.max_seq_len)
@@ -712,6 +726,38 @@ def run_opd_epochs(
             "No rollout could be aligned to its teacher scores. If every rollout is "
             "skipped the update step would silently train on nothing."
         )
+    return examples
+
+
+def run_opd_epochs(
+    model: Any,
+    tokenizer: Any,
+    scored: list[dict[str, Any]],
+    cfg: OPDConfig,
+    *,
+    resample: Optional[Any] = None,
+) -> list[dict[str, float]]:
+    """Run ``cfg.opd_epochs`` updates, optionally resampling the rollouts between them.
+
+    ``resample`` is a callable taking the live model and returning a fresh scored
+    rollout list, or ``None`` to keep the set this call was given. It is injected
+    rather than called directly for two reasons:
+
+    * it needs the teacher resident, and the teacher cannot be resident alongside
+      the student on 11.7 GB -- so the real implementation releases the student,
+      re-runs the rollout and score stages, and reloads. Passing it in keeps that
+      choreography out of the loop and makes the loop itself testable with no GPU;
+    * a test can pass a callable that returns a *known* batch, which is the only
+      way to prove the loop actually rebuilds its examples instead of quietly
+      reusing the frozen set that destroyed v10.
+
+    With ``cfg.refresh_rollouts_every`` 0 (the v10 setting) nothing is resampled
+    and the behaviour is byte-for-byte the old one: examples built once, mean_reward
+    flat across epochs.
+    """
+    import torch
+
+    examples = build_examples(tokenizer, scored, cfg)
     log.info("built %d training examples from scored rollouts", len(examples))
     _warn_if_update_is_net_suppressive(examples, cfg)
 
@@ -725,6 +771,35 @@ def run_opd_epochs(
 
     history: list[dict[str, float]] = []
     for epoch in range(cfg.opd_epochs):
+        # Refresh BEFORE the update, not after, so epoch 1 still trains on the
+        # rollouts that were handed in. Resampling first would throw that set away
+        # untrained and, on a fresh cold start, the very first measured gap would
+        # never be used.
+        should_refresh = (
+            resample is not None
+            and cfg.refresh_rollouts_every > 0
+            and epoch > 0
+            and epoch % cfg.refresh_rollouts_every == 0
+        )
+        if should_refresh:
+            refreshed = resample(model)
+            if refreshed:
+                examples = build_examples(tokenizer, refreshed, cfg)
+                log.info(
+                    "epoch %d: resampled rollouts -> %d examples",
+                    epoch + 1,
+                    len(examples),
+                )
+                # The refreshed set is a NEW batch, so the sign check has to run on
+                # it. Reusing the first batch's verdict would report epoch 1's
+                # distribution while training on epoch 2's.
+                _warn_if_update_is_net_suppressive(examples, cfg)
+            else:
+                log.warning(
+                    "epoch %d: resampling produced no usable rollouts; "
+                    "continuing on the previous set",
+                    epoch + 1,
+                )
         stats = opd_update_step(
             model,
             optimizer,
@@ -1053,7 +1128,95 @@ def phase_score(cfg: OPDConfig, rollouts_path: Path, out: Path) -> Path:
     return path
 
 
-def phase_train(cfg: OPDConfig, scored_path: Path, out: Path) -> None:
+def _make_resampler(
+    cfg: OPDConfig,
+    rows: list[dict[str, Any]],
+    out: Path,
+    *,
+    config_path: Path,
+    corpus_path: Path,
+    max_prompts: int = 0,
+) -> Any:
+    """Build the callable ``run_opd_epochs`` uses to resample the student's rollouts.
+
+    Why a subprocess and not a function call
+    ----------------------------------------
+    Resampling needs the teacher, and the teacher cannot be resident alongside the
+    student: a 7B in bf16 is ~15GB against this card's 11.7GB. Calling
+    ``phase_rollout``/``phase_score`` here would load a second model into a process
+    that already holds one and OOM -- and it would OOM *after* generating the
+    rollouts, which is the exact failure ``_release``'s docstring says the phase
+    split exists to prevent.
+
+    So the refresh runs as its own process, one model at a time, exactly like a
+    manual ``--score-only`` invocation. The parent keeps its optimizer and its
+    student untouched: only the *data* is refreshed, which means the AdamW state
+    stays attached to live parameters across a refresh instead of being orphaned
+    by a reload.
+
+    The current policy is persisted first (``adapter.save_pretrained``) and handed
+    to the child with ``--cold-start-dir``. Without that the child would roll out
+    from the cold start, and the "refreshed" rollouts would be the same ones the
+    first epoch already trained on -- the v10 failure with extra steps.
+    """
+    import subprocess
+    import sys
+
+    script = Path(__file__).resolve()
+    refresh_dir = out / "refresh-adapter"
+
+    def _resample(model: Any) -> list[dict[str, Any]]:
+        model.save_pretrained(refresh_dir)
+        log.info("persisted live adapter to %s for the refresh cycle", refresh_dir)
+
+        argv = [
+            sys.executable,
+            str(script),
+            "--config",
+            str(config_path),
+            "--corpus",
+            str(corpus_path),
+            "--score-only",
+            "--cold-start-dir",
+            str(refresh_dir),
+        ]
+        if max_prompts:
+            argv += ["--max-prompts", str(max_prompts)]
+        # --score-only writes rollouts.jsonl and scored.jsonl into cfg.output_dir,
+        # which is `out` -- the same directory this phase is writing to.
+        log.info("refresh cycle: %s", " ".join(argv))
+        completed = subprocess.run(argv, capture_output=True, text=True)
+        if completed.returncode != 0:
+            # Never fall back to the stale batch quietly: training on last epoch's
+            # frozen rollouts while the log says "resampled" is how v10 happened.
+            raise RuntimeError(
+                "rollout refresh failed (exit "
+                f"{completed.returncode}); refusing to reuse stale rollouts.\n"
+                f"stdout:\n{completed.stdout[-2000:]}\n"
+                f"stderr:\n{completed.stderr[-2000:]}"
+            )
+        scored = _read_jsonl(out / "scored.jsonl")
+        kept, counts = select_teacher_aligned_prompts(
+            scored, cfg.min_teacher_confidence
+        )
+        log.info(
+            "refresh cycle: kept %d, dropped %d", counts["kept"], counts["dropped"]
+        )
+        return kept
+
+    return _resample
+
+
+def phase_train(
+    cfg: OPDConfig,
+    scored_path: Path,
+    out: Path,
+    rows: Optional[list[dict[str, Any]]] = None,
+    *,
+    config_path: Optional[Path] = None,
+    corpus_path: Optional[Path] = None,
+    max_prompts: int = 0,
+) -> None:
     """Stage 3: student only again. Reverse-KL updates on the scored rollouts."""
     scored = _read_jsonl(scored_path)
     if not scored:
@@ -1066,7 +1229,33 @@ def phase_train(cfg: OPDConfig, scored_path: Path, out: Path) -> None:
     student, _teacher, tokenizer = _load_models(cfg, load_teacher=False)
     kept, counts = select_teacher_aligned_prompts(scored, cfg.min_teacher_confidence)
     log.info("prompt selection: kept %d, dropped %d", counts["kept"], counts["dropped"])
-    history = run_opd_epochs(student, tokenizer, kept, cfg)
+
+    # Resampling is only possible if the child process can be told what to roll out.
+    # Silently degrading to the frozen-set behaviour is what makes a collapsed run
+    # look like a completed one, so say so loudly and refuse to claim a refresh.
+    resample = None
+    if cfg.refresh_rollouts_every > 0:
+        if rows and config_path and corpus_path:
+            resample = _make_resampler(
+                cfg,
+                rows,
+                out,
+                config_path=config_path,
+                corpus_path=corpus_path,
+                max_prompts=max_prompts,
+            )
+            log.info(
+                "resampling rollouts every %d epoch(s); mean_reward should now move",
+                cfg.refresh_rollouts_every,
+            )
+        else:
+            raise RuntimeError(
+                "refresh_rollouts_every > 0 needs the corpus rows and the config "
+                "path. Run --phase all, or pass --corpus and --config explicitly: "
+                "a --phase train run cannot resample from scored.jsonl alone."
+            )
+
+    history = run_opd_epochs(student, tokenizer, kept, cfg, resample=resample)
     student.save_pretrained(out / "adapter")
     (out / "opd_history.json").write_text(
         json.dumps(history, indent=2), encoding="utf-8"
@@ -1230,6 +1419,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument("--max-prompts", type=int, default=0)
     parser.add_argument(
+        "--cold-start-dir",
+        default=None,
+        help=(
+            "override [opd] cold_start_dir. Used by the rollout refresh cycle, which "
+            "re-runs this script as a child process pointed at the adapter the parent "
+            "just saved, so the refreshed rollouts come from the CURRENT policy rather "
+            "than from the cold start."
+        ),
+    )
+    parser.add_argument(
         "--self-test", action="store_true", help="check the objective and exit"
     )
     parser.add_argument(
@@ -1255,6 +1454,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     cfg = OPDConfig.from_toml(Path(args.config))
     # After cfg is bound: the dispatch used to sit above this and hit an
     # UnboundLocalError the first time it was actually exercised.
+    if args.cold_start_dir:
+        cfg.cold_start_dir = args.cold_start_dir
     if args.teacher_vignettes:
         return _teacher_vignettes(cfg)
 
@@ -1295,7 +1496,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             log.error("no rollout carried a teacher advantage; the measurement is void")
     if "train" in stages:
-        phase_train(cfg, scored_path, out)
+        # The refresh cycle needs the corpus and this config to re-run rollout+score
+        # as a child process. A bare `--phase train` normally has neither, so load
+        # them here rather than letting phase_train fail deep inside an epoch.
+        train_rows = rows
+        if cfg.refresh_rollouts_every > 0 and not train_rows:
+            train_rows = load_pairs(Path(args.corpus))
+            if args.max_prompts:
+                train_rows = train_rows[: args.max_prompts]
+            log.info("loaded %d prompts for the refresh cycle", len(train_rows))
+        phase_train(
+            cfg,
+            scored_path,
+            out,
+            train_rows,
+            config_path=Path(args.config).resolve(),
+            corpus_path=Path(args.corpus).resolve(),
+            max_prompts=args.max_prompts,
+        )
     return 0
 
 

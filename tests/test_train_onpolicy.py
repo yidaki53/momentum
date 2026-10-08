@@ -373,3 +373,515 @@ def test_suppression_warning_fires_only_when_the_batch_is_mostly_negative(opd, c
         quiet = opd._warn_if_update_is_net_suppressive(balanced, cfg)
     assert quiet["fraction_negative"] == pytest.approx(0.5)
     assert "NEGATIVE advantage" not in caplog.text
+
+
+# --- per-epoch rollout resampling (STATUS.md Phase 2 step 6) ---------------------
+#
+# v10 collapsed with a configuration that these tests must make impossible to
+# reintroduce silently. It built its examples once, took ten full-batch steps over
+# the same 11308 tokens, 87.95% of which carried a NEGATIVE advantage, and pushed
+# every one of them DOWN ten times with nothing to raise instead. The loss fell
+# monotonically to -62.27 while all 30 bench replies became `the the the ...`.
+#
+# The seam under test is the `examples` argument of `opd_update_step`: it is the only
+# consumer of that list, so recording it records exactly what would have been trained
+# on. A "resample" that logged the word but kept the frozen list would produce a
+# plausible history and fail here.
+
+
+def _scored_row(opd, batch: int, reply_len: int = 4):
+    """A scored rollout tagged with which resample pass produced it.
+
+    ``marker`` is what the stub builder turns into the advantage vector, so the
+    recorded advantages name their batch. Real tokenisation is deliberately bypassed:
+    ``build_rollout_example`` needs the app's chat template and a real tokenizer, and
+    this test is about which batch the loop hands to the update step, not about
+    alignment -- which ``build_rollout_example``'s own tests already cover.
+    """
+    return {"marker": [float(batch)] * reply_len, "reply_len": reply_len}
+
+
+class _StubModel:
+    """Trainable parameters, so the loop's optimizer guard passes."""
+
+    def parameters(self):
+        return iter([torch.zeros(1, requires_grad=True)])
+
+    def train(self):
+        return self
+
+
+class _StubTokenizer:
+    """Present but unused: the stub builder never reaches the tokenizer."""
+
+
+@pytest.fixture
+def spy_update(opd, monkeypatch):
+    """Record each batch the update step receives; return the list of recordings."""
+    seen: list[list[float]] = []
+
+    def _spy(_model, _optimizer, examples, **_kwargs):
+        flat = [
+            float(a) for example in examples for a in example["advantages"].tolist()
+        ]
+        seen.append(flat)
+        return {
+            "loss": 0.0,
+            "mean_reward": sum(flat) / len(flat) if flat else 0.0,
+            "tokens": float(len(flat)),
+            "grad_norm": 1.0,
+        }
+
+    monkeypatch.setattr(opd, "opd_update_step", _spy)
+    return seen
+
+
+@pytest.fixture
+def stub_build(opd, monkeypatch):
+    """Turn a tagged row straight into an example, tagged by the same marker.
+
+    Called through the module attribute rather than reimplemented here, so
+    ``run_opd_epochs`` still exercises its own ``build_examples`` call path --
+    including the "no usable rollout" guard.
+    """
+
+    def _build(tokenizer, scored, cfg):
+        examples = []
+        for row in scored:
+            marker = row["marker"]
+            examples.append(
+                {
+                    "input_ids": torch.arange(len(marker)),
+                    "labels": torch.zeros(len(marker), dtype=torch.long),
+                    "advantages": torch.tensor(marker),
+                    "reply_len": row["reply_len"],
+                }
+            )
+        return examples
+
+    monkeypatch.setattr(opd, "build_examples", _build)
+
+
+def test_resampling_replaces_the_batch_each_epoch(
+    opd, monkeypatch, spy_update, stub_build
+):
+    """With ``refresh_rollouts_every = 1`` every epoch must train on a NEW batch.
+
+    This is the whole of the v10 fix. The old loop built examples once, so a
+    "resample" that failed to reassign ``examples`` would leave the history looking
+    entirely plausible while training on the same frozen tokens that collapsed the
+    student -- which is why the assertion is on the batches seen, not on the history.
+    """
+    cfg = opd.OPDConfig(opd_epochs=3, refresh_rollouts_every=1, advantage_norm="none")
+    calls = {"n": 0}
+
+    def _resample(_model):
+        calls["n"] += 1
+        return [_scored_row(opd, calls["n"])]
+
+    opd.run_opd_epochs(
+        _StubModel(),
+        _StubTokenizer(),
+        [_scored_row(opd, 0)],
+        cfg,
+        resample=_resample,
+    )
+
+    # Epoch 1 must train on the rollouts it was handed, not resample first: doing it
+    # the other way discards the only measured gap a fresh cold start produces.
+    assert calls["n"] == 2, "epoch 1 resampled instead of using the given rollouts"
+    assert spy_update == [[0.0] * 4, [1.0] * 4, [2.0] * 4], (
+        "the update step saw a frozen batch -- this is the v10 collapse path"
+    )
+
+
+def test_no_resampling_keeps_the_v10_behaviour_byte_for_byte(
+    opd, monkeypatch, spy_update, stub_build
+):
+    """``refresh_rollouts_every = 0`` must never call the resampler.
+
+    The frozen-set path is not merely a legacy default: it is how the v10 run that
+    produced the collapse measurement is reproduced. If refreshing leaked into it,
+    that run would stop being reproducible and its numbers would become unexplainable
+    -- so the resampler explodes rather than being called.
+    """
+    cfg = opd.OPDConfig(opd_epochs=4, refresh_rollouts_every=0)
+
+    def _explode(_model):
+        raise AssertionError("resampler called with refresh_rollouts_every = 0")
+
+    opd.run_opd_epochs(
+        _StubModel(),
+        _StubTokenizer(),
+        [_scored_row(opd, 7)],
+        cfg,
+        resample=_explode,
+    )
+
+    assert spy_update == [[7.0] * 4] * 4, (
+        "every epoch must reuse the one given batch (this is the frozen-set path)"
+    )
+
+
+def test_refresh_interval_is_an_interval_not_every_epoch(
+    opd, monkeypatch, spy_update, stub_build
+):
+    """``refresh_rollouts_every = 2`` resamples every SECOND epoch.
+
+    The value is an interval, and an off-by-one here either burns a full teacher pass
+    per epoch -- hours on a card that cannot hold teacher and student together -- or
+    silently reintroduces the frozen-set collapse while the config claims otherwise.
+    """
+    cfg = opd.OPDConfig(opd_epochs=5, refresh_rollouts_every=2)
+    calls = {"n": 0}
+
+    def _resample(_model):
+        calls["n"] += 1
+        return [_scored_row(opd, calls["n"])]
+
+    opd.run_opd_epochs(
+        _StubModel(),
+        _StubTokenizer(),
+        [_scored_row(opd, 0)],
+        cfg,
+        resample=_resample,
+    )
+
+    # 0-based epochs 0..4; refresh fires on epoch 2 and 4 (i.e. after every 2 trained
+    # epochs, 1-based epochs 3 and 5). Epoch 1 is excluded by design: it must train on
+    # the rollouts it was handed rather than resampling first.
+    assert calls["n"] == 2, f"expected 2 refreshes across 5 epochs, got {calls['n']}"
+    assert spy_update == [[0.0] * 4, [0.0] * 4, [1.0] * 4, [1.0] * 4, [2.0] * 4]
+
+
+def test_refresh_of_every_third_epoch_skips_the_boundaries(
+    opd, monkeypatch, spy_update, stub_build
+):
+    """A non-divisor interval must not schedule a refresh past the last epoch.
+
+    With 5 epochs and an interval of 3, exactly one refresh is due (before 1-based
+    epoch 4). A sixth epoch's worth of scheduling would mean a wasted teacher pass --
+    hours on a card that cannot hold teacher and student together -- for no update.
+    """
+    cfg = opd.OPDConfig(opd_epochs=5, refresh_rollouts_every=3)
+    calls = {"n": 0}
+
+    def _resample(_model):
+        calls["n"] += 1
+        return [_scored_row(opd, calls["n"])]
+
+    opd.run_opd_epochs(
+        _StubModel(),
+        _StubTokenizer(),
+        [_scored_row(opd, 0)],
+        cfg,
+        resample=_resample,
+    )
+    # Only 0-based epoch 3 is divisible by 3 and > 0.
+    assert calls["n"] == 1, f"epochs 1..5 at interval 3 -> 1 refresh, got {calls['n']}"
+    assert spy_update == [[0.0] * 4, [0.0] * 4, [0.0] * 4, [1.0] * 4, [1.0] * 4]
+
+
+def test_resampler_is_never_called_without_a_refresh_interval(
+    opd, monkeypatch, spy_update, stub_build
+):
+    """A callable alone is not enough: the config must also ask for refreshing.
+
+    ``run_opd_epochs`` is called from ``phase_train`` with the resampler only when
+    ``refresh_rollouts_every > 0``. If the loop honoured the callable on its own, a
+    config that says ``0`` would silently become the v11 configuration.
+    """
+    cfg = opd.OPDConfig(opd_epochs=3, refresh_rollouts_every=0)
+    calls = {"n": 0}
+
+    def _resample(_model):
+        calls["n"] += 1
+        return [_scored_row(opd, 99)]
+
+    opd.run_opd_epochs(
+        _StubModel(),
+        _StubTokenizer(),
+        [_scored_row(opd, 5)],
+        cfg,
+        resample=_resample,
+    )
+    assert calls["n"] == 0
+    assert spy_update == [[5.0] * 4] * 3
+
+
+def test_empty_refresh_warns_and_continues_on_the_previous_set(
+    opd, monkeypatch, spy_update, stub_build, caplog
+):
+    """A refresh that yields nothing must be visible, not silent.
+
+    Continuing is the right call -- one bad teacher pass should not waste an
+    overnight run -- but "trained on stale data" is the v10 story retold, so it has
+    to be in the log in words, because the loss curve will look fine either way.
+    """
+    cfg = opd.OPDConfig(opd_epochs=2, refresh_rollouts_every=1)
+    calls = {"n": 0}
+
+    def _resample(_model):
+        calls["n"] += 1
+        return []
+
+    with caplog.at_level(logging.WARNING):
+        opd.run_opd_epochs(
+            _StubModel(),
+            _StubTokenizer(),
+            [_scored_row(opd, 3)],
+            cfg,
+            resample=_resample,
+        )
+
+    assert calls["n"] == 1
+    assert "no usable rollouts" in caplog.text
+    assert "continuing on the previous set" in caplog.text
+    assert spy_update == [[3.0] * 4] * 2
+
+
+def test_suppression_warning_reruns_on_each_refreshed_batch(
+    opd, monkeypatch, spy_update, stub_build, caplog
+):
+    """The sign check must judge the batch that is about to be trained on.
+
+    v10 measured 87.95% negative advantages. If the warning only ever ran on the
+    first batch, a refresh that came back *more* suppressive would train silently.
+    """
+    cfg = opd.OPDConfig(opd_epochs=2, refresh_rollouts_every=1)
+
+    def _resample(_model):
+        # 9 of 10 negative: the v10 distribution, and it must be caught.
+        return [
+            {
+                "marker": [-1.0] * 9 + [1.0],
+                "reply_len": 10,
+            }
+        ]
+
+    with caplog.at_level(logging.WARNING):
+        opd.run_opd_epochs(
+            _StubModel(),
+            _StubTokenizer(),
+            # All-positive: this batch is NOT suppressive and must stay quiet.
+            [_scored_row(opd, 1)],
+            cfg,
+            resample=_resample,
+        )
+
+    # Exactly one warning, from the REFRESHED batch. If the check ran only on the
+    # first batch the count would be 0 and a collapse-in-progress would train
+    # silently -- which is the assertion that bites. Counting 2 instead would be
+    # wrong here: the initial batch is all-positive and correctly stays quiet.
+    assert caplog.text.count("NEGATIVE advantage") == 1, (
+        "the refreshed batch was not sign-checked"
+    )
+    # The logged mean pins the warning to the refreshed batch (mean -0.8), not to the
+    # initial one (mean +1.0). Without this, a warning computed from stale numbers
+    # would still satisfy the count.
+    assert "mean -0.800 nats" in caplog.text, (
+        "the warning reported the wrong batch's statistics"
+    )
+    # And the refresh genuinely took effect on what was trained on.
+    assert spy_update == [[1.0] * 4, [-1.0] * 9 + [1.0]]
+
+
+def _refresh_fixture(tmp_path):
+    """The minimum on-disk state ``_make_resampler`` reads and writes."""
+    rows = [{"id": "p1", "prompt": "I want to stop taking my antidepressants."}]
+    config_path = tmp_path / "retrain.v11.toml"
+    config_path.write_text("[opd]\n", encoding="utf-8")
+    corpus_path = tmp_path / "corpus.jsonl"
+    corpus_path.write_text(json.dumps(rows[0]) + "\n", encoding="utf-8")
+    return rows, config_path, corpus_path
+
+
+class _SavingModel:
+    """Records where the live adapter is written; creates the directory."""
+
+    def __init__(self):
+        self.saved: list[Path] = []
+
+    def save_pretrained(self, path):
+        self.saved.append(Path(path))
+        Path(path).mkdir(parents=True, exist_ok=True)
+
+
+def test_resampler_points_the_child_at_the_live_adapter(opd, tmp_path, monkeypatch):
+    """The child must roll out from the CURRENT policy, not the cold start.
+
+    If ``--cold-start-dir`` were omitted the refresh cycle would re-score the cold
+    start's rollouts -- the same ones epoch 1 already trained on. That is the v10
+    collapse with extra GPU hours spent looking like a fix.
+    """
+    rows, config_path, corpus_path = _refresh_fixture(tmp_path)
+    # The child writes scored.jsonl into output_dir; give it something to read back.
+    (tmp_path / "scored.jsonl").write_text(
+        json.dumps(
+            {
+                "prompt": rows[0]["prompt"],
+                "rollout": "fresh",
+                "student_logprobs": [-1.0],
+                "teacher_logprobs": [-0.5],
+                "teacher_advantage": 0.5,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    argv_seen: list[list[str]] = []
+
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(argv, **_kwargs):
+        argv_seen.append(list(argv))
+        return _Completed()
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    model = _SavingModel()
+    resampler = opd._make_resampler(
+        opd.OPDConfig(output_dir=str(tmp_path)),
+        rows,
+        tmp_path,
+        config_path=config_path,
+        corpus_path=corpus_path,
+        max_prompts=7,
+    )
+    kept = resampler(model)
+
+    assert model.saved, "the live adapter must be persisted before the child runs"
+    assert model.saved[0] == tmp_path / "refresh-adapter"
+    assert argv_seen, "the refresh cycle must shell out"
+    argv = argv_seen[0]
+    assert "--score-only" in argv, "the refresh is a rollout+score cycle"
+    assert "--cold-start-dir" in argv
+    assert argv[argv.index("--cold-start-dir") + 1] == str(model.saved[0]), (
+        "the child would roll out from the cold start and resample nothing new"
+    )
+    assert str(config_path) in argv
+    assert str(corpus_path) in argv
+    assert argv[argv.index("--max-prompts") + 1] == "7"
+    assert kept, "the refreshed rows must reach the epoch loop"
+
+
+def test_failed_child_process_raises_instead_of_training_on_stale_data(
+    opd, tmp_path, monkeypatch
+):
+    """A crashed refresh must abort, not quietly reuse last epoch's batch.
+
+    Training on the previous frozen set while logging "resampled" is precisely how v10
+    destroyed the student and still reported a healthy loss curve.
+    """
+    rows, config_path, corpus_path = _refresh_fixture(tmp_path)
+
+    class _Failed:
+        returncode = 1
+        stdout = "Traceback (most recent call last):"
+        stderr = "torch.cuda.OutOfMemoryError"
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: _Failed())
+
+    resampler = opd._make_resampler(
+        opd.OPDConfig(output_dir=str(tmp_path)),
+        rows,
+        tmp_path,
+        config_path=config_path,
+        corpus_path=corpus_path,
+    )
+    with pytest.raises(RuntimeError, match="refusing to reuse stale rollouts"):
+        resampler(_SavingModel())
+
+
+def test_resampler_applies_the_same_prompt_selection_as_the_train_phase(
+    opd, tmp_path, monkeypatch
+):
+    """A refresh that bypassed ``min_teacher_confidence`` would widen the corpus.
+
+    Li et al.'s prompt selection is what keeps uninformative prompts out of the
+    update; a refreshed batch that skipped it would train on rows the first batch
+    deliberately dropped, and the two epochs would not be comparable.
+    """
+    rows, config_path, corpus_path = _refresh_fixture(tmp_path)
+    # One strong-preference prompt and one the teacher is indifferent about.
+    (tmp_path / "scored.jsonl").write_text(
+        "".join(
+            json.dumps(row) + "\n"
+            for row in (
+                {
+                    "id": "strong",
+                    "prompt": "p",
+                    "rollout": "r",
+                    "student_logprobs": [-1.0],
+                    "teacher_logprobs": [-0.2],
+                    "teacher_advantage": 0.8,
+                },
+                {
+                    "id": "weak",
+                    "prompt": "p2",
+                    "rollout": "r2",
+                    "student_logprobs": [-1.0],
+                    "teacher_logprobs": [-0.99],
+                    "teacher_advantage": 0.01,
+                },
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: _Completed())
+
+    resampler = opd._make_resampler(
+        opd.OPDConfig(output_dir=str(tmp_path), min_teacher_confidence=0.5),
+        rows,
+        tmp_path,
+        config_path=config_path,
+        corpus_path=corpus_path,
+    )
+    kept = resampler(_SavingModel())
+    assert [row["id"] for row in kept] == ["strong"], (
+        "the refresh cycle dropped min_teacher_confidence"
+    )
+
+
+def test_train_phase_refuses_to_silently_drop_the_refresh(opd, tmp_path):
+    """``refresh_rollouts_every > 0`` without the corpus must fail loudly.
+
+    A bare ``--phase train`` invocation cannot resample from scored.jsonl alone.
+    Falling back to the frozen set here would run the exact configuration that
+    collapsed v10 while the config file on disk says otherwise.
+    """
+    scored_path = tmp_path / "scored.jsonl"
+    scored_path.write_text(
+        json.dumps(
+            {
+                "prompt": "x",
+                "rollout": "y",
+                "student_logprobs": [-1.0],
+                "teacher_logprobs": [-0.5],
+                "teacher_advantage": 0.5,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cfg = opd.OPDConfig(
+        refresh_rollouts_every=1, output_dir=str(tmp_path), max_new_tokens=4
+    )
+    with pytest.raises(RuntimeError, match="needs the corpus rows"):
+        opd.phase_train(cfg, scored_path, tmp_path)

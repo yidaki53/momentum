@@ -148,21 +148,42 @@ per the README pipeline rule, and every long run goes through `thermal_guard.py 
 
 ### Phase 2 — Fix the OPD objective (research, cheap first)
 
-6. **Implement per-epoch rollout resampling** in `run_opd_epochs`: regenerate rollouts
-   each epoch (or N steps), rescore, rebuild advantages. Phases stay separate for
-   hardware reasons — resampling happens *within* the train phase's own memory budget,
-   or the config gains an explicit `refresh_rollouts_every` that triggers a
-   rollout+score cycle; decide during implementation based on what fits 11.7 GB.
-7. Write the baseline/centre argument explicitly: batch_std without recentring left
-   88% of advantages negative. Recentring *is* a baseline by another name; if we use
-   it, document why the zero-gradient-on-uniformly-bad-response objection does not
-   apply (candidate: recentre only the *scale*, keep sign, or refresh rollouts so
-   suppression is not applied twice to frozen tokens). Pin both behaviours in
-   `tests/test_train_onpolicy.py`.
+6. **Implement per-epoch rollout resampling.** ✅ **CODE DONE 2026-10-08 — NOT YET RUN.**
+   `refresh_rollouts_every` added to `OPDConfig` (default `0`, which preserves the v10
+   configuration exactly so the collapse stays reproducible). `run_opd_epochs` takes an
+   injected `resample` callable and rebuilds its examples every Nth epoch, before the
+   update, re-running the suppression warning on each new batch.
+   **The hardware decision the task deferred is answered by the design:** the refresh
+   cannot run inside the train phase's memory budget, because it needs the *teacher*,
+   and a 7B teacher cannot be resident with the student in 11.7 GB — calling
+   `phase_rollout` in-process is precisely the OOM `_release`'s docstring says the
+   phase split exists to prevent. So `_make_resampler` shells out to this same script
+   with `--score-only --cold-start-dir <saved live adapter>`, one model at a time. The
+   parent keeps its optimizer and its AdamW state attached to live parameters; only the
+   data is refreshed. A non-zero child exit **raises** rather than silently reusing the
+   stale batch, because "logged resampled, trained on frozen tokens" is the v10 story
+   retold. Eleven new tests in `tests/test_train_onpolicy.py`; the key one is
+   **mutation-checked** — keeping the frozen batch instead of the rebuilt one makes
+   `test_resampling_replaces_the_batch_each_epoch` fail, so the tests bite rather than
+   merely passing.
+   ⬜ **STILL OPEN: the run itself.** `refresh_rollouts_every` is `0` in
+   `configs/retrain.v10.toml`; v11 has not been trained.
+7. **Write the baseline/centre argument explicitly.** ✅ **DONE 2026-10-08** — in the
+   `refresh_rollouts_every` field comment, the `run_opd_epochs` docstring, the
+   `configs/retrain.v10.toml` block comment and `AGENTS.md`. The position: recentring
+   *is* a baseline by another name and the zero-gradient-on-uniformly-bad-response
+   objection still applies, so it is not adopted. Refresh is a different mechanism —
+   it changes *which* tokens are judged, not their signs — and keeps every advantage
+   negative when it should be negative. Both behaviours are pinned:
+   `test_no_resampling_keeps_the_v10_behaviour_byte_for_byte` (frozen path must never
+   call the resampler) and `test_resampling_replaces_the_batch_each_epoch`.
 8. **Smoke first**: `configs/smoke.tiny.toml`-scale OPD run, confirm the sign
    distribution is not ≥80% negative after refresh, then a short thermal-guarded v11
    run (NOT `opd_epochs = 10` on a frozen set — that is measured to destroy the
    student). Judge **only** with `eval_bench.py --vignettes` on the designated path.
+   ⬜ **STILL OPEN.** Note the resampler's cost: each refresh is a full rollout+score
+   pass, so `refresh_rollouts_every = 1` on 427 prompts is ~10 teacher passes.
+   `refresh_rollouts_every = 2` halves that and is the recommended first run.
 9. **Kill criterion** (agreed in advance): if v11 on the vignette path does not beat
    v9c's 4/10 substance, stop OPD. The corpus path (Phase 3) becomes the only
    remaining lever; the README already records what would make us abandon the
