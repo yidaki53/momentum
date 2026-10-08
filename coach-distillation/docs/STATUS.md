@@ -163,8 +163,8 @@ per the README pipeline rule, and every long run goes through `thermal_guard.py 
    data is refreshed. A non-zero child exit **raises** rather than silently reusing the
    stale batch, because "logged resampled, trained on frozen tokens" is the v10 story
    retold. Eleven new tests in `tests/test_train_onpolicy.py`; the key one is
-   **mutation-checked** — keeping the frozen batch instead of the rebuilt one makes
-   `test_resampling_replaces_the_batch_each_epoch` fail, so the tests bite rather than
+   **mutation-checked** — reverting the loop to keep the frozen batch instead of the
+   rebuilt one (the v10 bug itself) fails **4** of them, so the tests bite rather than
    merely passing.
    ⬜ **STILL OPEN: the run itself.** `refresh_rollouts_every` is `0` in
    `configs/retrain.v10.toml`; v11 has not been trained.
