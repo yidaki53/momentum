@@ -178,6 +178,39 @@ def is_narrated_reply(text: str) -> bool:
     return stripped.startswith("[") and not stripped.lower().startswith("[[task")
 
 
+# Labels that ``build_user_context`` puts in front of each block of app data.
+# The signal store records which of these were present in the context a reply
+# was built from -- field names only, never the values, so a stored signal can
+# never carry any of the user's own words or numbers.
+_CONTEXT_FIELD_MARKERS: tuple[tuple[str, str], ...] = (
+    ("Active tasks:", "active_tasks"),
+    ("Pending tasks", "pending_tasks"),
+    ("Recently completed tasks:", "completed_tasks"),
+    ("Activity:", "activity"),
+    ("Recent daily activity:", "daily_logs"),
+    ("Recent focus sessions:", "focus_sessions"),
+    ("Executive function profile:", "bdefs_profile"),
+    ("Motivation profile (BIS/BAS):", "bisbas_profile"),
+    ("Cognitive processing (Stroop):", "stroop_profile"),
+    ("BDEFS history:", "bdefs_history"),
+    ("BIS/BAS history:", "bisbas_history"),
+    ("Stroop history:", "stroop_history"),
+    ("Recent ACT check-ins:", "act_journal"),
+)
+
+
+def context_fields_used(user_context: str) -> list[str]:
+    """Return stable names for the app-data fields present in *user_context*.
+
+    This is what a schematic feedback signal records as "fields used": which
+    parts of the user's data the reply could draw on, as identifiers such as
+    ``active_tasks``. The values themselves never leave this function --
+    everything returned here is one of the fixed names above.
+    """
+    text = user_context or ""
+    return [name for marker, name in _CONTEXT_FIELD_MARKERS if marker in text]
+
+
 def recency_halflife_weight(age: int, halflife: float) -> float:
     """Return an exponential recency weight for a message *age* turns back.
 

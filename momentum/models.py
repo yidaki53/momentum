@@ -218,6 +218,11 @@ class AppConfig:
     # Context window for on-device generation. Larger means more history and a
     # longer answer, at the cost of KV-cache memory; see ``llm/engine.py``.
     llm_context_tokens: int = 2048
+    # The AI Coach's per-user feedback is logged as a short schematic tuple
+    # (intent, verdict, failure, app fields used) — never free text, and only
+    # while this flag is on. The signal store is a separate feature from the
+    # coach itself and can be enabled or disabled independently.
+    signal_collection_enabled: bool = False
 
     def __post_init__(self) -> None:
         # Coerce string values (from JSON deserialisation) to their enum types,
@@ -283,6 +288,23 @@ class LlmChatMessage:
     id: int
     role: str  # 'user' or 'assistant'
     content: str
+    created_at: datetime = field(default_factory=datetime.now)
+
+
+@dataclass
+class CoachSignal:
+    """A single stored schematic feedback signal for the AI Coach.
+
+    This is never free text: it is a short tuple of categories and stable
+    identifiers (intent, verdict, failure, app data fields used) that the
+    distillation pipeline can read back to build synthetic training users.
+    """
+
+    id: int
+    intent: str
+    verdict: str
+    failure: str
+    user_data_fields_used: list[str]
     created_at: datetime = field(default_factory=datetime.now)
 
 

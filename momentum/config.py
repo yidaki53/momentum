@@ -523,3 +523,15 @@ def set_llm_enabled(enabled: bool) -> AppConfig:
     config.llm_enabled = bool(enabled)
     save_config(config)
     return config
+
+
+def set_signal_collection_enabled(enabled: bool) -> AppConfig:
+    """Persist whether the coach's schematic signal log is enabled.
+
+    Signals are stored as (intent, verdict, failure, app fields used) tuples
+    — never free text.
+    """
+    config = load_config()
+    config.signal_collection_enabled = bool(enabled)
+    save_config(config)
+    return config

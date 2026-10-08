@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -14,6 +15,7 @@ from momentum.models import (
     AssessmentResult,
     AssessmentResultCreate,
     AssessmentType,
+    CoachSignal,
     DailyLog,
     FocusSession,
     FocusSessionCreate,
@@ -72,6 +74,15 @@ CREATE TABLE IF NOT EXISTS llm_chat_messages (
     role        TEXT    NOT NULL,
     content     TEXT    NOT NULL,
     created_at  TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS coach_signals (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    intent                TEXT    NOT NULL,
+    verdict               TEXT    NOT NULL,
+    failure               TEXT    NOT NULL,
+    user_data_fields_used TEXT    NOT NULL DEFAULT '[]',
+    created_at            TEXT    NOT NULL
 );
 """
 
@@ -529,6 +540,104 @@ def delete_all_llm_chat_messages(conn: sqlite3.Connection) -> int:
     cur = conn.execute("DELETE FROM llm_chat_messages")
     conn.commit()
     return cur.rowcount
+
+
+# ---------------------------------------------------------------------------
+# Coach feedback signals
+# ---------------------------------------------------------------------------
+
+
+def _row_to_coach_signal(row: sqlite3.Row) -> CoachSignal:
+    """Convert a database row to a CoachSignal model."""
+    return CoachSignal(
+        id=row["id"],
+        intent=row["intent"],
+        verdict=row["verdict"],
+        failure=row["failure"],
+        user_data_fields_used=json.loads(row["user_data_fields_used"]),
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def add_coach_signal(
+    conn: sqlite3.Connection,
+    intent: str,
+    verdict: str,
+    failure: str,
+    *,
+    user_data_fields_used: list[str] | None = None,
+) -> CoachSignal:
+    """Store one schematic signal tuple.
+
+    Each record is a short, structured tuple with no free-text user content:
+    the intent category, the coach's verdict on the reply, one short failure
+    reason, and the app data fields the reply was built from.
+
+    ``user_data_fields_used`` must be a list of stable app identifiers (for
+    example ``active_tasks`` or ``bddefs_score``). Free text is never stored
+    here, so a signal log is safe to keep, export and review.
+
+    Returns the newly created signal.
+    """
+    if user_data_fields_used is None:
+        user_data_fields_used = []
+    now = datetime.now().isoformat()
+    conn.execute(
+        "INSERT INTO coach_signals "
+        "(intent, verdict, failure, user_data_fields_used, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            intent,
+            verdict,
+            failure,
+            json.dumps(user_data_fields_used, ensure_ascii=False),
+            now,
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM coach_signals WHERE id = ?",
+        (conn.execute("SELECT last_insert_rowid()").fetchone()[0],),
+    ).fetchone()
+    return _row_to_coach_signal(row)
+
+
+def list_coach_signals(conn: sqlite3.Connection, limit: int = 200) -> list[CoachSignal]:
+    """List recorded signals, newest first."""
+    rows = conn.execute(
+        "SELECT * FROM coach_signals ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [_row_to_coach_signal(r) for r in rows]
+
+
+def delete_coach_signal(conn: sqlite3.Connection, signal_id: int) -> bool:
+    """Delete a single recorded signal. Returns True when a row was removed."""
+    cur = conn.execute("DELETE FROM coach_signals WHERE id = ?", (signal_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def clear_coach_signals(conn: sqlite3.Connection) -> int:
+    """Delete all recorded signals. Returns the number of rows deleted."""
+    cur = conn.execute("DELETE FROM coach_signals")
+    conn.commit()
+    return cur.rowcount
+
+
+def export_coach_signals(conn: sqlite3.Connection) -> list[dict[str, object]]:
+    """Return the signal log as a JSON-serialisable list (no free text)."""
+    return [
+        {
+            "id": s.id,
+            "intent": s.intent,
+            "verdict": s.verdict,
+            "failure": s.failure,
+            "user_data_fields_used": list(s.user_data_fields_used),
+            "created_at": s.created_at.isoformat(),
+        }
+        for s in list_coach_signals(conn)
+    ]
 
 
 # ---------------------------------------------------------------------------

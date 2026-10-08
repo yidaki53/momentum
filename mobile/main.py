@@ -15,6 +15,7 @@ import random
 import re
 import ssl
 import sys
+import tempfile
 import threading
 import time as _time
 import traceback
@@ -360,10 +361,16 @@ try:
         extract_task_requests as _extract_task_requests,
     )
     from momentum.llm.context import (
+        context_fields_used as _context_fields_used,
+    )
+    from momentum.llm.context import (
         is_narrated_reply as _is_narrated_reply,
     )
     from momentum.llm.context import (
         strip_task_markers as _strip_task_markers,
+    )
+    from momentum.llm.prompts import (
+        asks_for_task_creation as _asks_for_task_creation,
     )
 except Exception:  # pragma: no cover - the llm package is optional
     log.debug("Task-marker helpers unavailable", exc_info=True)
@@ -377,6 +384,12 @@ except Exception:  # pragma: no cover - the llm package is optional
         return (text or "").strip()
 
     def _is_narrated_reply(text):  # type: ignore[misc]
+        return False
+
+    def _context_fields_used(text):  # type: ignore[misc]
+        return []
+
+    def _asks_for_task_creation(text):  # type: ignore[misc]
         return False
 
 
@@ -2987,6 +3000,12 @@ class CoachScreen(Screen):
                 self._add_message(msg.role, msg.content)
         except Exception:
             log.debug("Could not load AI Coach history", exc_info=True)
+        # Bring the opt-in feedback log back alongside the history it sits
+        # under; _render_signal_log shows nothing when there are no signals.
+        try:
+            self._render_signal_log()
+        except Exception:
+            log.debug("Could not render coach signal log", exc_info=True)
 
     def _add_message(self, role: str, content: str) -> None:
         """Append a user/assistant message bubble to the chat area."""
@@ -3090,6 +3109,17 @@ class CoachScreen(Screen):
             self._add_message("user", user_msg)
             try:
                 user_context = funcs["build_user_context"](conn)
+                # Classify what the user asked for (a rule, not the model) and
+                # record which app-data fields the reply will be built from.
+                # The signal carries these names only -- never the message.
+                self._signal_pending = {
+                    "intent": (
+                        "create-task"
+                        if _asks_for_task_creation(user_msg)
+                        else "chat"
+                    ),
+                    "fields": _context_fields_used(user_context),
+                }
                 chat_history = funcs["build_chat_history"](conn, limit=6)
                 messages = funcs["build_chat_prompt"](
                     user_msg, user_context, chat_history
@@ -3246,9 +3276,13 @@ class CoachScreen(Screen):
         self._hide_typing()
         raw = full_text or getattr(self, "_pending_reply", "")
         self._pending_reply = ""
+        meta = self._signal_meta()
         if not raw:
             # The model finished without emitting anything. Say so rather than
             # leaving the user with a silent, empty reply.
+            self._report_feedback(
+                str(meta["intent"]), "empty", "empty-reply", meta["fields"]
+            )
             self._add_message(
                 "assistant",
                 "The coach returned an empty reply. Try rephrasing, or use the "
@@ -3267,6 +3301,12 @@ class CoachScreen(Screen):
                 chat.remove_widget(child)
                 break
         if _is_narrated_reply(raw):
+            self._report_feedback(
+                str(meta["intent"]),
+                "narrated",
+                "narrated-instructions",
+                meta["fields"],
+            )
             self._add_message("assistant", _NARRATED_REPLY_MSG)
             return
         self._add_message("assistant", text)
@@ -3280,6 +3320,12 @@ class CoachScreen(Screen):
                 )
         except Exception:
             log.debug("Could not persist AI Coach reply", exc_info=True)
+        self._report_feedback(
+            str(meta["intent"]),
+            "task-proposed" if task_titles else "ok",
+            "",
+            meta["fields"],
+        )
 
     def _offer_task_creation(self, titles: list[str]) -> None:
         """Ask before adding tasks the coach proposed.
@@ -3288,6 +3334,217 @@ class CoachScreen(Screen):
         a task marker when nobody asked for one, so the user always confirms,
         and declining simply leaves the list untouched.
         """
+
+    def _signal_meta(self) -> dict:
+        """Intent and context fields captured when the in-flight reply was sent.
+
+        Falls back to neutral values so a reply that outlives its request (or
+        a screen restored from history) still records a sane signal.
+        """
+        meta = getattr(self, "_signal_pending", None)
+        if not meta:
+            return {"intent": "chat", "fields": []}
+        return meta
+
+    def _report_feedback(
+        self, intent: str, verdict: str, failure: str, fields=None
+    ) -> None:
+        """Store one schematic signal tuple without any free text."""
+        conn = self._home_conn()
+        if conn is None:
+            return
+        try:
+            if not cfg.load_config().signal_collection_enabled:
+                return
+            db.add_coach_signal(
+                conn,
+                intent=intent,
+                verdict=verdict,
+                failure=failure,
+                user_data_fields_used=list(fields or []),
+            )
+            self._render_signal_log()
+        except Exception:
+            log.debug("Could not store coach feedback signal", exc_info=True)
+
+    def _signal_log_widgets(self) -> list:
+        """The log header/controls previously appended to the chat area."""
+        chat = self.ids.coach_chat
+        return [
+            child
+            for child in list(chat.children)
+            if getattr(child, "_signal_log", False)
+        ]
+
+    def _render_signal_log(self) -> None:
+        """Render the (collapsible) signal log at the bottom of the coach screen."""
+        from momentum import db as _db
+
+        conn = self._home_conn()
+        if conn is None:
+            return
+        try:
+            signals = _db.list_coach_signals(conn, limit=200)
+        except Exception:
+            log.debug("Could not list coach signals", exc_info=True)
+            return
+
+        chat = self.ids.coach_chat
+        # Replace, never stack: this runs after every reply, so an earlier
+        # render must be taken down before the fresh one goes up.
+        for child in self._signal_log_widgets():
+            chat.remove_widget(child)
+
+        if not signals:
+            return
+
+        spacer = Widget(size_hint_y=None, height=dp(8))
+        spacer._signal_log = True  # type: ignore[attr-defined]
+        chat.add_widget(spacer)
+        header = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(6))
+        header._signal_log = True  # type: ignore[attr-defined]
+        label = _make_label(
+            f"Feedback log ({len(signals)})",
+            font_size=sp(12),
+            bold=True,
+            color=list(_ACCENT),
+        )
+        header.add_widget(label)
+        clear_btn = Button(
+            text="Clear",
+            font_size=sp(11),
+            background_color=list(_MUTED),
+            color=list(_BUTTON_TEXT),
+            size_hint_x=0.3,
+        )
+        clear_btn.bind(on_release=lambda _: self._clear_signal_log())
+        header.add_widget(clear_btn)
+        export_btn = Button(
+            text="Export",
+            font_size=sp(11),
+            background_color=list(_ACCENT),
+            color=list(_BUTTON_TEXT),
+            size_hint_x=0.3,
+        )
+        export_btn.bind(on_release=lambda _: self._export_signal_log())
+        header.add_widget(export_btn)
+        chat.add_widget(header)
+
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        row._signal_log = True  # type: ignore[attr-defined]
+        list_btn = Button(
+            text="List",
+            font_size=sp(11),
+            background_color=list(_ACCENT),
+            color=list(_BUTTON_TEXT),
+            size_hint_x=0.5,
+        )
+        list_btn.bind(on_release=lambda _: self._list_signal_log())
+        row.add_widget(list_btn)
+        close_btn = Button(
+            text="Close",
+            font_size=sp(11),
+            background_color=list(_MUTED),
+            color=list(_BUTTON_TEXT),
+            size_hint_x=0.5,
+        )
+        close_btn.bind(on_release=lambda _: self._hide_signal_log())
+        row.add_widget(close_btn)
+        chat.add_widget(row)
+
+    def _hide_signal_log(self) -> None:
+        """Take the log controls back out of the chat area."""
+        chat = self.ids.coach_chat
+        for child in self._signal_log_widgets():
+            chat.remove_widget(child)
+
+    def _list_signal_log(self) -> None:
+        """Show the stored signals -- categories only, never free text."""
+        from momentum import db as _db
+
+        conn = self._home_conn()
+        if conn is None:
+            return
+        try:
+            signals = _db.list_coach_signals(conn, limit=200)
+        except Exception:
+            log.debug("Could not list coach signals", exc_info=True)
+            return
+        if not signals:
+            _show_info_popup("Feedback log is empty", "There are no signals to show.")
+            return
+        lines = [
+            f"#{s.id}  {s.intent} / {s.verdict} / {s.failure or '-'}"
+            for s in signals
+        ]
+        _show_info_popup(
+            "Feedback log",
+            "\n".join(lines)
+            + "\n\n(No free text — only intent, verdict, failure "
+            "and app data fields used.)",
+        )
+
+    def _clear_signal_log(self) -> None:
+        from momentum import db as _db
+
+        conn = self._home_conn()
+        if conn is None:
+            return
+        try:
+            count = _db.clear_coach_signals(conn)
+            _show_info_popup("Feedback cleared", f"Deleted {count} signal(s).")
+            # Re-render (now with no signals) so the controls disappear too.
+            self._render_signal_log()
+        except Exception:
+            log.debug("Could not clear coach signals", exc_info=True)
+
+    def _export_signal_log(self) -> None:
+        from momentum import db as _db
+
+        conn = self._home_conn()
+        if conn is None:
+            return
+        try:
+            export = _db.export_coach_signals(conn)
+            if not export:
+                _show_info_popup("Feedback log is empty", "There are no signals to export.")
+                return
+            tmp = Path(tempfile.gettempdir()) / f"momentum_signals_{os.getpid()}.json"
+            tmp.write_text(json.dumps(export, ensure_ascii=False, indent=2), encoding="utf-8")
+            _show_info_popup(
+                "Feedback log exported",
+                f"Exported {len(export)} signal(s) to:\n{tmp}\n"
+                f"(These contain no free text — only intent, verdict, failure "
+                f"and app data fields used.)",
+            )
+        except Exception:
+            log.debug("Could not export coach signals", exc_info=True)
+
+    def _list_signal_log(self) -> None:
+        from momentum import db as _db
+
+        conn = self._home_conn()
+        if conn is None:
+            return
+        try:
+            signals = _db.list_coach_signals(conn, limit=200)
+        except Exception:
+            log.debug("Could not list coach signals", exc_info=True)
+            return
+        lines = [f"{i + 1}. {s.intent} / {s.verdict} / {s.failure}" for i, s in enumerate(signals)]
+        _show_info_popup(
+            "Signal log",
+            "\\n".join(lines) if lines else "No feedback signals recorded.",
+        )
+
+    def _hide_signal_log(self) -> None:
+        chat = self.ids.coach_chat
+        for child in list(chat.children):
+            if getattr(child, "id", None) in ("signal_log_header", "signal_log_actions"):
+                chat.remove_widget(child)
+        self.ids.coach_input.disabled = False
+
+    def _offer_task_creation(self, titles: list[str]) -> None:
         if not titles:
             return
         app = App.get_running_app()
@@ -3373,6 +3630,10 @@ class CoachScreen(Screen):
         self._disarm_reply_watchdog()
         self._hide_typing()
         print(f"[COACH] failure: {type(exc).__name__}: {exc}", flush=True)
+        meta = self._signal_meta()
+        self._report_feedback(
+            str(meta["intent"]), "error", "generation-error", meta["fields"]
+        )
         self._add_message(
             "assistant",
             f"I'm sorry, I encountered an error: {exc}",
@@ -3604,6 +3865,21 @@ class SettingsScreen(ScrollScreen):
         coach_actions.add_widget(delete_model_btn)
         coach_actions.add_widget(clear_chat_btn)
         c.add_widget(coach_actions)
+
+        signal_var = BooleanProperty(
+            bool(getattr(current, "signal_collection_enabled", False))
+        )
+
+        def _set_signal_collection(*_):
+            cfg.set_signal_collection_enabled(signal_var.active)
+
+        signal_row, signal_cb = _make_check_row(
+            "Log coach feedback as schematic signals",
+            active=signal_var.active,
+            font_size=sp(13),
+        )
+        c.add_widget(signal_row)
+        signal_cb.bind(active=_set_signal_collection)
 
         # Model picker. Until this existed llm_model could only ever be read,
         # never changed: there was no way on any platform to move off the

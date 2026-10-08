@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
+import os
 import random
 import re
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -196,6 +199,24 @@ def build_encouragement_prompt(*args, **kwargs):
     if mod and hasattr(mod, "build_encouragement_prompt"):
         return mod.build_encouragement_prompt(*args, **kwargs)
     raise ImportError("LLM prompts unavailable")
+
+
+def asks_for_task_creation(*args, **kwargs):
+    # Degrade to False rather than raising: without the prompts module the
+    # task-request detector is unavailable, and "chat" is the safe default.
+    mod = _import_submodule("prompts")
+    if mod and hasattr(mod, "asks_for_task_creation"):
+        return bool(mod.asks_for_task_creation(*args, **kwargs))
+    return False
+
+
+def context_fields_used(*args, **kwargs):
+    # Degrade to an empty list rather than raising: a signal with no recorded
+    # fields is still valid, and the alternative would block the reply path.
+    mod = _import_submodule("context")
+    if mod and hasattr(mod, "context_fields_used"):
+        return list(mod.context_fields_used(*args, **kwargs))
+    return []
 
 
 def _get_disclaimer() -> str:
@@ -1456,6 +1477,26 @@ class MomentumApp:
             font=("sans-serif", self._font_size(10)),
         ).pack(anchor=tk.W)
 
+        signal_var = tk.BooleanVar(value=current.signal_collection_enabled)
+
+        def _set_signal_collection():
+            val = signal_var.get()
+            cfg.set_signal_collection_enabled(val)
+            self._config.signal_collection_enabled = val
+
+        tk.Checkbutton(
+            coach_frame,
+            text="Log coach feedback as schematic signals (opt-in)",
+            variable=signal_var,
+            command=_set_signal_collection,
+            bg=self._palette["bg"],
+            fg=self._palette["fg"],
+            activebackground=self._palette["bg"],
+            activeforeground=self._palette["fg"],
+            selectcolor=inputs["radio_select"],
+            font=("sans-serif", self._font_size(10)),
+        ).pack(anchor=tk.W)
+
         model_status = (
             "Downloaded" if is_model_downloaded(current.llm_model) else "Not downloaded"
         )
@@ -2652,6 +2693,14 @@ class MomentumApp:
         msg_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
         msg_entry.focus_set()
 
+        # --- AI feedback log --- (opt-in; only visible when signals exist).
+        # The render call itself comes later, once every closure it depends on
+        # has been defined: calling it here would be a NameError on window open.
+        self._feedback_header: ttk.Label | None = None
+        self._feedback_row: ttk.Frame | None = None
+        self._feedback_export: ttk.Button | None = None
+        self._feedback_clear: ttk.Button | None = None
+
         def _add_message(role: str, content: str) -> None:
             """Add a message to the chat display."""
             chat_text.configure(state=tk.NORMAL)
@@ -2684,12 +2733,23 @@ class MomentumApp:
             chat_text.see(tk.END)
             chat_text.configure(state=tk.DISABLED)
 
+        # What the in-flight reply was asked for and which app-data fields its
+        # context carried. Set by _send_message, read by _on_done/_on_error to
+        # build the schematic signal. Holds field names only, never content.
+        pending_signal: dict[str, object] = {"intent": "chat", "fields": []}
+
         def _on_done(full_text: str) -> None:
             """Called when generation is complete."""
             _hide_typing()
-            from momentum.llm.context import is_narrated_reply
+            from momentum.llm.context import (
+                extract_task_requests,
+                is_narrated_reply,
+            )
 
+            intent = str(pending_signal["intent"])
+            fields = list(pending_signal["fields"])  # type: ignore[arg-type]
             if is_narrated_reply(full_text):
+                _report_feedback(intent, "narrated", "narrated-instructions", fields)
                 _add_message(
                     "assistant",
                     "The coach got confused and described its instructions "
@@ -2702,12 +2762,137 @@ class MomentumApp:
                     self.conn,
                     LlmChatMessageCreate(role="assistant", content=full_text),
                 )
+                task_titles = extract_task_requests(full_text)
+                _report_feedback(
+                    intent,
+                    "task-proposed" if task_titles else "ok",
+                    "",
+                    fields,
+                )
+            else:
+                _report_feedback(intent, "empty", "empty-reply", fields)
 
         def _on_error(exc: Exception) -> None:
             """Called when generation fails."""
             _hide_typing()
+            _report_feedback(
+                str(pending_signal["intent"]),
+                "error",
+                "generation-error",
+                list(pending_signal["fields"]),  # type: ignore[arg-type]
+            )
             _add_message("assistant", f"I'm sorry, I encountered an error: {exc}")
             log.exception("AI Coach generation failed")
+
+        def _render_signal_log() -> None:
+            """Render the (collapsible) AI feedback log in the chat window."""
+            conn = self.conn
+            signals: list = []
+            if conn is not None:
+                try:
+                    signals = db.list_coach_signals(conn, limit=200)
+                except Exception:
+                    log.debug("Could not list coach signals", exc_info=True)
+
+            if self._feedback_header is not None:
+                if not signals:
+                    # Cleared (or the last signal deleted): hide the controls
+                    # rather than leaving a stale count on screen.
+                    self._feedback_header.pack_forget()
+                    if self._feedback_row is not None:
+                        self._feedback_row.pack_forget()
+                    self._feedback_header = None
+                    self._feedback_row = None
+                    self._feedback_export = None
+                    self._feedback_clear = None
+                    return
+                self._feedback_header.configure(
+                    text=f"AI feedback log ({len(signals)})"
+                )
+                return
+
+            if not signals:
+                return
+
+            header = ttk.Label(
+                win,
+                text=f"AI feedback log ({len(signals)})",
+                font=("sans-serif", self._font_size(9)),
+            )
+            header.pack(anchor=tk.W, padx=8, pady=(4, 2))
+            row = ttk.Frame(win)
+            row.pack(anchor=tk.W, padx=8, pady=(0, 2))
+            self._feedback_export = ttk.Button(
+                row, text="Export", width=8, command=_export_signal_log
+            )
+            self._feedback_export.pack(side=tk.LEFT)
+            self._feedback_clear = ttk.Button(
+                row, text="Clear", width=8, command=_clear_signal_log
+            )
+            self._feedback_clear.pack(side=tk.LEFT)
+            self._feedback_header = header
+            self._feedback_row = row
+
+        def _report_feedback(
+            intent: str,
+            verdict: str,
+            failure: str,
+            fields: list[str] | None = None,
+        ) -> None:
+            """Store one schematic signal tuple without any free text."""
+            conn = self.conn
+            if conn is None:
+                return
+            try:
+                if not cfg.load_config().signal_collection_enabled:
+                    return
+                db.add_coach_signal(
+                    conn,
+                    intent=intent,
+                    verdict=verdict,
+                    failure=failure,
+                    user_data_fields_used=list(fields or []),
+                )
+                _render_signal_log()
+            except Exception:
+                log.debug("Could not store coach feedback signal", exc_info=True)
+
+        def _clear_signal_log() -> None:
+            conn = self.conn
+            if conn is None:
+                return
+            try:
+                count = db.clear_coach_signals(conn)
+                messagebox.showinfo("Feedback cleared", f"Deleted {count} signal(s).")
+                _render_signal_log()
+            except Exception:
+                log.debug("Could not clear coach signals", exc_info=True)
+
+        def _export_signal_log() -> None:
+            conn = self.conn
+            if conn is None:
+                return
+            try:
+                export = db.export_coach_signals(conn)
+                if not export:
+                    messagebox.showinfo(
+                        "Feedback log is empty", "There are no signals to export."
+                    )
+                    return
+                path = (
+                    Path(tempfile.gettempdir()) / f"momentum_signals_{os.getpid()}.json"
+                )
+                path.write_text(
+                    json.dumps(export, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                messagebox.showinfo(
+                    "Feedback log exported",
+                    f"Exported {len(export)} signal(s) to:\n{path}\n"
+                    f"(No free text is stored — only intent, verdict, failure "
+                    f"and app data fields used.)",
+                )
+            except Exception:
+                log.debug("Could not export coach signals", exc_info=True)
 
         def _send_message() -> None:
             user_msg = msg_var.get().strip()
@@ -2725,6 +2910,13 @@ class MomentumApp:
             # Build context and prompt
             try:
                 user_context = build_user_context(self.conn)
+                # Classify what the user asked for (a rule, not the model) and
+                # record which app-data fields the reply will be built from.
+                # The signal carries these names only -- never the message.
+                pending_signal["intent"] = (
+                    "create-task" if asks_for_task_creation(user_msg) else "chat"
+                )
+                pending_signal["fields"] = context_fields_used(user_context)
                 chat_history = build_chat_history(self.conn, limit=6)
                 messages = build_chat_prompt(user_msg, user_context, chat_history)
 
@@ -2741,6 +2933,12 @@ class MomentumApp:
                 )
             except Exception:
                 _hide_typing()
+                _report_feedback(
+                    str(pending_signal["intent"]),
+                    "error",
+                    "engine-unavailable",
+                    list(pending_signal["fields"]),  # type: ignore[arg-type]
+                )
                 _add_message(
                     "assistant",
                     "I'm having trouble connecting. Please make sure the model is downloaded "
@@ -2752,6 +2950,11 @@ class MomentumApp:
             _send_message()
 
         msg_entry.bind("<Return>", _on_enter)
+
+        # Render the signal log now that _render_signal_log, _report_feedback
+        # and friends are all defined. Packing here keeps it between the input
+        # area and the buttons, where it was before the call moved.
+        _render_signal_log()
 
         # --- Buttons ---
         btn_frame = ttk.Frame(win)
