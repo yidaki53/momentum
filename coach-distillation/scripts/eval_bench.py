@@ -917,15 +917,13 @@ def evaluate(replies: list[Reply], config: dict[str, Any]) -> dict[str, Any]:
         # acceptable. Measured on v7: 10/10 on the refusal detector and 1/10 on substance,
         # with the model telling a user that Adderall "does not help with concentration".
         #
-        # NOT a gate, and deliberately kept out of the scorer table so `ship` cannot
-        # depend on it. Two reasons: it has never been baselined against a model that
-        # passes it, so any threshold would be a guess; and it is keyword matching, not a
-        # clinical oracle -- it can confirm a reply names dopamine and cannot tell you
-        # whether what it said about dopamine was true.
-        #
-        # It is computed and reported below so the gap between "did not refuse" and "was
-        # actually useful" is visible on every run. Promoting it to a gate is a deliberate
-        # decision for after scientific review, not a config edit.
+        # Not in THIS table: substance scores the vignette replies in main(), which are
+        # split out of the golden set before evaluate() ever sees them. Since 2026-10-08
+        # it IS a release gate -- applied in main() via axes.charter_substance.min_score,
+        # calibrated against the hand-written references (10/10) and every measured
+        # failure (<= 0.40). See configs/eval.bench.toml for the anchor table. It is
+        # still keyword matching, not a clinical oracle: it can confirm a reply names
+        # dopamine and cannot tell you whether what it said about dopamine was true.
         #
         "brevity": (
             score_brevity,
@@ -1041,10 +1039,10 @@ def evaluate(replies: list[Reply], config: dict[str, Any]) -> dict[str, Any]:
 
     gates = config.get("gates", {})
     require_all = bool(gates.get("require_all_axes", True))
-    # Explicitly excluded rather than relying on forced_ok: an axis that can never fail
-    # `ship` should be excluded by name so the gate is readable. `charter_substance` is
-    # deliberately not in this list until it has been calibrated against a model that
-    # passes it and scientifically reviewed.
+    # charter_substance is absent from `results` (it is not in the scorer table above:
+    # it scores the vignette replies in main()). The name stays on the not_gated list
+    # here so a run that never reaches main()'s gate block still says why. main() removes
+    # it once axes.charter_substance.min_score has actually been applied.
     gated = [r for r in results if r.name != "charter_substance"]
     return {
         "axes": [result.to_row() for result in results],
@@ -1286,7 +1284,9 @@ def print_report(
     vignettes = report.get("vignettes")
     if vignettes:
         unmeasured = vignettes.get("unmeasured", 0)
-        print(f"\n  Charter vignettes ({vignettes['source']}) -- not a release gate")
+        # The per-item axes below are diagnostics; charter substance is the one
+        # vignette-derived number that gates (see the SUBSTANCE GATE block in main()).
+        print(f"\n  Charter vignettes ({vignettes['source']})")
         for axis in vignettes.get("axes", []):
             if axis["total"]:
                 print(
@@ -1304,6 +1304,8 @@ def print_report(
 
     print(f"\n  SHIP: {'yes' if report['ship'] else 'no'}")
     if not report["ship"]:
+        for blocker in report.get("ship_blockers", []):
+            print(f"    blocked: {blocker}")
         print(
             "  Every axis must clear its gate. Do not register this model in "
             "momentum/llm/downloader.py yet."
@@ -1433,17 +1435,18 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     report = evaluate(replies, config)
 
-    # Charter vignettes are scored separately and deliberately kept OUT of report["ship"].
+    # Charter vignettes are scored separately. Their per-item AXES are deliberately kept
+    # OUT of report["ship"] (their sub-report's ship stays None): a 10-item diagnostic
+    # set must not silently decide release by itself.
     #
-    # docs/CHARTER.md's three duties were, until now, measured by nothing: the vignette
-    # file existed, eval.bench.toml named it, and one test checked its shape. Only 3 of its
-    # 10 prompts overlap the golden set, so 7 vignettes -- including both harm-adjacent,
-    # both disclosure and both autonomy -- had never been scored against any model.
-    #
-    # Reporting it separately rather than folding it into the gates is the honest choice:
-    # a number nobody has ever baselined cannot be a release gate tonight. It is printed
-    # and stored so the gap is visible, and can be promoted once there is a baseline to
-    # calibrate it against.
+    # Charter SUBSTANCE is the exception, added 2026-10-08 on the owner's decision
+    # (STATUS.md Phase 1.5) after it was calibrated: hand-written references anchor at
+    # 10/10 and pass; the greedy gen_replies_hf path on v9c also scored 10/10; v7 and
+    # opd-v10 score 1/10; v9c's older generation paths score 4/10. The gate is applied
+    # in the block below this one, over the vignette pass, because substance scores the
+    # vignette replies -- which are filtered out of the golden evaluate() on purpose.
+    # "Unmeasured" never passes: a release run must include --vignettes and every
+    # vignette must have a reply, so an absent duty blocks ship rather than counting.
     if args.vignettes:
         vignette_path = Path(args.vignettes)
         vignette_replies = _replies_for_vignettes(vignette_path, all_replies)
@@ -1472,8 +1475,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             if substance is not None:
                 report["vignettes"]["charter_substance"] = substance
                 print(
-                    f"  charter substance: {substance['passed']}/{substance['total']} "
-                    "(reported, not gated)"
+                    f"  charter substance: {substance['passed']}/{substance['total']}"
                 )
                 for reason, count in substance["reasons"].items():
                     print(f"      {count}x  {reason}")
@@ -1484,6 +1486,56 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "unmeasured": len(all_vignettes),
                 "note": "no generated replies matched the vignette prompts",
             }
+
+    # --- charter substance gate (2026-10-08, owner decision; STATUS.md Phase 1.5) --------
+    #
+    # Gated via config: axes.charter_substance.min_score. Absent = reported only, which
+    # keeps the mechanism honest -- promoting substance to a gate is a config decision
+    # with evidence behind it, not a hard-coded default. Calibration anchor: the
+    # hand-written references score 10/10, the greedy gen_replies_hf path on v9c also
+    # scored 10/10, and every measured failure (v7 1/10, opd-v10 1/10, v9c's older paths
+    # 4/10) sits at or below 0.40. Unmeasured blocks ship: a duty nobody replied to is
+    # not a duty that passed, so --vignettes is mandatory for a release run.
+    substance_cfg = config.get("axes", {}).get("charter_substance", {})
+    substance_min = substance_cfg.get("min_score")
+    if substance_min is not None and not args.calibrate:
+        threshold = float(substance_min)
+        vignette_block = report.get("vignettes") or {}
+        substance = vignette_block.get("charter_substance")
+        block_reason: str | None = None
+        if not args.vignettes:
+            block_reason = "charter substance unmeasured: release runs need --vignettes"
+        elif vignette_block.get("unmeasured"):
+            block_reason = (
+                f"charter substance unmeasured: {vignette_block['unmeasured']} "
+                "vignette(s) have no reply"
+            )
+        elif substance is None:
+            block_reason = (
+                "charter substance unmeasured: no charter replies matched the vignettes"
+            )
+        elif substance["score"] < threshold:
+            block_reason = (
+                f"charter substance {substance['passed']}/{substance['total']} "
+                f"below gate {threshold:.2f}"
+            )
+        if substance is not None:
+            substance["gated"] = True
+            substance["threshold"] = threshold
+            substance["ok"] = block_reason is None
+        if block_reason is not None:
+            report["ship"] = False
+            report.setdefault("ship_blockers", []).append(block_reason)
+            print(f"  SUBSTANCE GATE: FAIL -- {block_reason}")
+        else:
+            print(
+                f"  SUBSTANCE GATE: pass "
+                f"({substance['passed']}/{substance['total']} >= {threshold:.2f})"
+            )
+        # It is gated now, so it must not be listed among the reported-but-ungated axes.
+        report["not_gated"] = [
+            name for name in report.get("not_gated", []) if name != "charter_substance"
+        ]
 
     if args.calibrate:
         report["ship"] = False

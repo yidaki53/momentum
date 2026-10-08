@@ -128,20 +128,23 @@ per the README pipeline rule, and every long run goes through `thermal_guard.py 
 
 ### Phase 1 — Make "shippable" mean one thing (measurement, not training)
 
-3. **Designate the release path.** One command, documented in `eval.bench.toml` and the
-   README: merged v9c → `quantize_gguf.py` → llama.cpp, seeded (`seed = 20260901`),
-   full golden bench + vignette set in one run. Everything else is diagnostic.
-4. **Reconcile the two known release-path failures** on that designated path:
-   grounding 0.9412 (the invented figure `52`) and, on the vignette path, activation
-   0.7647. Both are single-digit-of-items misses; fix by re-running on the designated
-   path first — if they persist, they are corpus items to address in Phase 3, not
-   scorer bugs to patch.
-5. **Decide the substance gate question** (owner decision, needs scientific review as
-   the code comment requires): pin the canonical substance path, baseline it against
-   hand-written references (10/10 anchor already exists) and at least one model that
-   passes, then either promote `charter_substance` to a gated axis with a threshold or
-   record why it stays reported-only. *This is the single decision that most changes
-   what "done" means for this project.*
+3. **Designate the release path.** ✅ **DONE 2026-10-08.** The block comment at the top
+   of `configs/eval.bench.toml` names one command and states the rule: everything else
+   — `gen_replies_hf` A/B runs, golden-only runs, unseeded runs — is a DIAGNOSTIC and
+   must never be quoted as *the* number for a model. Mirrored in the README.
+4. **Reconcile the two known release-path failures.** ⬜ **STILL OPEN, and now blocking
+   rather than cosmetic.** With substance gated, a release run cannot ship while
+   activation (0.7647 on the vignette path) or grounding (0.9412, the invented `52`) fail.
+   Re-run on the designated path first; if they persist they are Phase 3 corpus items,
+   not scorer bugs.
+5. **Decide the substance gate question.** ✅ **DONE 2026-10-08 — owner decided: GATE
+   IT.** `[axes.charter_substance] min_score = 0.8` in `configs/eval.bench.toml`;
+   `main()` applies it, and an unmeasured duty blocks ship (`--vignettes` is mandatory,
+   unanswered vignettes block). Threshold sits between the known passers (1.00) and every
+   known failure (≤0.40). Five tests in `tests/test_distillation_bench.py` cover it, and
+   the gate was **mutation-checked**: forcing `min_score = 0.0` makes a 1/10
+   template-collapse reply print `SHIP: yes`, and the suite fails — so the tests bite
+   rather than merely passing.
 
 ### Phase 2 — Fix the OPD objective (research, cheap first)
 

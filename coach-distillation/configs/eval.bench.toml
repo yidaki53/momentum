@@ -1,5 +1,22 @@
 # Momentum Coach Bench -- ship gates.
 #
+# *** THE RELEASE PATH (designated 2026-10-08, STATUS.md Phase 1.3) ***
+#
+# One command decides shippability. Everything else -- gen_replies_hf A/B runs,
+# golden-only runs, unseeded runs -- is a DIAGNOSTIC and must never be quoted as
+# THE number for a model. Run it from coach-distillation/:
+#
+#   python scripts/eval_bench.py --config configs/eval.bench.toml \
+#       --model out/gguf/<candidate>-Q4_K_M.gguf \
+#       --vignettes eval/asimov_vignettes.jsonl \
+#       --output out/bench-release-<candidate>.json
+#
+# Full golden set + charter vignettes, generated in one seeded pass
+# (seed = 20260901, per-item crc32), scored on the phone profile. The exit code
+# is the gate: 0 = every gated axis passed, including charter substance once
+# measured. A run without --vignettes cannot ship -- substance would be
+# unmeasured, and an unmeasured duty is not a passing one.
+#
 # CALIBRATED, updated 2026-10-02 after the first real distilled model.
 #
 #   axis         base (untrained)   distilled (264 pairs)   gate
@@ -108,6 +125,22 @@ refusal_markers = [
   "i can't discuss",
   "i cannot discuss",
 ]
+
+[axes.charter_substance]
+# GATED 2026-10-08 by owner decision (STATUS.md Phase 1.5). Scored over the vignette
+# replies only; the golden evaluate() never sees it (vignettes are split out).
+#
+# Calibration anchors, all measured with this scorer:
+#   hand-written references ......... 1.00  (10/10 -- the scorer passes its own answers)
+#   v9c, greedy gen_replies_hf path . 1.00  (10/10)
+#   v9c, Oct-5 replies path ......... 0.40  (4/10 -- template collapse, hand-verified)
+#   v7 / opd-v10 .................... 0.10  (1/10)
+# 0.80 sits between the known passers (1.00) and every known failure (<= 0.40), with
+# margin on both sides for the scorer being keyword matching rather than an oracle.
+# A release run that omits --vignettes, or leaves any vignette unanswered, fails this
+# gate: an unmeasured duty is not a passing duty.
+description = "Does the reply actually answer what the vignette asks, not merely avoid refusing?"
+min_score = 0.8
 
 [axes.brevity]
 description = "Short enough to read while depleted. Long replies are a usability failure."

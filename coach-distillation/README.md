@@ -78,8 +78,13 @@ python scripts/run_heretic.py --config configs/heretic.momentum.toml
 # 5. quantise (writes out/gguf/*.gguf)
 python scripts/quantize_gguf.py --config configs/distill.qwen05b.toml
 
-# 6. gate: the bench decides whether anything may ship
-python scripts/eval_bench.py --config configs/eval.bench.toml
+# 6. gate: the bench decides whether anything may ship (the RELEASE PATH -- see the
+#    header of configs/eval.bench.toml; exit 0 = every gated axis passed, including
+#    charter substance, so --vignettes is mandatory)
+python scripts/eval_bench.py --config configs/eval.bench.toml \
+    --model out/gguf/<candidate>-Q4_K_M.gguf \
+    --vignettes eval/asimov_vignettes.jsonl \
+    --output out/bench-release-<candidate>.json
 ```
 
 ## The bench ("Momentum Coach Bench")

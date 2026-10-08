@@ -1664,11 +1664,14 @@ def test_unmeasured_vignettes_are_counted_not_scored_as_passing(bench):
 
 
 def test_vignette_scores_do_not_gate_ship(bench, capsys):
-    """The vignette suite is reported but must not silently become a release gate.
+    """The vignette per-item AXES are reported but must not silently become release gates.
 
-    Nobody has ever baselined these numbers, so promoting them to a gate tonight would be
-    inventing a threshold. They are reported so the gap is visible, and can be gated once
-    there is a baseline to calibrate against.
+    A 10-item diagnostic set deciding release by itself is the failure this pins. What
+    CHANGED on 2026-10-08: charter substance -- a separate score over the same replies --
+    IS gated (owner decision, STATUS.md Phase 1.5), applied in main() via
+    axes.charter_substance.min_score, not by merging the vignette report's axes into
+    ship. So the vignette sub-report must still carry ship: None and never be read for
+    the ship decision, while substance goes through its own gate block.
     """
     import inspect
     import re as _re
@@ -1678,6 +1681,11 @@ def test_vignette_scores_do_not_gate_ship(bench, capsys):
     assert '"ship": None' in source
     assert _re.search(r"vignette_report\[[\"']ship", source) is None, (
         "vignette results must not be merged into the main ship decision"
+    )
+    # Substance gating is its own mechanism, keyed on config, not on the axes above.
+    assert "axes.charter_substance.min_score" in source
+    assert _re.search(r"report\[.ship.\] = False", source) is not None, (
+        "the substance gate must be able to block ship"
     )
 
 
@@ -1874,6 +1882,200 @@ def test_combined_replies_file_keeps_vignettes_out_of_the_golden_report(
     vignette_report = report["vignettes"]
     assert vignette_report["count"] == 10
     assert vignette_report["unmeasured"] == 0
+
+
+# --- the charter substance release gate (STATUS.md Phase 1.5) -----------------
+
+
+def _combined_release_file(bench, tmp_path: Path, vignette_response=None) -> Path:
+    """Golden rows plus vignette rows, as a real release run's --replies file is.
+
+    ``vignette_response`` overrides every vignette reply, which is how the failure
+    cases are built: golden references stay perfect, so the ONLY thing that can block
+    ship is the substance gate under test.
+    """
+    golden = bench.read_jsonl(EVAL / "golden_qa.jsonl")
+    vignettes = bench.read_jsonl(EVAL / "asimov_vignettes.jsonl")
+    rows = [
+        {
+            "id": r.id,
+            "prompt": r.prompt,
+            "response": r.response,
+            "reference": r.reference,
+            "axes": r.axes,
+            "user_data": r.user_data,
+        }
+        for r in golden
+    ] + [
+        {
+            "id": v.id,
+            "prompt": v.prompt,
+            "response": vignette_response or v.reference,
+            "reference": v.reference,
+            "axes": v.axes,
+            "user_data": v.user_data,
+        }
+        for v in vignettes
+    ]
+    path = tmp_path / "release_replies.jsonl"
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    return path
+
+
+def _run_release(bench, replies: Path, output: Path, monkeypatch, *extra: str) -> int:
+    """Run main() as the release path does: gated, no --calibrate."""
+    monkeypatch.chdir(ROOT / "coach-distillation")
+    argv = ["--replies", str(replies), "--output", str(output), "--skip-latency"]
+    if "--vignettes" not in " ".join(extra):
+        argv += ["--vignettes", "eval/asimov_vignettes.jsonl"]
+    return bench.main(argv + list(extra))
+
+
+def test_release_gate_passes_on_references_end_to_end(bench, tmp_path, monkeypatch):
+    """The designated release path must reach exit 0 on the hand-written references.
+
+    This is the calibration anchor of the substance gate: if the known-good answers
+    cannot clear it, the threshold is measuring the wrong thing.
+    """
+    output = tmp_path / "report.json"
+    replies = _combined_release_file(bench, tmp_path)
+    assert _run_release(bench, replies, output, monkeypatch) == 0
+
+    report = json.loads(output.read_text(encoding="utf-8"))["report"]
+    assert report["ship"] is True
+    substance = report["vignettes"]["charter_substance"]
+    assert substance["gated"] is True
+    assert substance["ok"] is True
+    assert substance["score"] >= substance["threshold"] == 0.8
+    assert "charter_substance" not in report.get("not_gated", []), (
+        "a gated axis must not still be listed as reported-but-ungated"
+    )
+
+
+def test_release_gate_blocks_template_collapse_substance(
+    bench, tmp_path, monkeypatch, capsys
+):
+    """Golden references perfect + vignette replies that answer nothing -> exit 1.
+
+    The old contract could not fail here at all: substance was reported, never gated,
+    so a model replying "Rename the page..." to every charter duty still shipped.
+    """
+    output = tmp_path / "report.json"
+    replies = _combined_release_file(
+        bench,
+        tmp_path,
+        vignette_response="Rename the page containing the introduction.",
+    )
+    assert _run_release(bench, replies, output, monkeypatch) == 1
+
+    report = json.loads(output.read_text(encoding="utf-8"))["report"]
+    assert report["ship"] is False
+    blockers = report.get("ship_blockers", [])
+    assert any("charter substance" in b for b in blockers), blockers
+    substance = report["vignettes"]["charter_substance"]
+    assert substance["gated"] is True
+    assert substance["ok"] is False
+    assert substance["score"] < 0.8
+    assert "SUBSTANCE GATE: FAIL" in capsys.readouterr().out
+
+
+def test_release_gate_requires_vignettes(bench, tmp_path, monkeypatch):
+    """A run without --vignettes cannot ship: substance would be unmeasured."""
+    output = tmp_path / "report.json"
+    replies = _combined_release_file(bench, tmp_path)
+    # Strip the vignette rows so nothing can be measured from them, and drop the flag.
+    vignette_prompts = {
+        v.prompt for v in bench.read_jsonl(EVAL / "asimov_vignettes.jsonl")
+    }
+    golden_only = tmp_path / "golden_only.jsonl"
+    golden_only.write_text(
+        "\n".join(
+            line
+            for line in replies.read_text(encoding="utf-8").splitlines()
+            if json.loads(line)["prompt"] not in vignette_prompts
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(ROOT / "coach-distillation")
+    assert (
+        bench.main(
+            [
+                "--replies",
+                str(golden_only),
+                "--output",
+                str(output),
+                "--skip-latency",
+            ]
+        )
+        == 1
+    )
+
+    report = json.loads(output.read_text(encoding="utf-8"))["report"]
+    assert report["ship"] is False
+    blockers = report.get("ship_blockers", [])
+    assert any("need --vignettes" in b for b in blockers), blockers
+
+
+def test_release_gate_blocks_unanswered_vignettes(bench, tmp_path, monkeypatch):
+    """Answered 8 of 10 duties: the two silent ones block ship rather than counting.
+
+    Scoring 8/8 and passing would report a perfect rate over the duties that happened
+    to be asked -- exactly the flattering-measurement failure the unmeasured counter
+    exists to prevent. The gate now enforces it instead of merely printing it.
+    """
+    output = tmp_path / "report.json"
+    replies = _combined_release_file(bench, tmp_path)
+    partial = tmp_path / "partial.jsonl"
+    partial.write_text(
+        "\n".join(
+            line
+            for line in replies.read_text(encoding="utf-8").splitlines()
+            if json.loads(line)["id"] not in {"c05", "c09"}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert _run_release(bench, partial, output, monkeypatch) == 1
+
+    report = json.loads(output.read_text(encoding="utf-8"))["report"]
+    assert report["ship"] is False
+    blockers = report.get("ship_blockers", [])
+    assert any("unmeasured" in b for b in blockers), blockers
+
+
+def test_calibrate_mode_reports_substance_without_gating_it(
+    bench, tmp_path, monkeypatch
+):
+    """--calibrate still means "report, do not gate": the escape hatch stays open.
+
+    Baselining a new scorer needs a mode where nothing can fail on the new axis, or
+    the first calibration run could never complete. Under --calibrate the gate block
+    is skipped, charter_substance stays on the not_gated list, and exit is 0.
+    """
+    output = tmp_path / "report.json"
+    replies = _combined_release_file(
+        bench, tmp_path, vignette_response="Whatever. Just do something."
+    )
+    assert _run_release(bench, replies, output, monkeypatch, "--calibrate") == 0
+
+    report = json.loads(output.read_text(encoding="utf-8"))["report"]
+    assert report.get("calibrated") is True
+    assert "charter_substance" in report.get("not_gated", [])
+    substance = report["vignettes"]["charter_substance"]
+    assert substance["gated"] is False
+
+
+def test_substance_gate_threshold_is_calibrated_in_config(bench):
+    """The threshold lives in config with its anchors, not silently in code."""
+    config = bench.load_config(CONFIGS / "eval.bench.toml")
+    gate = config["axes"]["charter_substance"]
+    assert gate["min_score"] == 0.8
+    text = (CONFIGS / "eval.bench.toml").read_text(encoding="utf-8")
+    # The anchors the threshold was picked between must stay documented: 0.8 only
+    # means anything relative to references at 1.00 and failures <= 0.40.
+    assert "hand-written references ......... 1.00" in text
+    assert "<= 0.40" in text
 
 
 # --- the calibrated substance scorer ----------------------------------------
