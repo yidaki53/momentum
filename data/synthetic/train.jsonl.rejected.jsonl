@@ -1,0 +1,503 @@
+{"id": "coach:000001", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000002", "reason": "too short to be a coaching reply"}
+{"id": "coach:000003", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000004", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000006", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000007", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000008", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000009", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000011", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000012", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000013", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000014", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000016", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000017", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000018", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000019", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000020", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000021", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000022", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000023", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000024", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000025", "reason": "shame language ('dear friend')"}
+{"id": "coach:000026", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000027", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000028", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000029", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000031", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000032", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000033", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000034", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000035", "reason": "shame language ('deep breaths')"}
+{"id": "coach:000036", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000037", "reason": "too short to be a coaching reply"}
+{"id": "coach:000038", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000039", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000041", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000042", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000043", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000044", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000045", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000046", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000047", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000048", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000049", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000051", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000052", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000053", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000054", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000056", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000057", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000059", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000064", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000067", "reason": "too short to be a coaching reply"}
+{"id": "coach:000070", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000071", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000077", "reason": "too short to be a coaching reply"}
+{"id": "coach:000079", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000082", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000084", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000086", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000088", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000089", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000091", "reason": "too short to be a coaching reply"}
+{"id": "coach:000092", "reason": "too short to be a coaching reply"}
+{"id": "coach:000094", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000096", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000097", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000099", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000101", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000102", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000103", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000104", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000106", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000107", "reason": "no concrete small first action detected"}
+{"id": "coach:000109", "reason": "no concrete small first action detected"}
+{"id": "coach:000111", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000112", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000114", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000116", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000117", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000118", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000119", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000120", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000122", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000123", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000124", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000125", "reason": "shame language ('dear friend')"}
+{"id": "coach:000126", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000127", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000128", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000129", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000131", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000132", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000133", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000134", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000137", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000138", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000139", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000142", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000143", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000146", "reason": "no concrete small first action detected"}
+{"id": "coach:000148", "reason": "no concrete small first action detected"}
+{"id": "coach:000149", "reason": "no concrete small first action detected"}
+{"id": "coach:000152", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000153", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000154", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000155", "reason": "shame language ('every setback is an opportunity')"}
+{"id": "coach:000156", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000158", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000159", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000160", "reason": "shame language ('every setback is an opportunity')"}
+{"id": "coach:000161", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000166", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000167", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000168", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000169", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000171", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000173", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000175", "reason": "shame language ('grow stronger')"}
+{"id": "coach:000176", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000177", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000178", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000179", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000181", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000182", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000184", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000187", "reason": "too short to be a coaching reply"}
+{"id": "coach:000188", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000189", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000191", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000192", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000193", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000194", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000196", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000197", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000198", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000199", "reason": "too short to be a coaching reply"}
+{"id": "coach:000202", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000203", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000204", "reason": "too short to be a coaching reply"}
+{"id": "coach:000205", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000207", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000208", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000209", "reason": "too short to be a coaching reply"}
+{"id": "coach:000211", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000213", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000214", "reason": "too short to be a coaching reply"}
+{"id": "coach:000216", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000218", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000219", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000220", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000222", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000223", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000224", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000225", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000226", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000227", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000228", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000229", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000231", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000232", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000233", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000234", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000236", "reason": "too short to be a coaching reply"}
+{"id": "coach:000237", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000238", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000241", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000243", "reason": "too short to be a coaching reply"}
+{"id": "coach:000244", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000246", "reason": "too short to be a coaching reply"}
+{"id": "coach:000247", "reason": "too short to be a coaching reply"}
+{"id": "coach:000248", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000249", "reason": "bounded action required but: bound attached to nothing concrete: 'start working'"}
+{"id": "coach:000250", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000253", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000254", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000257", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000258", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000259", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000262", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000264", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000266", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000267", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000268", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000269", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000273", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000274", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000276", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000277", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000279", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000281", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000282", "reason": "no concrete small first action detected"}
+{"id": "coach:000283", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000284", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000286", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000287", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000289", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000291", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000292", "reason": "too short to be a coaching reply"}
+{"id": "coach:000293", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000294", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000295", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000296", "reason": "too short to be a coaching reply"}
+{"id": "coach:000297", "reason": "too short to be a coaching reply"}
+{"id": "coach:000299", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000301", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000302", "reason": "too short to be a coaching reply"}
+{"id": "coach:000304", "reason": "too short to be a coaching reply"}
+{"id": "coach:000306", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000307", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000308", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000311", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000312", "reason": "too short to be a coaching reply"}
+{"id": "coach:000313", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000314", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000316", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000317", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000318", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000319", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000321", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000322", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000325", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000326", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000327", "reason": "too short to be a coaching reply"}
+{"id": "coach:000328", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000329", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000333", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000336", "reason": "too short to be a coaching reply"}
+{"id": "coach:000337", "reason": "too short to be a coaching reply"}
+{"id": "coach:000338", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000339", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000341", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000342", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000343", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000344", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000346", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000347", "reason": "too short to be a coaching reply"}
+{"id": "coach:000348", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000349", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000351", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000354", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000356", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000357", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000358", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000359", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000360", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000362", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000363", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000364", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000365", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000366", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000367", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000369", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000371", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000373", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000374", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000375", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000376", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000377", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000379", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000381", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000382", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000384", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000386", "reason": "too short to be a coaching reply"}
+{"id": "coach:000387", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000390", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000395", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000397", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000398", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000401", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000402", "reason": "too short to be a coaching reply"}
+{"id": "coach:000404", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000408", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000411", "reason": "too short to be a coaching reply"}
+{"id": "coach:000412", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000414", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000416", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000417", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000418", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000419", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000422", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000423", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000427", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000429", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000431", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000434", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000436", "reason": "too short to be a coaching reply"}
+{"id": "coach:000437", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000439", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000441", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000442", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000444", "reason": "too short to be a coaching reply"}
+{"id": "coach:000446", "reason": "too short to be a coaching reply"}
+{"id": "coach:000447", "reason": "too short to be a coaching reply"}
+{"id": "coach:000448", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000449", "reason": "too short to be a coaching reply"}
+{"id": "coach:000451", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000453", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000454", "reason": "too short to be a coaching reply"}
+{"id": "coach:000456", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000457", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000458", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000459", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000461", "reason": "too short to be a coaching reply"}
+{"id": "coach:000462", "reason": "too short to be a coaching reply"}
+{"id": "coach:000463", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000464", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000471", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000472", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000473", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000474", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000477", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000479", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000481", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000482", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000483", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000484", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000486", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000487", "reason": "too short to be a coaching reply"}
+{"id": "coach:000489", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000491", "reason": "too short to be a coaching reply"}
+{"id": "coach:000492", "reason": "too short to be a coaching reply"}
+{"id": "coach:000494", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000497", "reason": "no concrete small first action detected"}
+{"id": "coach:000498", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000499", "reason": "too short to be a coaching reply"}
+{"id": "coach:000502", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000504", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000506", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000507", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000508", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000509", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000511", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000512", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000513", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000514", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000516", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000517", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000518", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000519", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000521", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000522", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000523", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000524", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000526", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000527", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000528", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000529", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000531", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000532", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000533", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000534", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000536", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000537", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000538", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000539", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000541", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000542", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000543", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000544", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000546", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000547", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000548", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000549", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000550", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000551", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000552", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000553", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000554", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000556", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000557", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000558", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000561", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000562", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000563", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000564", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000566", "reason": "too short to be a coaching reply"}
+{"id": "coach:000567", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000568", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000572", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000573", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000575", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000576", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000577", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000579", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000582", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000583", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000585", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000588", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000589", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000591", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000592", "reason": "too short to be a coaching reply"}
+{"id": "coach:000594", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000597", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000598", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000599", "reason": "no concrete small first action detected"}
+{"id": "coach:000601", "reason": "too short to be a coaching reply"}
+{"id": "coach:000602", "reason": "too short to be a coaching reply"}
+{"id": "coach:000603", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000604", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000606", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000607", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000608", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000609", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000612", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000613", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000616", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000617", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000618", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000621", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000622", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000623", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000624", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000626", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000627", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000628", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000629", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000631", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000632", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000633", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000634", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000637", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000638", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000639", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000642", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000643", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000644", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000646", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000647", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000648", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000649", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000651", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000652", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000653", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000654", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000656", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000657", "reason": "too short to be a coaching reply"}
+{"id": "coach:000658", "reason": "too short to be a coaching reply"}
+{"id": "coach:000659", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000661", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000662", "reason": "too short to be a coaching reply"}
+{"id": "coach:000663", "reason": "too short to be a coaching reply"}
+{"id": "coach:000664", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000666", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000667", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000668", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000672", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000673", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000674", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000675", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000676", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000677", "reason": "too short to be a coaching reply"}
+{"id": "coach:000678", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000679", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000681", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000684", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000686", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000687", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000688", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000689", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000691", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000692", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000693", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000694", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000696", "reason": "too short to be a coaching reply"}
+{"id": "coach:000697", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000698", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000701", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000702", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000703", "reason": "too short to be a coaching reply"}
+{"id": "coach:000704", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000706", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000707", "reason": "too short to be a coaching reply"}
+{"id": "coach:000708", "reason": "bounded action required but: bound attached to nothing concrete: 'Start working'"}
+{"id": "coach:000711", "reason": "too short to be a coaching reply"}
+{"id": "coach:000716", "reason": "too short to be a coaching reply"}
+{"id": "coach:000720", "reason": "shame language ('take a deep breath')"}
+{"id": "coach:000724", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000727", "reason": "too short to be a coaching reply"}
+{"id": "coach:000728", "reason": "bounded action required but: bound attached to nothing concrete: 'Start working'"}
+{"id": "coach:000731", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000734", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000736", "reason": "too short to be a coaching reply"}
+{"id": "coach:000737", "reason": "too short to be a coaching reply"}
+{"id": "coach:000739", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000741", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000742", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000744", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000746", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "coach:000747", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "coach:000748", "reason": "bounded action required but: bound attached to nothing concrete: 'Start working'"}
+{"id": "coach:000749", "reason": "too short to be a coaching reply"}
+{"id": "lived:000751", "reason": "too short to be a coaching reply"}
+{"id": "lived:000752", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "lived:000753", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "lived:000758", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "lived:000761", "reason": "too short to be a coaching reply"}
+{"id": "lived:000762", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "lived:000763", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "lived:000765", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "lived:000768", "reason": "reply copies a guidance example verbatim; adapt it to the user"}
+{"id": "lived:000771", "reason": "bounded action required but: action not bounded to a small step"}
+{"id": "lived:000773", "reason": "bounded action required but: action not bounded to a small step"}
