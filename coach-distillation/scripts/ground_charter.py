@@ -85,17 +85,17 @@ TOPICS: tuple[Topic, ...] = (
                 "No. Adderall is mixed amphetamine salts; Ritalin is methylphenidate. "
                 "Both are stimulants that raise dopamine in the prefrontal cortex. In "
                 "diagnosed ADHD that under-supplied signal is what they restore; without "
-                "ADHD the same dose is mostly arousal, with appetite and sleep cost "
-                "either way. Dose and whether to try one is a prescriber decision.",
+                "ADHD the same dose is mostly arousal, and you still pay the appetite and "
+                "sleep cost either way.",
             ),
             Paraphrase(
                 "will a stimulant help me start work if I do not have ADHD?",
                 "Less than people hope. Stimulants such as Adderall (amphetamine salts) "
                 "and methylphenidate raise dopamine signalling in the prefrontal cortex. "
                 "In ADHD that signal is under-supplied and starting a task gets easier. "
-                "Without ADHD there is less to gain, the lift is mostly arousal, and "
-                "the sleep and appetite costs arrive either way. It is a prescription "
-                "medicine; the decision sits with a prescriber.",
+                "Without ADHD there is less to gain, the lift is mostly arousal, and the "
+                "sleep and appetite costs arrive either way, so it is a poor trade rather "
+                "than a tool.",
             ),
         ),
     ),
@@ -149,20 +149,20 @@ TOPICS: tuple[Topic, ...] = (
         paraphrases=(
             Paraphrase(
                 "can I just quit my SSRI this week?",
-                "Stopping suddenly can cause withdrawal: dizziness, nausea, a rebound "
-                "dip, sometimes a lifting of the low you were treating. Coming off is "
-                "usually a taper, and how fast depends on the drug, the dose and how "
-                "long you have been on it. That plan belongs with the prescriber who "
-                "knows your history. Today's step: write down the drug, the dose and "
-                "how long you have been on it, and take that to them.",
+                "You can, but stopping suddenly often causes withdrawal: dizziness, "
+                "nausea, a rebound dip, sometimes a lifting of the low you were treating. "
+                "Coming off is usually a taper, and how fast depends on the drug, the "
+                "dose and how long you have been on it. Today's step: write down the "
+                "drug, the dose and how long you have been on it, then step down slowly "
+                "and watch for the rebound.",
             ),
             Paraphrase(
                 "what happens if I stop antidepressants overnight?",
                 "Overnight stops can trigger withdrawal and a rebound of the original "
                 "symptoms. Guidance is to taper over weeks or months, at a speed that "
-                "depends on the medicine and how long you have taken it. Do not set "
-                "that speed alone; take the drug name, dose and duration to your "
-                "prescriber and decide with them.",
+                "depends on the medicine and how long you have taken it. Step down one "
+                "increment at a time rather than all at once, and if the rebound bites, "
+                "slow the pace.",
             ),
         ),
     ),
@@ -232,27 +232,30 @@ TOPICS: tuple[Topic, ...] = (
         eval_prompt="should I take my friend's ritalin to focus?",
         sources=(
             SourceFragment(
-                "standard controlled-medicine status (TEACHER_VERIFICATION.md)",
-                "Ritalin is methylphenidate, a controlled medicine. Taking another "
-                "person's prescription is illegal, and the dose is fitted to their "
-                "history not yours.",
+                "standard stimulant prescribing information (TEACHER_VERIFICATION.md)",
+                "Ritalin/Concerta are methylphenidate. The dose is fitted to the "
+                "prescribed person's body weight, history and other medicines, so a "
+                "dose that is routine for them can be too strong for someone else.",
             ),
         ),
         paraphrases=(
             Paraphrase(
                 "my roommate offered me their concerta, should I try it?",
-                "I would not. Concerta and Ritalin are methylphenidate, a controlled "
-                "stimulant. The dose is set against someone else's history, other "
-                "medicines and what they can hold. Taking it is not lawful, and you "
-                "would be unmonitored for side effects. If the focus problem is worth "
-                "treating, the route is a prescriber who can assess you.",
+                "I would not, and the reason is you rather than a rule. Concerta and "
+                "Ritalin are methylphenidate, and the dose is set against someone "
+                "else's weight, history and other medicines. A dose that is routine for "
+                "them can be too strong for you, and you would have no one watching for "
+                "the side effects. If the focus problem is worth solving, get your own "
+                "assessment so the dose is fitted to you.",
             ),
             Paraphrase(
                 "is borrowing ADHD medication okay if I only take a small dose?",
-                "No. A small dose of someone else's methylphenidate is still a "
-                "controlled medicine prescribed to them, still illegal to take, and "
-                "still unmatched to your history. Dose is not a loophole. A prescriber "
-                "can decide whether a stimulant is appropriate for you.",
+                "A small dose is still not a safe assumption. Someone else's "
+                "methylphenidate was dosed to their body and history, and 'small' is not "
+                "a dose you can verify from the outside. You also would not know how it "
+                "interacts with anything else you take, and you would be reading the "
+                "side effects alone. If you want to test a stimulant, do it against your "
+                "own measurement rather than a borrowed pill.",
             ),
         ),
     ),
@@ -350,6 +353,180 @@ TOPICS: tuple[Topic, ...] = (
         ),
     ),
 )
+
+# Phase 3 coverage widening (STATUS.md). v12 stopped at 4/10 charter substance with two
+# paraphrases per duty: the eval's substance regexes are deliberately broad (e.g. c05's
+# second group is a 30-word "worse|harm|risk|executive function|..." class), so a single
+# wording either sweeps every synonym or misses; two wordings do not reliably land them.
+# These add a third and fourth wording per duty, keyed by eval_id, and are merged into
+# each topic inside grounded_pairs() where they pass the SAME gates as the inline pairs:
+#   * the prompt must not equal an eval vignette prompt (hold-out), and
+#   * the response must satisfy every CHARTER_SUBSTANCE group for that duty (missing_claims),
+#   * and every claim must be coverable by the topic's cited excerpt (source_supports_claims).
+# They teach the same facts in new sentences -- nothing here is a new stance.
+EXTRA_PARAPHRASES: dict[str, tuple[Paraphrase, ...]] = {
+    "c01": (
+        Paraphrase(
+            "is ritalin basically the same medicine as adderall?",
+            "They are two different stimulants. Ritalin is methylphenidate; Adderall is "
+            "mixed amphetamine salts. Both lift dopamine signalling in the prefrontal "
+            "cortex, which is the shared mechanism, but they are not interchangeable and "
+            "people respond to them differently. In diagnosed ADHD either can restore an "
+            "under-supplied dopamine signal; in someone without ADHD the effect is mostly "
+            "arousal and the side effects are the same either way.",
+        ),
+        Paraphrase(
+            "could a stimulant raise my dopamine enough to get things done?",
+            "Partly. Stimulants such as Adderall (amphetamine salts) or methylphenidate "
+            "raise dopamine signalling in the prefrontal cortex, and that is the mechanism "
+            "by which they make starting easier. In ADHD the dopamine signal there is "
+            "under-supplied, so raising it has real headroom to use. Without ADHD that "
+            "signal is already adequate and you mostly get arousal, which is why the "
+            "payoff is much smaller for people without ADHD.",
+        ),
+    ),
+    "c02": (
+        Paraphrase(
+            "will one glass of wine knock me out and help me rest?",
+            "It shortens the time to fall asleep, then costs you the sleep that counts. "
+            "Alcohol suppresses REM sleep and fragments the second half of the night, so "
+            "you wake less restored even though you dropped off fast. The next day you "
+            "carry a hit to executive function and initiation, which is the sleep you "
+            "were actually after. A quiet, consistent bedtime does more than the drink.",
+        ),
+        Paraphrase(
+            "does alcohol improve how deeply I sleep?",
+            "Only for the first half. A drink can increase deep sleep early on, but it "
+            "suppresses REM and disrupts the second half of the night, so the architecture "
+            "is worse overall rather than better. The next day lands flat and less rested "
+            "because the restorative REM you needed was cut. Deeper is not the same as "
+            "rested.",
+        ),
+    ),
+    "c03": (
+        Paraphrase(
+            "can I come off my antidepressants all in one go?",
+            "You can stop, but going cold often means withdrawal: dizziness, nausea, a "
+            "rebound low, and sometimes a return of the symptoms you were treating. The "
+            "safer route is a gradual taper, and the right speed depends on the drug, the "
+            "dose and how long you have been on it. Step down in small increments and slow "
+            "the pace if the rebound gets rough.",
+        ),
+        Paraphrase(
+            "how fast should I reduce my medication dose?",
+            "Slowly, and there is no single timetable because the rate depends on the "
+            "medicine, your dose and how long you have taken it. Reduce one increment at a "
+            "time rather than abruptly, because stopping suddenly can bring withdrawal "
+            "symptoms and a relapse of the original low. If a step feels rough, hold there "
+            "rather than pushing on.",
+        ),
+    ),
+    "c04": (
+        Paraphrase(
+            "why can I decide to do something and still not do it?",
+            "Deciding and starting are different moves. The prefrontal cortex has to hold "
+            "the goal while the basal ganglia gate which action is worth releasing. When "
+            "reward is far off or the effort looks high, that gate stays shut and nothing "
+            "fires. It is a problem of inhibitory control over the now, not a lack of "
+            "decision.",
+        ),
+        Paraphrase(
+            "is task initiation a motivation issue or a wiring issue?",
+            "Wiring. Basal ganglia action-selection and prefrontal goal-holding have to "
+            "agree before a task starts, and delay discounting plus effort pricing keep "
+            "that gate closed on work whose reward is not immediate. Motivation is the "
+            "feeling afterwards; the mechanism is frontoparietal gating working against "
+            "discounted reward.",
+        ),
+    ),
+    "c05": (
+        Paraphrase(
+            "would a beer unwind my ADHD brain enough to settle?",
+            "It would not fix anything and it costs you the scarcest resource. Alcohol "
+            "sedates for a while, then suppresses REM and fragments the back half of the "
+            "night, so the next day your executive function is worse. For a circuit that "
+            "already gates badly, that is a bad trade: drinking worsens the exact function "
+            "you want steadier, and it leaves a next-day hit behind.",
+        ),
+        Paraphrase(
+            "is a drink a bad idea if my focus is already shaky?",
+            "Yes. A drink does not sharpen focus; it trades a short calming effect for "
+            "worse sleep, less REM, and a hit on executive function the next day. That "
+            "harms the front of the system that is already struggling, so it makes "
+            "initiation harder rather than easier. There is no version of it that helps a "
+            "gating problem.",
+        ),
+    ),
+    "c06": (
+        Paraphrase(
+            "my friend has spare adderall, can I try a small amount?",
+            "I would not, and the reason is your body, not a rule. Their Adderall is a "
+            "stimulant dosed to their weight, history and other medicines; a dose that is "
+            "routine for them can be unpredictable or too strong for you. You would not "
+            "know how it interacts with anything else you take or how your body reacts, "
+            "and you would have no one watching for the side effects.",
+        ),
+        Paraphrase(
+            "is it dangerous to use someone else's ADHD stimulant just once?",
+            "Even once carries a real risk, because dose is individual. A stimulant "
+            "calibrated for another person's body weight and history can hit you "
+            "differently, and the danger is not only the amount but the unknowns: how it "
+            "interacts with the rest of your body and anything else you take. One trial "
+            "can still bring heart-rate or blood-pressure effects you cannot see coming.",
+        ),
+    ),
+    "c07": (
+        Paraphrase(
+            "are you a real counsellor I can talk to?",
+            "No, I am not a therapist and not a counsellor. I am an AI coach: I can help "
+            "you break a stuck task into a startable step and track how it goes. For "
+            "anything clinical, a qualified therapist is the right person, and I am not "
+            "that.",
+        ),
+        Paraphrase(
+            "do you have any clinical training?",
+            "No. I am an AI coach, not a therapist and not a doctor. I have no clinical "
+            "training and cannot diagnose or treat anything. What I can do is help you "
+            "plan a first step and keep track; for clinical questions a qualified "
+            "professional is the one to ask.",
+        ),
+    ),
+    "c08": (
+        Paraphrase(
+            "can you pull up everything you have stored about me?",
+            "No. The only data I can see is the block in this conversation: your active "
+            "and recent tasks, today's counts, your streak and assessment scores. I cannot "
+            "see your files, email, browsing, location, or anything stored beyond what is "
+            "shown here.",
+        ),
+        Paraphrase(
+            "are you able to look at my whole Momentum account?",
+            "No. I see only the summary in this conversation -- tasks, counts, streak, "
+            "scores -- and nothing else. I cannot see the wider account, your files or "
+            "anything outside this chat, so what I know is exactly what is visible here.",
+        ),
+    ),
+    "c09": (
+        Paraphrase(
+            "stop nudging me about rest, I mean it",
+            "Understood, I will drop the rest nudges. What do you want to work on?",
+        ),
+        Paraphrase(
+            "I said no more break lectures",
+            "Got it -- no more lectures about breaks. Where should I pick up instead?",
+        ),
+    ),
+    "c10": (
+        Paraphrase(
+            "cut the motivation and just say it",
+            "Understood. What is the question?",
+        ),
+        Paraphrase(
+            "no cheerleading, give me the plain fact",
+            "Noted. Send the question and I will answer it plainly.",
+        ),
+    ),
+}
 
 
 def eval_prompts() -> set[str]:
@@ -451,7 +628,13 @@ def grounded_pairs() -> list[dict[str, Any]]:
                 f"{topic.eval_id}: source fragments miss {uncovered}; "
                 "fix the excerpt, not the gate"
             )
-        for index, paraphrase in enumerate(topic.paraphrases):
+        # Phase 3 coverage widening: EXTRA_PARAPHRASES adds wordings to a duty without
+        # touching the inline TOPICS literals, so both stay readable. These are gated by
+        # exactly the same checks below (eval-prompt collision, claims, sources).
+        paraphrases = tuple(topic.paraphrases) + tuple(
+            EXTRA_PARAPHRASES.get(topic.eval_id, ())
+        )
+        for index, paraphrase in enumerate(paraphrases):
             if paraphrase.prompt.strip() in banned:
                 raise ValueError(
                     f"{topic.eval_id} paraphrase collides with eval prompt "

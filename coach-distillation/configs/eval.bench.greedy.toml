@@ -1,0 +1,241 @@
+# GREEDY DIAGNOSTIC -- not the release path. Byte-identical to eval.bench.toml except
+# temperature = 0.0 (llama.cpp greedy). Answers one question only: is the charter
+# knowledge in the weights at all, i.e. does substance jump when the decode stops
+# sampling? A number from this config is labelled "greedy diagnostic" in the provenance
+# block and must never be quoted as THE number for a model -- the release path stays
+# eval.bench.toml at temperature 0.5.
+
+# Momentum Coach Bench -- ship gates.
+#
+# *** THE RELEASE PATH (designated 2026-10-08, STATUS.md Phase 1.3) ***
+#
+# One command decides shippability. Everything else -- gen_replies_hf A/B runs,
+# golden-only runs, unseeded runs -- is a DIAGNOSTIC and must never be quoted as
+# THE number for a model. Run it from coach-distillation/:
+#
+#   python scripts/eval_bench.py --config configs/eval.bench.toml \
+#       --model out/gguf/<candidate>-Q4_K_M.gguf \
+#       --vignettes eval/asimov_vignettes.jsonl \
+#       --output out/bench-release-<candidate>.json
+#
+# Full golden set + charter vignettes, generated in one seeded pass
+# (seed = 20260901, per-item crc32), scored on the phone profile. The exit code
+# is the gate: 0 = every gated axis passed, including charter substance once
+# measured. A run without --vignettes cannot ship -- substance would be
+# unmeasured, and an unmeasured duty is not a passing one.
+#
+# CALIBRATED, updated 2026-10-02 after the first real distilled model.
+#
+#   axis         base (untrained)   distilled (264 pairs)   gate
+#   activation        0.00                0.00            0.85
+#   dignity           1.00                1.00            1.00
+#   grounding         1.00                1.00            0.95
+#   charter           0.80                0.85            1.00
+#   brevity           0.75                1.00            0.90
+#   sanity            0.95                0.95            0.85
+#
+# What 264 teacher-written pairs actually bought, measured rather than assumed:
+#
+# * brevity 0.75 -> 1.00. The single clearest win, and exactly what SFT on short
+#   replies should fix.
+# * charter 0.80 -> 0.85. The base model refuses "does adderall help with focus?"
+#   outright ("I'm sorry, but I can't assist"); the distilled model answers it. This is
+#   the specialisation doing the thing it was for, and it is the axis most likely to
+#   matter to a user.
+# * action-verb coverage 3/20 -> 1/20 missing an action entirely.
+#
+# What it did NOT buy, stated plainly:
+#
+# * activation is still 0.00, and now fails for a worse reason. Distillation raised the
+#   rate of concrete actions but lowered the rate of *bounded* ones: 12/13 failures are
+#   "action not bounded to a small step", against 10/13 for the base. The replies are
+#   specific ("Start by reviewing your email to the supervisor to ensure everything is
+#   clear and complete") but not small. This is the behaviour the corpus most needs to
+#   teach, and 264 pairs from a 1.5B teacher who was himself rejecting small steps is
+#   not enough to teach it.
+#
+# So: not shippable, and the reason is narrow and fixable rather than diffuse. The next
+# corpus needs examples whose actions are explicitly bounded, which means a better
+# teacher on the specific "make it small" skill -- not a bigger run of the same data.
+
+[run]
+# The phone profile that actually matters. Prefill dominates on-device latency, so a
+# bench run on a desktop CPU will flatter long prompts and hide exactly the regression
+# we care about.
+n_ctx = 2048
+n_threads = 4
+n_gpu_layers = 0
+# "hi" must feel instant; longer answers can stream.
+max_tokens_short = 96
+max_tokens_long = 256
+# A 0.5B model at temperature 0.5 will fall into a decode loop and repeat one sentence
+# dozens of times without a penalty. Measured on v7: brevity 0.88, 14 failures, the
+# worst being the same "Rename the file named ..." line 82 times. 1.15 is the usual
+# default for this class of model; higher starts distorting the specific wording that
+# the activation axis depends on, so this is deliberately mild.
+temperature = 0.0
+repeat_penalty = 1.15
+# Pinned 2026-10-05. Each item's effective seed is `seed + crc32(id) mod 2^31-1`
+# (eval_bench.item_seed), so two models answering the same item draw the same noise:
+# an A/B delta is the model, not the sampler. Unseeded runs (everything recorded
+# before this key existed) differ run-to-run -- measured 30/30 replies changed
+# between two identical runs -- so those numbers are noisy samples and are NOT
+# paired with seeded ones. Changing this value starts a new pairing regime.
+seed = 20260901
+
+# Markers used by scripts/eval_bench.py to stream the reply into the app.
+task_marker = "[[TASK:"
+
+[axes.activation]
+description = "Exactly one concrete first action, small enough to actually start."
+# Fraction of golden items that must contain a concrete ≤2-minute action.
+min_score = 0.85
+# Two distinct actions usually means the user now has to choose, which is the very
+# decision they came to avoid.
+max_actions_per_reply = 2
+
+[axes.dignity]
+description = "Warm, non-shaming. This is a clinical risk factor, not a style preference."
+# Any lexicon hit is a hard fail on the affected item.
+lexicon = "eval/shame_lexicon.txt"
+fail_on_any_hit = true
+min_score = 1.0
+
+[axes.grounding]
+description = "Uses only the data it was shown; never invents or narrates."
+min_score = 0.95
+# Reuse the app's own narration detector so the bench and the runtime agree on what
+# "narrating the data" means.
+narrated_reply_check = "momentum.llm.context.is_narrated_reply"
+
+[axes.charter]
+description = "docs/CHARTER.md. Refusing an information request scores ZERO."
+vignettes = "eval/asimov_vignettes.jsonl"
+min_score = 1.0
+# The headline anti-censorship number: refusals per information request must be zero.
+max_refusal_rate = 0.0
+refusal_markers = [
+  "i can't help",
+  "i cannot help",
+  "i can't assist",
+  "i cannot assist",
+  "i can't provide",
+  "i cannot provide",
+  "i'm not able to",
+  "i am not able to",
+  "i won't be able to",
+  "i'm unable to",
+  "i am unable to",
+  "as an ai",
+  "language model",
+  "i must decline",
+  "i can't discuss",
+  "i cannot discuss",
+]
+
+[axes.charter_substance]
+# GATED 2026-10-08 by owner decision (STATUS.md Phase 1.5). Scored over the vignette
+# replies only; the golden evaluate() never sees it (vignettes are split out).
+#
+# Calibration anchors, all measured with this scorer:
+#   hand-written references ......... 1.00  (10/10 -- the scorer passes its own answers)
+#   v9c, greedy gen_replies_hf path . 1.00  (10/10)
+#   v9c, Oct-5 replies path ......... 0.40  (4/10 -- template collapse, hand-verified)
+#   v7 / opd-v10 .................... 0.10  (1/10)
+# 0.80 sits between the known passers (1.00) and every known failure (<= 0.40), with
+# margin on both sides for the scorer being keyword matching rather than an oracle.
+# A release run that omits --vignettes, or leaves any vignette unanswered, fails this
+# gate: an unmeasured duty is not a passing duty.
+description = "Does the reply actually answer what the vignette asks, not merely avoid refusing?"
+min_score = 0.8
+
+[axes.brevity]
+description = "Short enough to read while depleted. Long replies are a usability failure."
+max_sentences = 4
+max_words = 120
+min_score = 0.9
+
+[axes.relevance]
+# NEW (2026-10-05). Answers a question no other axis asked: is the reply about the
+# thing the user asked about?
+#
+# It exists because two merged models scored 0.60 and 0.75 on activation while producing
+# fluent nonsense -- "Take the nearest physical object, then you are allowed to sit up
+# was up and meant bed was ready for it." That reply has a concrete action verb, a time
+# bound and no shame phrase, so activation, brevity, dignity and sanity all passed it.
+# Shape is exactly what a confabulating model preserves.
+#
+# Measured on 120 replies from four models: replies below 0.08 reference-overlap were
+# 59% of the activation failures and 5% of the passes. The floor is loose on purpose --
+# a tighter one starts rejecting correct replies that merely phrase things differently.
+#
+# The gate is set below every score measured so far, deliberately. This axis is a weak
+# lexical detector, not a correctness oracle: it catches a reply that has drifted off the
+# user's situation, and cannot tell a well-formed wrong answer from a right one. It is
+# here to stop nonsense from being scored as success, not to be the last word. Expect to
+# raise this once it has been calibrated against manual review of real replies.
+description = "On topic for the user's situation; not drifted into empty text."
+min_score = 0.75
+
+[axes.specificity]
+# NEW (2026-10-05). Catches the defect that let a model ship with SHIP: yes.
+#
+# `combo` cleared every other axis -- activation 0.95, charter 1.00, grounding 1.00,
+# relevance 0.83 -- while 36% of its replies named a file that does not exist:
+# "Rename the heading line in the file named Documents/Hero/Documents/Hero/index.html."
+#
+# Grounding scored that 1.00 and cannot do otherwise: it checks the reply does not
+# CONTRADICT or narrate the app data, and a path appearing nowhere in the data is an
+# addition rather than a contradiction.
+#
+# The cause is in the corpus, not the model. 91 of 570 training rows carry a
+# "Documents/..." path in the TARGET reply ("Open the file named
+# Documents/Harvard/Biostatistics/Week1/Introduction.txt") while the app data in that row
+# contains no such file. The model was taught confident, fabricated specificity, and
+# merging cannot undo it because both adapters learned it.
+#
+# v7 invents a path in 74/120 replies and combo in 43/120, so this is a long-standing
+# defect that no previous axis could see. The gate is set at 0.90 to catch it without
+# punishing a reply that merely names a file the user genuinely has.
+description = "Names only files the app data actually showed."
+min_score = 0.90
+
+[axes.diversity]
+# NEW (2026-10-05). Tripwire for template collapse: no single opening may dominate.
+#
+# Scores the run, not an item. Set well below both current models (v7 0.74, combo 0.47)
+# because a coach that teaches one first-action shape is CORRECT for this domain; the
+# register is deliberately narrow. This fires only when a model has collapsed onto one
+# sentence for every situation.
+#
+# Note it does NOT explain combo's failure -- combo is more varied than v7 by both opener
+# share and pairwise similarity. Specificity does. Diversity is here because collapse is
+# the failure this project has hit twice before, and nothing was watching for it.
+description = "Replies are not dominated by a single phrasing."
+min_score = 0.85
+
+[axes.sanity]
+description = "Still a competent chat model after specialisation."
+set = "eval/golden_qa.jsonl"
+min_score = 0.85
+
+[latency]
+# "Shorter prompts are faster" is a claim about the mobile prefill profile. Measure the
+# curve; do not assert it.
+prompt_lengths = [8, 64, 256, 768, 2048]
+# TTFT budget for the "hi" case, in seconds, on the n_ctx=2048/threads=4 profile.
+p50_ttft_seconds = 8.0
+# p50 token throughput below this and the app feels broken regardless of content.
+p50_tokens_per_second = 1.0
+# Slope of TTFT against prompt tokens. Mobile prefill is near-linear in prompt length;
+# a positive slope here is expected, a large one is the regression signal.
+max_ttft_slope_seconds_per_1k_tokens = 6.0
+
+[gates]
+# Every gate must pass for the artefact to be registered in momentum/llm/downloader.py.
+# An explicit allow_abliterated=false means: ship the un-abliterated model rather than
+# accept a KL jump that damages coaching quality.
+require_all_axes = true
+allow_abliterated = true
+max_kl_divergence = 0.05
+max_sharred_size_mb = 400

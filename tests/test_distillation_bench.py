@@ -2902,6 +2902,102 @@ def test_opd_v10_config_matches_the_sft_baseline_on_shared_settings(opd):
     assert "7B" in v10.teacher_model
 
 
+def test_v12_config_matches_v9c_on_lora_and_seed():
+    """v12 changes the corpus, nothing else.
+
+    The supervised charter-coverage retrain (configs/retrain.v12.toml) must carry v9c's
+    LoRA settings and seed byte-identically, or any bench difference is confounded --
+    the same rule that pins v10 to v9c, applied to the corpus lever.
+    """
+    import tomllib
+
+    v9c = tomllib.loads((CONFIGS / "retrain.v9c.toml").read_text(encoding="utf-8"))[
+        "train"
+    ]
+    v12 = tomllib.loads((CONFIGS / "retrain.v12.toml").read_text(encoding="utf-8"))[
+        "train"
+    ]
+    for key in (
+        "method",
+        "lora_r",
+        "lora_alpha",
+        "lora_dropout",
+        "target_modules",
+        "learning_rate",
+        "warmup_ratio",
+        "epochs",
+        "per_device_batch_size",
+        "gradient_accumulation_steps",
+        "max_seq_len",
+        "seed",
+        "bf16",
+        "gradient_checkpointing",
+    ):
+        assert v12[key] == v9c[key], f"v12 changed {key} from the v9c baseline"
+
+
+def test_v12_corpus_holds_out_the_eval_vignettes():
+    """The gated substance axis must not be scored on training data.
+
+    v12 is judged by charter_substance (min_score 0.8) on
+    eval/asimov_vignettes.jsonl. If the training corpus contains those exact prompts the
+    gate passes by memorisation and the number means nothing -- the same trap v9c's
+    "10/10 greedy substance" fell into (its charter rows WERE the eval prompts; the
+    replay's 10 dropped collisions are the receipt). ground_charter.py --no-references
+    excludes them; this pins that the config's corpus really is the held-out build.
+    """
+    import tomllib
+
+    cfg = tomllib.loads((CONFIGS / "retrain.v12.toml").read_text(encoding="utf-8"))
+    corpus_path = ROOT / "coach-distillation" / cfg["seeds"]["output"]
+    assert corpus_path.is_file(), f"v12 corpus missing: {corpus_path}"
+    train_prompts = {
+        str(json.loads(line).get("prompt", "")).strip()
+        for line in corpus_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    vignettes = [
+        json.loads(line)
+        for line in (EVAL / "asimov_vignettes.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert vignettes, "no vignettes to hold out against"
+    leaked = sorted({v["prompt"].strip() for v in vignettes} & train_prompts)
+    assert not leaked, (
+        "eval vignette prompts are in the v12 training corpus, so charter_substance "
+        f"would be scored on training data: {leaked}. Rebuild the corpus with "
+        "ground_charter.py --no-references."
+    )
+
+
+def test_decode_provenance_labels_greedy_runs_as_diagnostics(bench):
+    """A temperature-0 run must not wear the app-faithful label.
+
+    The whole point of the provenance block is that a substance number cannot be read
+    without its decode. The app decodes at 0.5; a temperature-0 --model run answers the
+    narrower "is the knowledge in the weights" question and must be labelled as the
+    diagnostic it is, or the 10/10-vs-4/10 trap reopens with a new costume.
+    """
+    from types import SimpleNamespace
+
+    args = SimpleNamespace(model="out/gguf/x-Q4_K_M.gguf", replies=None)
+    sampled = bench._decode_provenance(args, {"run": {"temperature": 0.5}})
+    assert sampled["path"] == "app-faithful sampled"
+    assert sampled["temperature"] == 0.5
+
+    greedy = bench._decode_provenance(args, {"run": {"temperature": 0.0}})
+    assert greedy["path"] == "greedy diagnostic"
+    assert greedy["temperature"] == 0.0
+
+    # The --replies branch stays opaque regardless of config: eval_bench did not decode.
+    replies = bench._decode_provenance(
+        SimpleNamespace(model=None, replies="out/replies.jsonl"), {"run": {}}
+    )
+    assert replies["path"] == "opaque to eval_bench"
+
+
 def test_teacher_aligned_selection_keeps_prompts_the_teacher_can_opine_on(opd):
     """Prompts where teacher and student agree carry no correction to make.
 
