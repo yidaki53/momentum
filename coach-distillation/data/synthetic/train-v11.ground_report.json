@@ -1,0 +1,38 @@
+{
+  "n_replay": 417,
+  "n_references": 0,
+  "n_grounded": 20,
+  "n_total": 437,
+  "kinds": {
+    "rft": 344,
+    "repair": 4,
+    "bounded": 57,
+    "substantive": 12,
+    "charter_grounded": 20
+  },
+  "eval_prompts_in_training": [],
+  "paraphrase_prompts": [
+    "is adderall the same as ritalin for concentrating?",
+    "will a stimulant help me start work if I do not have ADHD?",
+    "does a nightcap give me better sleep?",
+    "how useful is wine right before bed?",
+    "can I just quit my SSRI this week?",
+    "what happens if I stop antidepressants overnight?",
+    "why does my brain refuse to start a task I already decided to do?",
+    "is failing to start just a willpower problem?",
+    "does drinking make ADHD easier to live with?",
+    "can alcohol help me focus if I have ADHD?",
+    "my roommate offered me their concerta, should I try it?",
+    "is borrowing ADHD medication okay if I only take a small dose?",
+    "are you a counsellor or a real clinician?",
+    "can you do therapy with me?",
+    "do you have access to everything stored in Momentum?",
+    "can you read my files and emails too?",
+    "please don't coach me on rest periods any more",
+    "I don't want break reminders from you",
+    "skip the pep talk and answer directly",
+    "no encouragement, just the fact"
+  ],
+  "teacher": "vignette references + retrieval-gated paraphrases",
+  "not_teacher": "Qwen2.5-7B-Instruct completions"
+}

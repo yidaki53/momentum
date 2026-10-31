@@ -1,0 +1,86 @@
+# v13: Phase 3 deeper charter coverage. Same v9c recipe, train-v12.jsonl corpus
+# (40 grounded paraphrases over 10 duties = 4 wordings each). The 10 eval vignette
+# prompts are NOT in training (--no-references; collision-checked paraphrases).
+# charter_substance stays a GATED axis (min_score 0.8).
+#
+# CHARTER SHARE. v9c's corpus trains 645 rows with 90 charter rows, a 14.0% charter
+# share, and scored charter 1.00; v8 collapsed activation at ~20% charter weight.
+# v12 sat at 100/655 = 15.3% and held charter. v13 adds 20 wordings (40 grounded x
+# extra 4 copies = 200 charter rows) which would push 220/655 = 33.6% -- into the
+# collapse regime. So charter_grounded is cut 4 -> 3 (40 x 4 total = 160 rows,
+# 160/655 = 24% -- still ABOVE v8, rejected) ... instead held at extra 2:
+# 40 x 3 = 120 charter rows, total 535 + 120 = ... recompute at build time and
+# record the measured share in the v13 run notes. Do NOT ship a config whose
+# measured charter share exceeds 16%.
+#
+# LoRA settings are byte-identical to v9c (configs/retrain.v9c.toml) so the only
+# variable is the corpus. tests/test_distillation_bench.py::test_v12_config_matches
+# _v9c_on_lora_and_seed is extended to v13; do not diverge them.
+
+[student]
+# Exactly what the app already ships today. Same tokenizer, same quantisation family.
+model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+revision = "main"
+registry_name = "momentum-qwen05b"
+
+[teacher]
+# Unused by train_distill.py (no KD tier -- see its module docstring). Kept identical so
+# config diffs stay readable against the v9c lineage.
+model_id = "Qwen/Qwen2.5-7B-Instruct"
+revision = "main"
+temperature = 1.0
+
+[train]
+method = "lora"
+lora_r = 32
+lora_alpha = 64
+lora_dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+learning_rate = 2e-4
+warmup_ratio = 0.03
+epochs = 3
+per_device_batch_size = 2
+gradient_accumulation_steps = 8
+max_seq_len = 640
+seed = 20260901
+bf16 = true
+output_dir = "out/lora-v13"
+# 12GB card: the logits tensor, not the weights, is what runs out of memory.
+gradient_checkpointing = true
+
+[train.repeat_kinds]
+bounded = 2
+substantive = 2
+charter_grounded = 2
+
+[merge]
+output_dir = "out/student-v13"
+
+[abliterate]
+# Inert for train_distill.py (it stops after merge and prints the optional next step).
+# Heretic has never been run; this means "permitted", not "run it" -- see STATUS.md Gap 3.
+enabled = true
+output_dir = "out/student-v13-abliterated"
+config = "configs/heretic.momentum.toml"
+
+[quantize]
+primary = "Q4_K_M"
+candidates = ["Q4_K_M", "Q3_K_M", "IQ2_XXS"]
+output_dir = "out/gguf"
+
+[seeds]
+# This corpus is built by scripts/ground_charter.py, NOT build_distill_pairs.py. The
+# include_* flags below are the v9c lineage's knobs and are inert for this run; they are
+# kept only so a future regeneration does not silently diverge from the documented recipe.
+# Regenerate with:
+#   python scripts/ground_charter.py --no-references \
+#     --out data/synthetic/train-v12.jsonl \
+#     --report data/synthetic/train-v12.ground_report.json
+output = "data/synthetic/train-v12.jsonl"
+include_repair_pairs = true
+include_charter_pairs = true
+include_bounded_action_pairs = true
+include_substantive_pairs = true
+include_multiturn_episodes = true
+turns_min = 3
+turns_max = 6
