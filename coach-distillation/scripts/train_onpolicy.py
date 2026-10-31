@@ -77,6 +77,7 @@ import argparse
 import json
 import logging
 import math
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -274,6 +275,15 @@ class OPDConfig:
     max_new_tokens: int = 160
     rollouts_per_prompt: int = 1
     temperature: float = 1.0
+    # Nucleus sampling for rollouts. top_p=1.0 reproduces the v10/v11 tail exactly
+    # (full distribution); lowering it truncates the degenerate long tail that produces
+    # tokenizer-corruption ("十个") and fabricated-score garbage before the teacher ever
+    # scores it. do_sample=True is still required -- greedy gives one reply per prompt
+    # and the student never visits its own mistakes.
+    top_p: float = 1.0
+    # HF repetition_penalty; 1.0 is the no-op default. >1.0 discourages the loop
+    # collapse the raw 7B teacher audit already flagged as a template failure.
+    repetition_penalty: float = 1.0
     seed: int = 20260901
     # Prompt selection. Li et al. keep prompts where the teacher has a strong
     # preference; a prompt the teacher is indifferent about carries no signal and, on
@@ -364,6 +374,113 @@ def select_teacher_aligned_prompts(
     return kept, {"kept": len(kept), "dropped": dropped}
 
 
+# --- rollout quality gate ---------------------------------------------------
+
+# A model-free check on a sampled rollout, run BEFORE the teacher scores it. The
+# measured smoke run (out/opd-smoke) produced three failure shapes that no amount of
+# teacher signal can repair, and each is detectable with regexes and no model:
+#
+#   * tokenizer corruption -- CJK codepoints inside an English reply ("第一个");
+#   * a fabricated numeric score -- the reply asserts "25/70" when the prompt's
+#     user_data grounds the score at 44/70. Training the teacher's preference on a
+#     fabricated score just teaches the student to fabricate more confidently.
+#   * repetition collapse -- v10's "the the the ..." (distinct-word ratio ~0.007).
+#
+# The gate DROPS these rollouts rather than trusting the teacher to penalise them. The
+# 7B teacher scored 2/10 on the charter and is demonstrably capable of rewarding a
+# confidently-wrong answer, so it is not a safe arbiter of "is this garbage".
+
+# CJK Unified Ideographs + kana + compatibility ideographs. The English coach has no
+# reason to emit any of these; their presence means the tokenizer/byte-decode went wrong.
+_CJK_RE = re.compile(
+    "["
+    "\u3040-\u30ff"  # hiragana / katakana
+    "\u3400-\u4dbf"  # CJK ext A
+    "\u4e00-\u9fff"  # CJK unified ideographs
+    "\uf900-\ufaff"  # CJK compatibility ideographs
+    "]"
+)
+
+# A fraction or "N out of M" claim, e.g. "44/70" or "44 out of 70".
+_SCORE_RE = re.compile(r"(\d+)\s*(?:/|out of)\s*(\d+)", re.IGNORECASE)
+
+
+def has_tokenizer_corruption(text: str) -> bool:
+    """True if the reply contains CJK/kana codepoints an English coach should never emit.
+
+    This is the "第一个十个" failure seen in the measured smoke run. It is corruption of
+    the decode, not a content mistake, so there is nothing for the teacher to correct --
+    the right move is to drop the sample, exactly as an empty rollout is dropped.
+    """
+    return bool(_CJK_RE.search(text))
+
+
+def grounded_scores(user_data: str) -> set[tuple[int, int]]:
+    """The (numerator, denominator) pairs the prompt's user_data actually grounds.
+
+    ``user_data`` is the block the app injects (tasks, activity, BDEFS "44/70"). A score
+    the reply invents is a fabrication only if it contradicts one of these; a bare number
+    with no grounding to contradict is not flagged, because we cannot know it is wrong.
+    """
+    return {(int(num), int(den)) for num, den in _SCORE_RE.findall(user_data or "")}
+
+
+def fabricated_score(text: str, user_data: str) -> str | None:
+    """Return a description of a fabricated score, or None if the reply is clean.
+
+    A reply that states "25/70" when the grounded BDEFS is 44/70 is inventing a
+    measurement. The measured g04 rollout did exactly this. We only flag a fraction whose
+    *denominator* matches a grounded one but whose numerator differs: same scale, wrong
+    value. That keeps false positives down -- "2 out of 3 tabs" is not a BDEFS score.
+    """
+    grounded = grounded_scores(user_data)
+    if not grounded:
+        return None
+    grounded_by_den = {den: num for num, den in grounded}
+    for num, den in _SCORE_RE.findall(text):
+        num, den = int(num), int(den)
+        truth = grounded_by_den.get(den)
+        if truth is not None and num != truth:
+            return f"claims {num}/{den} but user_data grounds {truth}/{den}"
+    return None
+
+
+def distinct_word_ratio(text: str) -> float:
+    """Fraction of tokens that are distinct, a cheap repetition-collapse detector.
+
+    v10's collapsed replies were a single repeated token: ratio ~0.007. A healthy coach
+    reply sits well above 0.5. Used as a lower bound so the gate only fires on collapse.
+    """
+    words = text.split()
+    if not words:
+        return 0.0
+    return len(set(words)) / len(words)
+
+
+def rollout_is_usable(
+    text: str, user_data: str, *, min_distinct_ratio: float = 0.3
+) -> str | None:
+    """Return a human-readable rejection reason, or None if the rollout is worth scoring.
+
+    Centralising the three model-free checks here keeps ``rollout_prompts`` readable and
+    makes the policy one testable function. ``min_distinct_ratio`` is deliberately low
+    (0.3) because the measured healthy rollouts sat at 0.63-0.79 and the only thing we
+    need to catch is outright collapse.
+    """
+    if not text.strip():
+        return "empty"
+    if has_tokenizer_corruption(text):
+        return "tokenizer corruption (CJK codepoints in an English reply)"
+    fab = fabricated_score(text, user_data)
+    if fab:
+        return f"fabricated score: {fab}"
+    if distinct_word_ratio(text) < min_distinct_ratio:
+        return (
+            f"repetition collapse (distinct-word ratio {distinct_word_ratio(text):.3f})"
+        )
+    return None
+
+
 # --- rollout and scoring -----------------------------------------------------
 
 
@@ -390,16 +507,29 @@ def rollout_prompts(
     actually reach. ``do_sample=True`` with the configured temperature is required --
     greedy decoding would give one response per prompt and the student would never visit
     the off-distribution states where its mistakes live.
+
+    Each sample is then run through ``rollout_is_usable`` before it is kept. A rollout
+    that is tokenizer-corrupted, fabricates a grounded score, or has collapsed into
+    repetition is dropped rather than scored: the teacher is not a safe judge of "is this
+    garbage" (it scored 2/10 on the charter), and training on a fabricated score teaches
+    the student to fabricate. Dropped rollouts are counted and logged so a batch that
+    shrank is visible instead of silent, matching how empty rollouts are already handled.
     """
     import torch
 
     out: list[dict[str, Any]] = []
+    rejected: dict[str, int] = {}
     for row in rows:
         messages = to_messages(row)
         prompt_text = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
         encoded = tokenizer(prompt_text, return_tensors="pt").to(student.device)
+        generate_kwargs: dict[str, Any] = {}
+        if cfg.top_p < 1.0:
+            generate_kwargs["top_p"] = cfg.top_p
+        if cfg.repetition_penalty != 1.0:
+            generate_kwargs["repetition_penalty"] = cfg.repetition_penalty
         with torch.no_grad():
             generated = student.generate(
                 **encoded,
@@ -408,15 +538,28 @@ def rollout_prompts(
                 temperature=cfg.temperature,
                 num_return_sequences=cfg.rollouts_per_prompt,
                 pad_token_id=tokenizer.pad_token_id,
+                **generate_kwargs,
             )
+        user_data = str(row.get("user_data", ""))
         for sample in generated:
             new_tokens = sample[encoded["input_ids"].shape[1] :]
             text = tokenizer.decode(new_tokens, skip_special_tokens=True)
-            if not text.strip():
-                # An empty rollout has no tokens to score and contributes a zero-length
-                # sequence. Dropping it silently would look like fewer prompts.
+            reason = rollout_is_usable(text, user_data)
+            if reason is not None:
+                rejected[reason] = rejected.get(reason, 0) + 1
                 continue
             out.append({**row, "rollout": text.strip()})
+    if rejected:
+        # Surface the gate's work: a batch that dropped a third of its rollouts is a
+        # fact about the student/temperature, and it should not vanish into the log.
+        summary = ", ".join(
+            f"{count}x {why}" for why, count in sorted(rejected.items())
+        )
+        log.warning(
+            "quality gate dropped %d rollout(s): %s",
+            sum(rejected.values()),
+            summary,
+        )
     return out
 
 
@@ -438,6 +581,7 @@ def score_rollouts(
     import torch
 
     scored: list[dict[str, Any]] = []
+    dropped = 0
     for row in rollouts:
         messages = to_messages({**row, "response": row["rollout"]})
         full_text = tokenizer.apply_chat_template(
@@ -451,6 +595,13 @@ def score_rollouts(
         ]
         prompt_len = len(tokenizer(prompt_text, add_special_tokens=False)["input_ids"])
         if len(full_ids) <= prompt_len:
+            # The reply is entirely truncated: `max_seq_len` cut the sequence at or
+            # below the end of the prompt, so there is no reply token left to score.
+            # This is a config error, not a data error -- and it used to drop every
+            # rollout in SILENCE, then surface as "scored 0 rollouts" only after a
+            # full 7B teacher load, and finally as a confusing "scored.jsonl is
+            # empty" from phase_train. Raise here, before any more GPU time is spent.
+            dropped += 1
             continue
         ids = torch.tensor([full_ids], device=device)
         with torch.no_grad():
@@ -483,6 +634,21 @@ def score_rollouts(
                 "teacher_logprobs": values,
                 "teacher_advantage": sum(abs(r) for r in rewards) / len(rewards),
             }
+        )
+    if dropped:
+        log.warning(
+            "dropped %d rollout(s): their reply fell entirely outside max_seq_len=%d "
+            "(the prompt alone is longer). This is a config/size problem, not bad data.",
+            dropped,
+            max_seq_len,
+        )
+    if not scored:
+        raise RuntimeError(
+            f"All {len(rollouts)} rollout(s) were dropped because their reply was "
+            f"entirely truncated at max_seq_len={max_seq_len}. The prompt alone exceeds "
+            "the sequence budget, so there is no reply token to score. Raise max_seq_len "
+            "(v10 uses 640); do not treat this as empty data -- the teacher loaded and "
+            "scored nothing, and that is a wasted load the old code swallowed."
         )
     return scored
 
@@ -1128,6 +1294,48 @@ def phase_score(cfg: OPDConfig, rollouts_path: Path, out: Path) -> Path:
     return path
 
 
+def _log_cuda_holders(tag: str) -> None:
+    """TEMPORARY diagnostic (smoke5): name the live CUDA tensors holding VRAM.
+
+    Smoke4 parked the student yet still showed 3549MB allocated / 5966MB reserved
+    (driver free 6299MB) -- the child starved. total - reserved ~= driver free, so
+    the missing memory is PyTorch-held, not external. This walks live tensors so
+    the fix targets the actual holder instead of a hypothesis. One-shot, logged,
+    removed once the holder is identified and fixed.
+    """
+    import gc
+
+    import torch
+
+    if not torch.cuda.is_available():
+        return
+    holders: dict[tuple, list] = {}
+    try:
+        for obj in gc.get_objects():
+            if torch.is_tensor(obj) and obj.is_cuda:
+                try:
+                    key = (str(tuple(obj.shape)), str(obj.dtype))
+                    entry = holders.setdefault(key, [0, 0])
+                    entry[0] += 1
+                    entry[1] += obj.nelement() * obj.element_size()
+                except Exception:
+                    continue
+    except Exception as exc:  # never let a diagnostic break a run
+        log.warning("[diag] cuda holder walk failed: %s", exc)
+        return
+    top = sorted(holders.items(), key=lambda kv: -kv[1][1])[:12]
+    total = sum(mb for _, (_, mb) in top)
+    log.info(
+        "[diag %s] live CUDA tensors: %d distinct shapes, top-12 hold %.0f MB: %s",
+        tag,
+        len(holders),
+        total / 1e6,
+        "; ".join(
+            f"{n}x{shape}/{dtype}={mb / 1e6:.0f}MB" for (shape, dtype), (n, mb) in top
+        ),
+    )
+
+
 def _make_resampler(
     cfg: OPDConfig,
     rows: list[dict[str, Any]],
@@ -1166,8 +1374,79 @@ def _make_resampler(
     refresh_dir = out / "refresh-adapter"
 
     def _resample(model: Any) -> list[dict[str, Any]]:
+        import torch
+
         model.save_pretrained(refresh_dir)
         log.info("persisted live adapter to %s for the refresh cycle", refresh_dir)
+
+        # Free the GPU for the child before it runs. The parent is idle for the whole
+        # subprocess, but it is NOT idle in VRAM: epoch 1's backward pass left the CUDA
+        # caching allocator holding reserved blocks, and the live student sits on top of
+        # that. The child loads the 7B teacher with device_map="auto", which reads FREE
+        # GPU memory to decide placement -- so it sees the parent's reserved blocks as
+        # gone, concludes the teacher cannot fit, and offloads layers to CPU, which
+        # bitsandbytes rejects with "some modules are dispatched on the CPU or the disk".
+        #
+        # Moving the student to CPU and emptying the cache returns both the live weights
+        # and the reserved blocks to the driver, so the child sees the whole card.
+        #
+        # The optimizer survives this: nn.Module.to moves each Parameter's storage in
+        # place while keeping the Parameter object identity, and AdamW's state was
+        # created on the original device and is never touched here -- so after the model
+        # is moved back, params and optimizer state are on the same device again.
+        original_device = next(
+            (p.device for p in model.parameters() if p.device.type != "meta"), None
+        )
+        parked = False
+        if original_device is not None and original_device.type == "cuda":
+            model.to("cpu")
+            # gc FIRST, then empty_cache. The 25 update-loop iterations leave dead
+            # Python objects referencing GPU temporaries; without the sweep those
+            # references are still alive, so the blocks stay "allocated" and
+            # empty_cache cannot return them. Measured 2026-10-08: parking WITHOUT
+            # the sweep left 3549MB allocated / 5966MB reserved (driver free 6299MB),
+            # which starved the child's 4.3GB teacher.
+            import gc
+
+            gc.collect()
+            _log_cuda_holders("post-epoch1-parked")
+            torch.cuda.empty_cache()
+            parked = True
+            # Measure, don't theorise: this is the exact free-memory figure the child's
+            # device_map="auto" will read to decide teacher placement. If a refresh ever
+            # fails again with "some modules dispatched on CPU/disk", this line is the
+            # first thing to look at -- the 4-bit 7B teacher needs ~4.3GB, so anything
+            # under ~5GB free here is the cause, not a mystery.
+            #
+            # The three numbers discriminate WHERE the missing memory lives:
+            #   * driver free  ~= total - pytorch_reserved  -> PyTorch holds it
+            #     (optimizer state, grads, activation caches the student kept). The fix
+            #     is on the PyTorch side: move the optimizer state to CPU too, or
+            #     checkpoint/release more in phase_train.
+            #   * driver free  << total - pytorch_reserved  -> something OUTSIDE the
+            #     caching allocator holds it. Leading suspect: bitsandbytes/CUDA
+            #     allocations from the 7B teacher phase surviving _release (bnb
+            #     allocates outside PyTorch's allocator, so empty_cache cannot touch
+            #     it). The fix is then in _release, not here.
+            # Measured 2026-10-08 (smoke4): driver free was 6299MB, allocated 3549MB,
+            # reserved 5966MB. total - reserved (6571MB) ~= driver free (6299MB), so
+            # the missing memory was PyTorch-held, NOT external: dead references from
+            # the update loop kept blocks allocated through the parking. FIX APPLIED:
+            # gc.collect() before empty_cache(). (A probe without a teacher phase had
+            # predicted ~11495MB -- the ~5GB delta is exactly allocated+reserved here,
+            # so both numbers are reconciled against this one line.)
+            free, total = torch.cuda.mem_get_info()
+            allocated = torch.cuda.memory_allocated()
+            reserved = torch.cuda.memory_reserved()
+            log.info(
+                "parked student on CPU for the refresh cycle; driver free %.0f MB of "
+                "%.0f MB total, PyTorch allocated %.0f MB reserved %.0f MB "
+                "(child loads 7B in 4-bit, ~4300 MB)",
+                free / 1e6,
+                total / 1e6,
+                allocated / 1e6,
+                reserved / 1e6,
+            )
 
         argv = [
             sys.executable,
@@ -1185,16 +1464,23 @@ def _make_resampler(
         # --score-only writes rollouts.jsonl and scored.jsonl into cfg.output_dir,
         # which is `out` -- the same directory this phase is writing to.
         log.info("refresh cycle: %s", " ".join(argv))
-        completed = subprocess.run(argv, capture_output=True, text=True)
-        if completed.returncode != 0:
-            # Never fall back to the stale batch quietly: training on last epoch's
-            # frozen rollouts while the log says "resampled" is how v10 happened.
-            raise RuntimeError(
-                "rollout refresh failed (exit "
-                f"{completed.returncode}); refusing to reuse stale rollouts.\n"
-                f"stdout:\n{completed.stdout[-2000:]}\n"
-                f"stderr:\n{completed.stderr[-2000:]}"
-            )
+        try:
+            completed = subprocess.run(argv, capture_output=True, text=True)
+            if completed.returncode != 0:
+                # Never fall back to the stale batch quietly: training on last epoch's
+                # frozen rollouts while the log says "resampled" is how v10 happened.
+                raise RuntimeError(
+                    "rollout refresh failed (exit "
+                    f"{completed.returncode}); refusing to reuse stale rollouts.\n"
+                    f"stdout:\n{completed.stdout[-2000:]}\n"
+                    f"stderr:\n{completed.stderr[-2000:]}"
+                )
+        finally:
+            # Restore the student even if the child failed, so a caller that catches
+            # this still holds a usable model on its original device.
+            if parked and original_device is not None:
+                model.to(original_device)
+                torch.cuda.empty_cache()
         scored = _read_jsonl(out / "scored.jsonl")
         kept, counts = select_teacher_aligned_prompts(
             scored, cfg.min_teacher_confidence

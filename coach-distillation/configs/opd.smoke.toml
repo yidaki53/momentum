@@ -1,0 +1,67 @@
+# v11 smoke: does per-epoch rollout RESAMPLING work end-to-end, and does the sign
+# distribution stop being ≥80% negative after a refresh?
+#
+# This is the cheap decisive experiment for STATUS.md Phase 2 step 8. It exists to
+# prove the *machinery* before spending GPU hours on the real v11 run:
+#   * the subprocess refresh cycle (teacher cannot be resident with the student in
+#     11.7GB, so `_make_resampler` shells out to `--score-only --cold-start-dir`);
+#   * the epoch loop actually rebuilding its examples from the refreshed rollouts;
+#   * `_warn_if_update_is_net_suppressive` on each refreshed batch.
+#
+# It deliberately does NOT touch configs/retrain.v10.toml, which stays frozen so the
+# v10 collapse (frozen set, 87.95% negative) remains reproducible.
+#
+# Run from coach-distillation/, thermal-guarded:
+#   python scripts/thermal_guard.py --log out/opd-smoke/thermal.csv -- \
+#     python scripts/train_onpolicy.py --config configs/opd.smoke.toml \
+#       --corpus data/synthetic/smoke.jsonl --phase all
+#
+# Judge with eval_bench.py --vignettes, never with this loss.
+
+[student]
+model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+revision = "main"
+registry_name = "momentum-qwen05b"
+
+[teacher]
+model_id = "Qwen/Qwen2.5-7B-Instruct"
+revision = "main"
+temperature = 1.0
+
+[train]
+# LoRA settings identical to v9c deliberately, so the smoke is not confounded.
+epochs = 1
+lora_r = 32
+lora_alpha = 64
+lora_dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+learning_rate = 2e-4
+warmup_ratio = 0.03
+max_seq_len = 640
+seed = 20260901
+bf16 = true
+
+[opd]
+# The measured SFT baseline. Smoke from the student we actually have, not the base.
+cold_start_dir = "out/lora-v9c"
+output_dir = "out/opd-smoke"
+max_new_tokens = 96
+rollouts_per_prompt = 1
+min_teacher_confidence = 0.0
+# Rollout quality: truncate the degenerate temperature-1.0 tail and penalise loops.
+# The measured v11 smoke (before this gate) produced CJK-corruption ("第一个") and a
+# fabricated score ("25/70" when user_data grounds 44/70); a model-free gate now drops
+# those before the teacher scores them. top_p=0.9 + repetition_penalty=1.1 reduce how
+# many such samples the tail produces in the first place.
+top_p = 0.9
+repetition_penalty = 1.1
+use_baseline = false
+advantage_norm = "batch_std"
+max_grad_norm = 1.0
+teacher_load_in_4bit = true
+# Three epochs, resampled before epochs 2 and 3: two refresh cycles, so the sign
+# distribution is measured at three points and the machinery is exercised twice.
+# Deliberately NOT 10 -- opd_epochs=10 on a frozen set is measured to destroy the
+# student; with refresh_rollouts_every=1 the set is rebuilt, which is the point.
+opd_epochs = 3
+refresh_rollouts_every = 1

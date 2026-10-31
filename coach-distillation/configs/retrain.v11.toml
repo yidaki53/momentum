@@ -1,0 +1,47 @@
+# v11: on-policy distillation (GKD) for the 0.5B student, with per-epoch rollout RESAMPLING.
+
+# This is the funded run for STATUS.md Phase 2 steps 6-9. It tests whether the v10
+# collapse is stopped by rebuilding the rollout set between epochs.
+
+[student]
+model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+revision = "main"
+registry_name = "momentum-qwen05b"
+
+[teacher]
+model_id = "Qwen/Qwen2.5-7B-Instruct"
+revision = "main"
+temperature = 1.0
+
+[train]
+# Supervised half. EXACTLY the same LoRA settings as v9c (and v10) so the
+# on-policy comparison is not confounded. Do not change.
+epochs = 1
+lora_r = 32
+lora_alpha = 64
+lora_dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+learning_rate = 2e-4
+warmup_ratio = 0.03
+per_device_batch_size = 2
+gradient_accumulation_steps = 8
+max_seq_len = 640
+seed = 20260901
+bf16 = true
+output_dir = "out/lora-v11"
+gradient_checkpointing = true
+
+[opd]
+# cold_start_dir stays out of the app: nothing in momentum/, mobile/ or the wheel
+# may import coach-distillation; the GGUF is promoted and frozen.
+cold_start_dir = "out/lora-v9c"
+max_new_tokens = 160
+rollouts_per_prompt = 1
+min_teacher_confidence = 0.0
+use_baseline = false
+advantage_norm = "batch_std"
+max_grad_norm = 1.0
+opd_epochs = 4
+output_dir = "out/opd-v11"
+# 1 = rebuild the rollout set before EVERY epoch after the first.
+refresh_rollouts_every = 1

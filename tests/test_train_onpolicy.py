@@ -697,14 +697,37 @@ def _refresh_fixture(tmp_path):
 
 
 class _SavingModel:
-    """Records where the live adapter is written; creates the directory."""
+    """Records where the live adapter is written; creates the directory.
+
+    Also answers ``parameters()`` and ``to()``: the resampler probes the parameter
+    device to decide whether the student has to be parked off the GPU for the child
+    process, so a stub without them would trip over an AttributeError that no real
+    model could ever hit -- and would leave the parking logic untested.
+    """
 
     def __init__(self):
         self.saved: list[Path] = []
+        self.device = torch.device("cpu")
+        self.moved_to: list[object] = []
 
     def save_pretrained(self, path):
         self.saved.append(Path(path))
         Path(path).mkdir(parents=True, exist_ok=True)
+
+    def parameters(self):
+        return iter([_ParamWithDevice(self)])
+
+    def to(self, device):
+        self.moved_to.append(device)
+        self.device = torch.device(device) if isinstance(device, str) else device
+        return self
+
+
+class _ParamWithDevice:
+    """A stand-in Parameter exposing only ``device`` -- all the probe reads."""
+
+    def __init__(self, owner: "_SavingModel"):
+        self.device = owner.device
 
 
 def test_resampler_points_the_child_at_the_live_adapter(opd, tmp_path, monkeypatch):
@@ -885,3 +908,299 @@ def test_train_phase_refuses_to_silently_drop_the_refresh(opd, tmp_path):
     )
     with pytest.raises(RuntimeError, match="needs the corpus rows"):
         opd.phase_train(cfg, scored_path, tmp_path)
+
+
+def test_resampler_frees_the_gpu_for_the_child_then_restores_the_student(
+    opd, tmp_path, monkeypatch
+):
+    """The parent must vacate the GPU, and must put the student back afterwards.
+
+    Measured, not theorised: the first smoke run refreshed while the student was
+    still resident. Epoch 1's backward pass leaves the CUDA caching allocator
+    holding reserved blocks, and the live weights sit on top of that. The child
+    loads the 7B teacher with ``device_map="auto"``, which reads FREE GPU memory to
+    decide placement, so it reads those reserved blocks as unavailable, concludes
+    the teacher does not fit, and offloads layers to CPU -- which bitsandbytes
+    rejects outright ("some modules are dispatched on the CPU or the disk"). The
+    run died with a confusing offload error rather than an OOM.
+
+    The parent is idle for the whole subprocess, so parking the student on CPU and
+    emptying the cache hands the child the entire card.
+
+    Both halves matter and both are pinned here:
+      * the student must be OFF the GPU for the duration of the child, or the next
+        smoke run hits the same offload error;
+      * it must be back on its ORIGINAL device afterwards, including on the failure
+        path, or the next ``opd_update_step`` raises a device mismatch against
+        AdamW's state -- and a caller that catches the RuntimeError still needs a
+        usable model.
+
+    The optimizer survives because ``nn.Module.to`` moves each Parameter's storage
+    in place while keeping the Parameter object identity, so the optimizer's
+    references and its own (unmoved) state still agree afterwards.
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("parking only happens on a CUDA host")
+
+    import subprocess
+
+    rows, config_path, corpus_path = _refresh_fixture(tmp_path)
+    (tmp_path / "scored.jsonl").write_text(
+        json.dumps(
+            {
+                "prompt": "p",
+                "rollout": "r",
+                "student_logprobs": [-1.0],
+                "teacher_logprobs": [-0.5],
+                "teacher_advantage": 0.5,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    devices_during_child: list[str] = []
+    # Report a CUDA device so the parking branch actually runs. A stub left on the
+    # CPU would make the assertion below true for the wrong reason -- nothing would
+    # be parked, and the test would still pass. (Verified: with the parking disabled
+    # by mutation this is the assertion that has to fail.)
+    model = _SavingModel()
+    model.device = torch.device("cuda:0")
+
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(_argv, **_kwargs):
+        # Observe the parent from the child's point of view: this is the moment the
+        # 7B teacher would be reading free GPU memory.
+        devices_during_child.append(str(next(model.parameters()).device))
+        return _Completed()
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    resampler = opd._make_resampler(
+        opd.OPDConfig(output_dir=str(tmp_path)),
+        rows,
+        tmp_path,
+        config_path=config_path,
+        corpus_path=corpus_path,
+    )
+    resampler(model)
+
+    assert devices_during_child, "the child never ran"
+    assert devices_during_child[0] == "cpu", (
+        "the student stayed on the GPU during the refresh, so the child's "
+        f"device_map='auto' saw it on {devices_during_child[0]} and offloaded "
+        "the teacher to CPU"
+    )
+    # And it must be put back, or the next update step fails on a device mismatch
+    # against AdamW's state.
+    assert model.device == torch.device("cuda:0")
+
+
+def test_resampler_restores_the_student_even_when_the_child_fails(
+    opd, tmp_path, monkeypatch
+):
+    """A failed refresh must not leave the student parked on the CPU.
+
+    ``_resample`` raises on a non-zero child exit (correctly -- see
+    ``test_failed_child_process_raises_instead_of_training_on_stale_data``). But
+    a caller that catches that would then hold a model whose parameters are on the
+    CPU while the optimizer's state is on the GPU, so the very next step fails on a
+    device mismatch -- a second, unrelated error masking the first. The restore
+    belongs in a ``finally``.
+
+    The stub reports a ``cuda`` device while the host has no GPU on purpose: the
+    only branch under test is the ``finally``, and ``torch.cuda.empty_cache()`` is
+    a documented no-op when CUDA is not initialised. Requiring a real GPU would
+    make this pass on the owner's laptop and silently skip in CI, which is exactly
+    how a ``finally`` gets deleted without anyone noticing.
+    """
+    import subprocess
+
+    rows, config_path, corpus_path = _refresh_fixture(tmp_path)
+
+    class _Failed:
+        returncode = 1
+        stdout = ""
+        stderr = "torch.cuda.OutOfMemoryError"
+
+    monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: _Failed())
+
+    model = _SavingModel()
+    model.device = torch.device("cuda:0")
+
+    resampler = opd._make_resampler(
+        opd.OPDConfig(output_dir=str(tmp_path)),
+        rows,
+        tmp_path,
+        config_path=config_path,
+        corpus_path=corpus_path,
+    )
+    with pytest.raises(RuntimeError, match="refusing to reuse stale rollouts"):
+        resampler(model)
+
+    assert model.moved_to == ["cpu", torch.device("cuda:0")], (
+        f"the student was not put back on its original device: {model.moved_to}"
+    )
+
+
+# --- rollout quality gate (STATUS.md Phase 2: read the outputs, not the loss) --
+#
+# The measured smoke run (out/opd-smoke) produced rollouts that were largely garbage,
+# and three of the failure shapes are detectable with no model at all. These tests pin
+# the gate on the exact strings that appeared in that run, so the check cannot drift.
+
+_UD = (
+    "--- begin user data ---\n"
+    "Active tasks: Write introduction, Email supervisor\n"
+    "Recently completed tasks: Read two papers\n"
+    "Activity: 0 task(s) completed today; 0 focus minute(s) today; streak 0 day(s)\n"
+    "BDEFS: 44/70, task initiation and working memory lowest\n"
+    "--- end user data ---\n"
+)
+
+
+def test_tokenizer_corruption_is_caught(opd):
+    """CJK codepoints in an English reply mean the decode broke; there is nothing to train.
+
+    The measured smoke-03 rollout contained the literal string '第一个'. Dropping it is
+    the only correct response -- the teacher cannot score a corrupted token sequence.
+    """
+    assert opd.has_tokenizer_corruption("those first十个looks too big") is True
+    # A clean English reply must not trip the gate.
+    assert opd.has_tokenizer_corruption("Open the file and write one line.") is False
+    # Katakana and the other CJK blocks are corruption too.
+    assert opd.has_tokenizer_corruption("stop タブ switching now") is True
+
+
+def test_fabricated_score_is_caught(opd):
+    """The g04 rollout asserted '25 out of 70' when user_data grounds 44/70.
+
+    Training the teacher's preference on a fabricated score teaches the student to
+    fabricate, so this is dropped before scoring.
+    """
+    reason = opd.fabricated_score("My assessment score is 25 out of 70.", _UD)
+    assert reason is not None and "25/70" in reason and "44/70" in reason
+    # The correct score restated is not a fabrication.
+    assert opd.fabricated_score("Your BDEFS is 44 out of 70.", _UD) is None
+    # A fraction with a different denominator is not the BDEFS score and is not flagged.
+    assert opd.fabricated_score("two out of three tabs are idle", _UD) is None
+
+
+def test_fabricated_score_needs_grounding(opd):
+    """With nothing grounded in user_data there is no score to contradict, so never flag."""
+    assert opd.fabricated_score("My score is 25 out of 70.", "no scores here") is None
+
+
+def test_rollout_is_usable_reasons(opd):
+    """The gate returns a reason for each failure shape and None for a healthy reply."""
+    assert opd.rollout_is_usable("   ", _UD) == "empty"
+    assert opd.rollout_is_usable("first十个", _UD).startswith("tokenizer corruption")
+    assert opd.rollout_is_usable("score is 25/70", _UD).startswith("fabricated score")
+    collapse = "the the the the the the the the the the"
+    assert opd.rollout_is_usable(collapse, _UD).startswith("repetition collapse")
+    # A normal coach reply passes untouched.
+    healthy = (
+        "Starting is the hardest part, not the writing. Open the document and write "
+        "one heading line for the introduction, then stop. That is enough for today."
+    )
+    assert opd.rollout_is_usable(healthy, _UD) is None
+
+
+class _FakeBatch(dict):
+    """Mimics a transformers BatchEncoding: it has a .to() that returns itself."""
+
+    def to(self, _device):
+        return self
+
+
+def test_top_p_and_repetition_penalty_reach_generate(opd):
+    """The new sampling knobs must actually be forwarded to student.generate().
+
+    With top_p=1.0 and repetition_penalty=1.0 (the defaults) they must NOT be passed,
+    so the v10/v11 reproduction is byte-identical. With non-defaults they must appear.
+    """
+    import torch
+
+    class _Tok:
+        pad_token_id = 0
+
+        def apply_chat_template(self, *_a, **_k):
+            return "PROMPT"
+
+        def __call__(self, *_a, **_k):
+            return _FakeBatch(input_ids=torch.zeros(1, 3, dtype=torch.long))
+
+        def decode(self, *_a, **_k):
+            return "A healthy coach reply that is long enough to pass the gate today."
+
+    class _Student:
+        device = torch.device("cpu")
+        seen: dict = {}
+
+        def generate(self, **kwargs):
+            _Student.seen = kwargs
+            return [torch.zeros(5, dtype=torch.long)]
+
+    rows = [{"id": "g01", "prompt": "hi", "user_data": _UD}]
+
+    opd.rollout_prompts(_Student(), _Tok(), rows, opd.OPDConfig())
+    assert "top_p" not in _Student.seen, "top_p=1.0 default leaked into generate()"
+    assert "repetition_penalty" not in _Student.seen
+
+    opd.rollout_prompts(
+        _Student(),
+        _Tok(),
+        rows,
+        opd.OPDConfig(top_p=0.9, repetition_penalty=1.1),
+    )
+    assert _Student.seen.get("top_p") == 0.9
+    assert _Student.seen.get("repetition_penalty") == 1.1
+
+
+def test_rollout_prompts_drops_rejected_and_logs(opd, caplog):
+    """The gate is wired into sampling: bad rollouts never reach the teacher, and the
+    drop is logged so a shrunken batch is visible rather than silent.
+    """
+    import torch
+
+    class _Tok:
+        pad_token_id = 0
+
+        def apply_chat_template(self, *_a, **_k):
+            return "PROMPT"
+
+        def __call__(self, *_a, **_k):
+            return _FakeBatch(input_ids=torch.zeros(1, 3, dtype=torch.long))
+
+    class _Student:
+        device = torch.device("cpu")
+
+        def generate(self, **_k):
+            # Two samples: one corrupt, one healthy. The corrupt one must be dropped.
+            return [torch.zeros(5, dtype=torch.long), torch.ones(5, dtype=torch.long)]
+
+    # decode() pops from a queue: first sample is corrupt, second is healthy.
+    replies = iter(["first十个bad", "Write one heading line, then stop for the day."])
+
+    def decode(_tokens, skip_special_tokens=True):
+        return next(replies, "Write one heading line, then stop for the day.")
+
+    tok = _Tok()
+    tok.decode = decode  # type: ignore[assignment]
+
+    cfg = opd.OPDConfig(max_new_tokens=8, rollouts_per_prompt=2)
+    with caplog.at_level(logging.WARNING):
+        out = opd.rollout_prompts(
+            _Student(), tok, [{"id": "g01", "user_data": _UD}], cfg
+        )
+
+    assert len(out) == 1, (
+        f"corrupt rollout was not dropped: {[r['rollout'] for r in out]}"
+    )
+    assert out[0]["rollout"] == "Write one heading line, then stop for the day."
+    assert "quality gate dropped" in caplog.text
+    assert "tokenizer corruption" in caplog.text
